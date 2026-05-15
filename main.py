@@ -137,6 +137,34 @@ log = logging.getLogger("zisi.main")
 # Reset at the start of each cycle in the main loop.
 _poly_cycle_event_ids: set = set()
 
+# ── Per-cycle skip reason counter ────────────────────────────────────────────
+# Each entry in _process_signal() that returns without placing a trade calls
+# _record_skip(reason).  At cycle end, _log_cycle_skip_summary() prints one
+# concise line showing where signals are dropping out.
+# Reset at cycle start alongside _poly_cycle_event_ids.
+_cycle_skip_counts: dict = {}
+_cycle_signals_processed: int = 0
+_cycle_trades_placed: int = 0
+
+
+def _record_skip(reason: str) -> None:
+    global _cycle_skip_counts
+    _cycle_skip_counts[reason] = _cycle_skip_counts.get(reason, 0) + 1
+
+
+def _log_cycle_skip_summary() -> None:
+    total_skips = sum(_cycle_skip_counts.values())
+    if _cycle_signals_processed == 0 and total_skips == 0:
+        return
+    skip_str = " | ".join(f"{k}:{v}" for k, v in sorted(_cycle_skip_counts.items()))
+    log.info(
+        "[CYCLE-SUMMARY] signals=%d | placed=%d | skipped=%d%s",
+        _cycle_signals_processed,
+        _cycle_trades_placed,
+        total_skips,
+        f" ({skip_str})" if skip_str else "",
+    )
+
 # ── Circuit breaker ───────────────────────────────────────────────────────────
 # Halts signal processing if session P&L drops below this threshold.
 # Prevents a bad overnight from draining the full paper balance.
@@ -449,6 +477,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
 
     if not matching:
         log.info("  No matching Polymarket events — skipping")
+        _record_skip("no_event_match")
         return
 
     log.info("  Found %d matching events (smart confidence=%.2f)", len(matching), smart_confidence)
@@ -466,6 +495,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
         best_event = select_best_event(matching, sentiment_dir)
     if not best_event:
         log.info("  No suitable event selected — skipping")
+        _record_skip("no_event_selected")
         return
 
     log.info("  Selected: %s", best_event["title"])
@@ -495,12 +525,14 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
             liquidity_check["liquidity"],
             float(cfg.get("MIN_EVENT_LIQUIDITY_USD", 1000)),
         )
+        _record_skip("liquidity")
         return
 
     # 3. Decide direction
     direction = pick_trading_direction(sentiment_dir, best_event.get("markets", []))
     if direction == "SKIP":
         log.info("  Neutral sentiment — skipping trade")
+        _record_skip("neutral_sentiment")
         return
 
     # 4. Get current market price
@@ -539,6 +571,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
                 "  [SKIP-SPREAD] bid=%.4f ask=%.4f spread=%.1f%% > 8%% — thin market",
                 _bid, _ask, _spread_pct * 100,
             )
+            _record_skip("spread_too_wide")
             return
 
     # ── Hard price gate ──────────────────────────────────────────────────────
@@ -550,12 +583,14 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
             "  [SKIP] Price %.4f ≤ 0.10 — market near-resolved NO or stale (no edge)",
             current_price,
         )
+        _record_skip("price_too_low")
         return
     if current_price >= 0.90:
         log.warning(
             "  [SKIP] Price %.4f ≥ 0.90 — market near-resolved YES (no edge)",
             current_price,
         )
+        _record_skip("price_too_high")
         return
 
     log.info("  Direction: %s | Price: %.4f", direction, current_price)
@@ -571,6 +606,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
             price_check["max_allowed"],
             confidence,
         )
+        _record_skip("entry_price")
         return
 
     # 4c. Confluence scoring + multi-timeframe confirmation
@@ -598,6 +634,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
 
     if confluence["confluence_score"] < 0.50:
         log.info("  [SKIP] Confluence too low (%.2f < 0.50)", confluence["confluence_score"])
+        _record_skip("confluence_low")
         return
 
     mtf = _price_analyzer.get_timeframe_confirmation(symbol, sentiment_dir)
@@ -608,6 +645,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
             "  [SKIP] Low MTF confirmation (%.2f) + low confluence (%.2f) — skipping",
             mtf["confirmation_score"], confluence["confluence_score"],
         )
+        _record_skip("mtf_confluence_low")
         return
 
     # ── GAP #1: Explicit routing gate ──────────────────────────────────────────
@@ -643,9 +681,11 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
 
     if _routing_target == "SKIP":
         log.info("  [ROUTING] SKIP — confidence below threshold, no trade")
+        _record_skip("routing_skip")
         return
     if _routing_target in ("KALSHI", "KALSHI_ONLY"):
         log.info("  [ROUTING] %s — skipping Polymarket leg this cycle", _routing_target)
+        _record_skip("routed_to_kalshi")
         return
 
     # 5. Kelly Criterion position sizing informed by historical edge
@@ -723,6 +763,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
     # 6. Validate
     if not validate_trade(position_size, cfg["ACCOUNT_BALANCE"], count_open_trades()):
         log.info("  Trade validation failed — skipping")
+        _record_skip("validate_trade_failed")
         return
 
     # 7. Exit targets
@@ -748,6 +789,8 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
         log.error("  ORDER FAILED — skipping")
         return
 
+    global _cycle_trades_placed
+    _cycle_trades_placed += 1
     log.info("  FILLED: %.2f shares @ %.4f | order_id=%s", order["shares_acquired"], order["entry_price"], order["order_id"])
 
     # Attach targets to the cached position
@@ -1378,8 +1421,12 @@ def main() -> None:
                     time.sleep(60)
                     continue
 
-                # Reset per-cycle Polymarket event dedup
+                # Reset per-cycle counters
                 _poly_cycle_event_ids.clear()
+                _cycle_skip_counts.clear()
+                global _cycle_signals_processed, _cycle_trades_placed
+                _cycle_signals_processed = 0
+                _cycle_trades_placed = 0
 
                 # Reconciliation health check — warn if unresolved orders building up
                 _pending = get_pending_reconcile_count()
@@ -1626,6 +1673,7 @@ def main() -> None:
                         _best_market = _sig_to_market.get(sig.get("headline", ""))
                         _process_signal(sig, [_best_market] if _best_market else all_events, cfg)
                         _exec_count += 1
+                    _cycle_signals_processed += _exec_count
                     log.info("[VERIFY-EXECUTION] Polymarket: %d signals processed", _exec_count)
                 else:
                     log.info("[EXECUTION] No CycleManager candidates — full deduped scan")
@@ -1633,6 +1681,7 @@ def main() -> None:
                         if not _running:
                             break
                         _process_signal(sig, all_events, cfg)
+                    _cycle_signals_processed += len(signals_deduped)
                     log.info("[VERIFY-EXECUTION] Polymarket: fallback scan, %d signals", len(signals_deduped))
 
                 # ── Step 5b: Kalshi processing (parallel market) ────────────
@@ -1706,6 +1755,9 @@ def main() -> None:
 
                 # ── Step 6: Monitor open positions ─────────────────────────
                 _monitor_open_positions(cfg)
+
+                # ── Cycle skip summary ─────────────────────────────────────
+                _log_cycle_skip_summary()
 
                 # ── Step 7: Metrics snapshot (every cycle) ─────────────────
                 snap = calculate_daily_metrics(list(_trade_history))
