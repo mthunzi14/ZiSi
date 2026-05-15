@@ -1,0 +1,466 @@
+import express from 'express';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { readTradesFile } from '../utils/fileReader.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const router = express.Router();
+
+router.get('/', (req, res) => {
+  try {
+    const stateFile = path.join(__dirname, '../../../account_state.json');
+    const runtimeFile = path.join(__dirname, '../../../runtime_tracking.json');
+    const pauseFlag = path.join(__dirname, '../../../bot_paused.flag');
+
+    const defaultRuntime = {
+      hours: 0,
+      days: 0,
+      progressPercent: 0,
+      goalHours: 336,
+      status: 'tracking',
+    };
+
+    if (!fs.existsSync(stateFile)) {
+      return res.json({
+        status: 'offline',
+        running: false,
+        balance: 100.00,
+        account_balance: 100.00,
+        pnl: 0,
+        realTrades: 0,
+        totalSignals: 0,
+        dailySignals: 0,
+        dailyTrades: 0,
+        dailyPnL: 0,
+        winRate: 0,
+        byCoin: [],
+        byStrength: [],
+        minutesAgo: null,
+        last_update_minutes_ago: null,
+        tradesExecuted: 0,
+        trades_executed: 0,
+        phase: 'phase_1',
+        cycles_completed: 0,
+        runtime: defaultRuntime,
+        error: 'State file not found',
+      });
+    }
+
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+    const lastUpdate = new Date(state.last_updated);
+    const now = new Date();
+    const minutesAgo = Math.floor((now - lastUpdate) / 60000);
+
+    let status;
+    if (fs.existsSync(pauseFlag) || state.paused) {
+      status = 'paused';
+    } else if (minutesAgo < 45) {
+      status = 'running';
+    } else if (minutesAgo < 90) {
+      status = 'stale';
+    } else {
+      status = 'offline';
+    }
+
+    const balance = parseFloat(state.balance || 100);
+    const pnl = parseFloat(state.pnl || 0);
+    const tradesExecuted = state.trades_executed || 0;
+
+    // Runtime tracking
+    let runtime = defaultRuntime;
+    if (fs.existsSync(runtimeFile)) {
+      try {
+        const rt = JSON.parse(fs.readFileSync(runtimeFile, 'utf-8'));
+        const hours = rt.runtime_hours || 0;
+        runtime = {
+          hours: Math.round(hours * 10) / 10,
+          days: Math.floor(hours / 24),
+          progressPercent: rt.progress_percent || 0,
+          goalHours: rt.goal_hours || 336,
+          status: rt.status || 'tracking',
+        };
+      } catch (rtErr) {
+        console.warn('[HEALTH] Could not parse runtime_tracking.json:', rtErr.message);
+      }
+    }
+
+    // Signal and trade analytics from trades file
+    const today = new Date().toISOString().split('T')[0];
+    let totalSignals = 0;
+    let dailySignals = 0;
+    let realTrades = 0;
+    let dailyTrades = 0;
+    let dailyPnL = 0;
+    let winRate = 0;
+    let byCoin = [];
+    let byStrength = [];
+    let byUTC = [];
+    let maxDrawdown = 0;
+    let currentDrawdown = 0;
+    let consecutiveLosses = 0;
+    let riskOfRuin = 'Low';
+    let profitFactor = 0;
+    let expectancy = 0;
+
+    try {
+      const allEntries = readTradesFile();
+      const signals = allEntries.filter(e => e._type === 'signal');
+      const trades = allEntries.filter(e =>
+        e._type === 'trade' && !e.order_id?.toLowerCase().includes('test')
+      );
+
+      totalSignals = signals.length;
+      dailySignals = signals.filter(e => {
+        const ts = e.timestamp_open || e.timestamp;
+        return ts?.startsWith(today);
+      }).length;
+
+      const closedTrades = trades.filter(e =>
+        e.status === 'CLOSED' || e.status === 'closed'
+      );
+      realTrades = closedTrades.length;
+
+      const todayTrades = closedTrades.filter(e => {
+        const ts = e.timestamp_close || e.timestamp_open || e.timestamp;
+        return ts?.startsWith(today);
+      });
+      dailyTrades = todayTrades.length;
+      dailyPnL = todayTrades.reduce((sum, e) => sum + (e.profit || 0), 0);
+
+      const wins = closedTrades.filter(e => e.profit > 0);
+      const losses = closedTrades.filter(e => e.profit <= 0);
+      winRate = closedTrades.length > 0 ? wins.length / closedTrades.length : 0;
+
+      // Profit factor & expectancy
+      const grossWins = wins.reduce((s, t) => s + (t.profit || 0), 0);
+      const grossLosses = Math.abs(losses.reduce((s, t) => s + (t.profit || 0), 0));
+      profitFactor = grossLosses > 0 ? parseFloat((grossWins / grossLosses).toFixed(2)) : (grossWins > 0 ? 99 : 0);
+      const avgWin = wins.length > 0 ? grossWins / wins.length : 0;
+      const avgLoss = losses.length > 0 ? grossLosses / losses.length : 0;
+      expectancy = parseFloat(((winRate * avgWin) - ((1 - winRate) * avgLoss)).toFixed(2));
+
+      // Max drawdown & current drawdown
+      let peak = 0;
+      let runningPnL = 0;
+      let peakAtEnd = 0;
+      for (const t of closedTrades) {
+        runningPnL += (t.profit || 0);
+        peak = Math.max(peak, runningPnL);
+        const dd = peak > 0 ? ((peak - runningPnL) / peak) * 100 : 0;
+        maxDrawdown = Math.max(maxDrawdown, dd);
+      }
+      peakAtEnd = peak;
+      currentDrawdown = peakAtEnd > 0 ? parseFloat((((peakAtEnd - runningPnL) / peakAtEnd) * 100).toFixed(2)) : 0;
+      maxDrawdown = parseFloat(maxDrawdown.toFixed(2));
+
+      // Consecutive losses (most recent streak)
+      const reversed = [...closedTrades].reverse();
+      for (const t of reversed) {
+        if ((t.profit || 0) <= 0) consecutiveLosses++;
+        else break;
+      }
+
+      // Risk of ruin
+      if (consecutiveLosses >= 3 || currentDrawdown > 10) riskOfRuin = 'High';
+      else if (consecutiveLosses >= 2 || currentDrawdown > 5) riskOfRuin = 'Medium';
+      else riskOfRuin = 'Low';
+
+      // By UTC hour
+      const hourMap = {};
+      closedTrades.forEach(t => {
+        const ts = t.timestamp_open || t.timestamp;
+        if (!ts) return;
+        const hour = new Date(ts).getUTCHours();
+        if (!hourMap[hour]) hourMap[hour] = { trades: 0, wins: 0 };
+        hourMap[hour].trades++;
+        if ((t.profit || 0) > 0) hourMap[hour].wins++;
+      });
+      byUTC = Object.entries(hourMap).map(([h, d]) => ({
+        hour: parseInt(h),
+        trades: d.trades,
+        winRate: d.trades > 0 ? parseFloat((d.wins / d.trades).toFixed(4)) : 0,
+      })).sort((a, b) => a.hour - b.hour);
+
+      const coinMap = {};
+      signals.forEach(e => {
+        const text = `${e.event_title || ''} ${e.coins_mentioned || ''}`.toLowerCase();
+        const coin = text.includes('btc') || text.includes('bitcoin') ? 'BTC'
+                   : text.includes('eth') || text.includes('ethereum') ? 'ETH'
+                   : text.includes('sol') || text.includes('solana') ? 'SOL'
+                   : 'OTHER';
+        coinMap[coin] = (coinMap[coin] || 0) + 1;
+      });
+      byCoin = Object.entries(coinMap)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count);
+
+      const strengthMap = {};
+      signals.forEach(e => {
+        const level = String(e.signal_confidence || 7);
+        strengthMap[level] = (strengthMap[level] || 0) + 1;
+      });
+      byStrength = Object.entries(strengthMap)
+        .map(([level, count]) => ({ level, count }))
+        .sort((a, b) => parseInt(a.level) - parseInt(b.level));
+    } catch (analyticsErr) {
+      console.warn('[HEALTH] Could not compute analytics:', analyticsErr.message);
+    }
+
+    // ── Signal metrics from signal_evaluations.jsonl (the real data source) ──
+    let missedTrades = 0;
+    let missedWinRate = 0;
+    let missedPnL = 0;
+    let signals_evaluated = 0;
+    let avg_confidence = 0;
+    let signals_by_sentiment = { bullish: 0, bearish: 0, neutral: 0 };
+    let signals_by_market = { BTC: 0, ETH: 0, OTHER: 0 };
+    let confidence_distribution = { '9': 0, '8': 0, '7': 0 };
+    let polymarket_matches = 0;
+    let kalshi_trades_recorded = 0;
+    let peak_hour_signals = 0;
+    let off_peak_hour_signals = 0;
+    const PEAK_HOURS = new Set([22, 23, 0, 1, 2, 3, 4, 5]);
+
+    try {
+      const evalFile = path.join(__dirname, '../../../signal_evaluations.jsonl');
+      if (fs.existsSync(evalFile)) {
+        const evalLines = fs.readFileSync(evalFile, 'utf-8')
+          .split('\n')
+          .filter(l => l.trim());
+
+        const allEvals = evalLines
+          .map(l => { try { return JSON.parse(l); } catch { return null; } })
+          .filter(Boolean);
+
+        // Count ONLY current-session Kalshi trades (have an order_id = new lifecycle format).
+        // Records without order_id are the 592 pre-fix orphaned sports entries — ignore them.
+        kalshi_trades_recorded = allEvals.filter(
+          e => e.type === 'KALSHI_TRADE' && e.order_id
+        ).length;
+        const nonKalshiEvals = allEvals.filter(e => e.type !== 'KALSHI_TRADE');
+        signals_evaluated = nonKalshiEvals.length;
+
+        let confSum = 0;
+        for (const e of nonKalshiEvals) {
+          // Confidence: sentiment_score is 0-1, confidence may be 0-10 or 0-1
+          const rawConf = e.sentiment_score || (e.confidence > 1 ? e.confidence / 10 : e.confidence) || 0;
+          confSum += rawConf;
+
+          // Sentiment distribution
+          const sent = (e.sentiment || 'neutral').toLowerCase();
+          if (sent in signals_by_sentiment) signals_by_sentiment[sent]++;
+          else signals_by_sentiment.neutral++;
+
+          // Market (coin) distribution
+          const coin = (e.coin || '').toUpperCase();
+          if (coin.includes('BITCOIN') || coin === 'BTC') signals_by_market.BTC++;
+          else if (coin.includes('ETHEREUM') || coin === 'ETH') signals_by_market.ETH++;
+          else signals_by_market.OTHER++;
+
+          // Confidence distribution (score * 10 → integer bucket)
+          const bucket = Math.round(rawConf * 10);
+          if (bucket >= 9) confidence_distribution['9']++;
+          else if (bucket >= 8) confidence_distribution['8']++;
+          else if (bucket >= 7) confidence_distribution['7']++;
+
+          // Polymarket match
+          if (e.matched_event) polymarket_matches++;
+
+          // Peak hour classification (timestamp is unix epoch float)
+          try {
+            const ts = e.timestamp;
+            const hour = ts > 1e10
+              ? new Date(ts * 1000).getUTCHours()
+              : new Date(ts).getUTCHours();
+            if (PEAK_HOURS.has(hour)) peak_hour_signals++;
+            else off_peak_hour_signals++;
+          } catch (_) { /* ignore */ }
+        }
+
+        avg_confidence = signals_evaluated > 0
+          ? parseFloat((confSum / signals_evaluated).toFixed(4))
+          : 0;
+
+        // Missed trades (confidence > 0.55 means signal had potential)
+        const missed = nonKalshiEvals.filter(e => {
+          const rawConf = e.sentiment_score || (e.confidence > 1 ? e.confidence / 10 : e.confidence) || 0;
+          return e.trade_type === 'MISSED' && rawConf > 0.55;
+        });
+        missedTrades = missed.length;
+        const missedWins = missed.filter(e => {
+          const rawConf = e.sentiment_score || (e.confidence > 1 ? e.confidence / 10 : e.confidence) || 0;
+          return rawConf > 0.6;
+        }).length;
+        missedWinRate = missedTrades > 0 ? parseFloat((missedWins / missedTrades).toFixed(4)) : 0;
+        missedPnL = parseFloat(((missedWins * 2) - ((missedTrades - missedWins) * 1)).toFixed(2));
+
+        // Use signal_evaluations count as the authoritative totalSignals
+        if (signals_evaluated > totalSignals) {
+          totalSignals = signals_evaluated;
+          dailySignals = nonKalshiEvals.filter(e => {
+            try {
+              const ts = e.timestamp;
+              const d = ts > 1e10 ? new Date(ts * 1000) : new Date(ts);
+              return d.toISOString().startsWith(today);
+            } catch { return false; }
+          }).length;
+        }
+      }
+    } catch (missedErr) {
+      console.warn('[HEALTH] Could not compute signal metrics:', missedErr.message);
+    }
+
+    // ── ML pipeline progress (written by ml_pipeline.py) ──────────────────
+    let ml_progress = { cycles_collected: 0, cycles_needed: 50, progress_percent: 0, models: {} };
+    try {
+      const mlFile = path.join(__dirname, '../../../ml_progress.json');
+      if (fs.existsSync(mlFile)) {
+        ml_progress = JSON.parse(fs.readFileSync(mlFile, 'utf-8'));
+      }
+    } catch (_) { /* non-fatal */ }
+
+    // ── Edge scorer stats (written by edge_scorer.py) ─────────────────────
+    let edge_scorer_stats = {
+      total_evaluated: 0,
+      total_passed: 0,
+      total_filtered: 0,
+      pass_rate: 0,
+      kl_threshold: 0.05,
+    };
+    try {
+      const edgeFile = path.join(__dirname, '../../../edge_status.json');
+      if (fs.existsSync(edgeFile)) {
+        edge_scorer_stats = JSON.parse(fs.readFileSync(edgeFile, 'utf-8'));
+      }
+    } catch (_) { /* non-fatal */ }
+
+    // ── Market regime (written by regime_detector.py) ─────────────────────
+    let regime = { regime: 'NORMAL', label: 'Normal', atr_pct: 0, kelly_multiplier: 1.0 };
+    try {
+      const regimeFile = path.join(__dirname, '../../../regime_status.json');
+      if (fs.existsSync(regimeFile)) {
+        regime = JSON.parse(fs.readFileSync(regimeFile, 'utf-8'));
+      }
+    } catch (_) { /* non-fatal */ }
+
+    // ── Position summary (written by trader.py after every open/close) ────
+    let positions_summary = {
+      active_count: 0, closed_count: 0,
+      unrealized_pnl: 0, realized_pnl: 0,
+      win_count: 0, loss_count: 0,
+      poly_active: 0, kalshi_active: 0,
+    };
+    let kalshi_closed_count = 0;
+    let kalshi_closed_pnl   = 0;
+    let kalshi_win_count    = 0;
+    try {
+      const posFile = path.join(__dirname, '../../../positions_state.json');
+      if (fs.existsSync(posFile)) {
+        const posData = JSON.parse(fs.readFileSync(posFile, 'utf-8'));
+        positions_summary = posData.summary || positions_summary;
+        // Count Kalshi-specific closed positions for accurate trade stats
+        const closedList = posData.closed || [];
+        const kalshiClosed = closedList.filter(p => p.market === 'KALSHI');
+        kalshi_closed_count = kalshiClosed.length;
+        kalshi_closed_pnl   = kalshiClosed.reduce((s, p) => s + (p.realized_pnl || 0), 0);
+        kalshi_win_count    = kalshiClosed.filter(p => (p.realized_pnl || 0) > 0).length;
+      }
+    } catch (_) { /* non-fatal */ }
+
+    res.json({
+      status,
+      running: status === 'running',
+      balance,
+      account_balance: balance,
+      pnl,
+      realTrades,
+      totalSignals,
+      dailySignals,
+      dailyTrades,
+      dailyPnL: parseFloat(dailyPnL.toFixed(2)),
+      winRate,
+      profitFactor,
+      expectancy,
+      byCoin,
+      byStrength,
+      byUTC,
+      maxDrawdown,
+      currentDrawdown,
+      consecutiveLosses,
+      riskOfRuin,
+      missedTrades,
+      missedWinRate,
+      missedPnL,
+      minutesAgo,
+      last_update_minutes_ago: minutesAgo,
+      tradesExecuted,
+      trades_executed: tradesExecuted,
+      phase: state.phase || 'phase_1',
+      last_update: state.last_updated,
+      cycles_completed: tradesExecuted,
+      paused: state.paused || false,
+      runtime,
+      // ── Signal metrics from signal_evaluations.jsonl ─────────────────
+      signals_evaluated,
+      avg_confidence,
+      signals_by_sentiment,
+      signals_by_market,
+      confidence_distribution,
+      polymarket_matches,
+      kalshi_matches: kalshi_trades_recorded,
+      peak_hour_signals,
+      off_peak_hour_signals,
+      hypothetical_trades: missedTrades,
+      hypothetical_pnl: missedPnL,
+      hypothetical_win_rate: missedWinRate,
+      // ── Real trade breakdown ──────────────────────────────────────────
+      real_trades: realTrades,
+      real_pnl: pnl,
+      real_win_rate: winRate,
+      // Kalshi: use positions_state.json closed count (ignores 592 orphaned records)
+      kalshi_real_trades: kalshi_closed_count,
+      kalshi_real_pnl: parseFloat(kalshi_closed_pnl.toFixed(4)),
+      kalshi_real_win_rate: kalshi_closed_count > 0
+        ? parseFloat((kalshi_win_count / kalshi_closed_count).toFixed(4))
+        : 0,
+      // ── Missed signals (insufficient liquidity) ───────────────────────
+      polymarket_hypothetical_trades: missedTrades,
+      polymarket_hypothetical_pnl: missedPnL,
+      // Signal quality rate (high-confidence signals / total missed signals)
+      // NOT a win rate — renamed to avoid confusion
+      signal_quality_rate: missedWinRate,
+      // kalshi_trades_recorded = open/pending Kalshi positions this session
+      kalshi_hypothetical_trades: kalshi_trades_recorded,
+      kalshi_hypothetical_pnl: 0,
+      // ── ML pipeline ───────────────────────────────────────────────────
+      ml_progress,
+      // ── Edge scorer ───────────────────────────────────────────────────
+      edge_scorer_stats,
+      // ── Market regime ─────────────────────────────────────────────────
+      regime,
+      // ── Position summary ──────────────────────────────────────────────
+      positions_summary,
+      error: null,
+    });
+
+  } catch (error) {
+    console.error('[HEALTH] Error reading state:', error.message);
+    res.status(500).json({
+      status: 'error',
+      running: false,
+      balance: 100.00,
+      account_balance: 100.00,
+      pnl: 0,
+      realTrades: 0,
+      totalSignals: 0,
+      dailySignals: 0,
+      byCoin: [],
+      byStrength: [],
+      runtime: { hours: 0, days: 0, progressPercent: 0, goalHours: 336, status: 'tracking' },
+      error: error.message,
+    });
+  }
+});
+
+export default router;

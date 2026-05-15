@@ -1,0 +1,66 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+*.egg-info/
+dist/
+build/
+venv/
+env/
+.venv/
+.env
+.env.local
+.env.*
+
+# ML artifacts
+*.pkl
+*.joblib
+*.h5
+*.onnx
+
+# Bot state files (runtime, sensitive, large)
+positions_state.json
+account_state.json
+system_alerts.json
+category_win_rates.json
+model_meta.json
+ml_progress.json
+edge_status.json
+regime_status.json
+runtime_tracking.json
+signal_queue.json
+
+# Trade logs (potentially large, contain PII/financials)
+*.jsonl
+*.log
+logs/
+
+# Google credentials (SECURITY CRITICAL - never commit)
+credentials.json
+token.json
+service_account.json
+
+# Node / frontend
+node_modules/
+dashboard/frontend/dist/
+dashboard/frontend/build/
+dashboard/backend/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code workspace
+.claude/
+# Sensitive documents
+*API KEY*.docx
+*api_key*.docx
+

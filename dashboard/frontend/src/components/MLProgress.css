@@ -1,0 +1,95 @@
+.ml-progress {
+  margin-top: 24px;
+  padding: 20px;
+}
+
+.ml-progress h3 {
+  margin: 0 0 8px 0;
+  font-size: 15px;
+  color: #e5e5e5;
+}
+
+.ml-info {
+  color: #888;
+  font-size: 13px;
+  margin: 0 0 16px 0;
+}
+
+.ml-overall-bar {
+  width: 100%;
+  height: 8px;
+  background: rgba(107, 98, 242, 0.15);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.ml-overall-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6b62f2, #a8a2f2);
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.ml-overall-pct {
+  text-align: right;
+  font-size: 12px;
+  color: #a8a2f2;
+  margin: 0 0 20px 0;
+}
+
+.ml-models {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ml-model {
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  border: 1px solid rgba(107, 98, 242, 0.15);
+}
+
+.ml-model-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.ml-model-name {
+  color: #ccc;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.ml-model-count {
+  color: #a8a2f2;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ml-bar {
+  width: 100%;
+  height: 5px;
+  background: rgba(107, 98, 242, 0.15);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.ml-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6b62f2, #a8a2f2);
+  transition: width 0.4s ease;
+}
+
+.ml-status {
+  font-size: 12px;
+  display: block;
+  text-align: right;
+}
+
+.ml-status.ready { color: #22c55e; font-weight: 600; }
+.ml-status.collecting { color: #a8a2f2; }

@@ -1,0 +1,44 @@
+.app-container {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+  background: var(--color-midnight-base);
+}
+
+.app-main {
+  padding: var(--spacing-2xl);
+  overflow-y: auto;
+  animation: appFadeIn 300ms ease;
+}
+
+.app-content > * + * {
+  margin-top: var(--spacing-3xl);
+}
+
+.analytics-sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xl);
+  margin-bottom: var(--spacing-3xl);
+}
+
+/*
+ * appFadeIn: opacity-only fade to avoid creating a transform-based stacking
+ * context on .app-main. A transform on a parent makes it the containing block
+ * for position:fixed children, which would trap the toast portal.
+ */
+@keyframes appFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (max-width: 768px) {
+  .app-container {
+    grid-template-columns: 1fr;
+    padding-bottom: 72px;
+  }
+
+  .app-main {
+    padding: var(--spacing-xl) var(--spacing-lg);
+  }
+}

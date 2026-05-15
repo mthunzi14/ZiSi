@@ -1,0 +1,125 @@
+/* ── Signal Pipeline Component ──────────────────────────────────────────────── */
+.signal-pipeline {
+  background: var(--surface-1);
+  border: 1px solid rgba(229, 229, 229, 0.08);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-xl);
+}
+
+.signal-pipeline h2 {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--color-ash-text);
+  margin: 0 0 var(--spacing-xl) 0;
+}
+
+/* Funnel row */
+.pipeline-funnel {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex-wrap: wrap;
+  row-gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-xl);
+}
+
+.pipeline-step {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 1;
+  min-width: 90px;
+}
+
+.pipeline-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid;
+  border-radius: var(--radius-md);
+  flex: 1;
+  text-align: center;
+  transition: all 180ms ease;
+}
+
+.pipeline-node:hover {
+  background: rgba(255, 255, 255, 0.04);
+  transform: translateY(-2px);
+}
+
+.pipeline-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.pipeline-count {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-family: var(--font-geist);
+  letter-spacing: -0.5px;
+  line-height: 1.1;
+}
+
+.pipeline-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--color-ash-text);
+}
+
+.pipeline-sub {
+  font-size: 0.6rem;
+  color: var(--color-slate-text);
+}
+
+.pipeline-arrow {
+  font-size: 1.1rem;
+  color: var(--color-slate-text);
+  padding: 0 var(--spacing-sm);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/* Mini metrics row */
+.pipeline-meta {
+  display: flex;
+  gap: var(--spacing-xl);
+  padding-top: var(--spacing-lg);
+  border-top: 1px solid rgba(229, 229, 229, 0.06);
+  flex-wrap: wrap;
+}
+
+.mini-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mini-label {
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--color-slate-text);
+  white-space: nowrap;
+}
+
+.mini-value {
+  font-size: 0.9rem;
+  font-weight: 700;
+  font-family: var(--font-geist);
+  color: var(--color-ghost-white);
+}
+
+@media (max-width: 768px) {
+  .pipeline-funnel { gap: var(--spacing-sm); }
+  .pipeline-arrow  { display: none; }
+  .pipeline-step   { min-width: 70px; }
+  .pipeline-meta   { gap: var(--spacing-lg); }
+}
