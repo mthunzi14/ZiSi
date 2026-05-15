@@ -193,16 +193,21 @@ def _check_bankroll_accuracy() -> bool:
         return True
 
 
+_ML_MIN_EXAMPLES = 10  # need at least this many total before staleness matters
+
 def _check_ml_pipeline_active() -> bool:
-    """Warn if no new labelled examples have been added in the last 24h during trading hours."""
+    """Warn only if ML examples exist AND none have been added in 24h (genuine stall).
+    Suppresses the alert during Phase 1 (<10 total examples) when trades are sparse."""
     labelled_file = _BASE_DIR / "ml_labelled_outcomes.jsonl"
     if not labelled_file.exists():
-        return True
+        return True  # Phase 1 — no data yet, not a failure
 
     try:
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(hours=24)
+        total = 0
         recent = 0
+
         with labelled_file.open("r", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
@@ -210,6 +215,7 @@ def _check_ml_pipeline_active() -> bool:
                     continue
                 try:
                     r = json.loads(line)
+                    total += 1
                     ts_str = r.get("timestamp_exit") or r.get("timestamp_entry", "")
                     if ts_str:
                         ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
@@ -218,10 +224,15 @@ def _check_ml_pipeline_active() -> bool:
                 except Exception:
                     continue
 
+        # Not enough data to establish a baseline — suppress the warning
+        if total < _ML_MIN_EXAMPLES:
+            log.debug("[HEALTH] ML pipeline: %d/%d examples (Phase 1, no stale check)", total, _ML_MIN_EXAMPLES)
+            return True
+
         if recent == 0 and now.hour not in (1, 2, 3, 4):
             _add_alert(
                 "WARNING", "ML_PIPELINE_STALE",
-                "No new labelled examples in last 24h — ML feedback loop may be broken",
+                f"No new labelled examples in last 24h ({total} total) — feedback loop may be broken",
             )
             return False
         return True

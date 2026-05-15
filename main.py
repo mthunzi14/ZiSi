@@ -1074,29 +1074,71 @@ def analyze_trade_frequency() -> dict:
 
 # ── Startup diagnostics ──────────────────────────────────────────────────────
 
-def run_startup_diagnostics(cfg: dict) -> None:
-    """Verify position consistency, API keys, API connectivity, and ML model state."""
+def run_startup_diagnostics(cfg: dict) -> bool:
+    """
+    5-section startup diagnostic: config, data integrity, API connectivity, ML, account.
+    Returns True only if all critical checks pass.
+    """
     import requests as _req
 
-    log.info("=" * 60)
-    log.info("STARTUP DIAGNOSTICS")
-    log.info("=" * 60)
+    _SEP = "=" * 75
+    _DIV = "-" * 75
+    all_ok = True
 
-    # Check 1: Position ↔ trade-history consistency
-    pos_file = Path(__file__).parent / "positions_state.json"
-    trades_file = Path(__file__).parent / "zisi_local_trades.jsonl"
-    pos_ids: set = set()
-    trade_ids: set = set()
+    log.info(_SEP)
+    log.info("ZISI STARTUP DIAGNOSTICS")
+    log.info(_SEP)
+
+    # ── [1] CONFIGURATION ──────────────────────────────────────────────────────
+    log.info("[1] CONFIGURATION")
+    log.info(_DIV)
+
+    # Kalshi: accepts KALSHI_KEY_ID or its alias KALSHI_API_KEY
+    kalshi_key_id = os.getenv("KALSHI_KEY_ID") or os.getenv("KALSHI_API_KEY") or ""
+    kalshi_priv   = os.getenv("KALSHI_PRIVATE_KEY") or ""
+    if kalshi_key_id and kalshi_priv:
+        alias = "KALSHI_API_KEY" if os.getenv("KALSHI_API_KEY") and not os.getenv("KALSHI_KEY_ID") else "KALSHI_KEY_ID"
+        log.info("  [OK] Kalshi: %s + KALSHI_PRIVATE_KEY present", alias)
+    else:
+        missing = []
+        if not kalshi_key_id: missing.append("KALSHI_KEY_ID (or KALSHI_API_KEY)")
+        if not kalshi_priv:   missing.append("KALSHI_PRIVATE_KEY")
+        log.error("  [FAIL] Kalshi: missing %s", ", ".join(missing))
+        all_ok = False
+
+    for key_name in ("NEWSAPI_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
+        val = cfg.get(key_name, "")
+        if val:
+            log.info("  [OK] %s: present", key_name)
+        else:
+            log.warning("  [WARN] %s: not set", key_name)
+
+    # ── [2] DATA INTEGRITY ─────────────────────────────────────────────────────
+    log.info("[2] DATA INTEGRITY")
+    log.info(_DIV)
+
+    _base = Path(__file__).parent
+    pos_file    = _base / "positions_state.json"
+    trades_file = _base / "zisi_local_trades.jsonl"
+
+    active_ids: set = set()
+    history_ids: set = set()
 
     if pos_file.exists():
         try:
             d = json.loads(pos_file.read_text(encoding="utf-8"))
-            for p in d.get("active", []) + d.get("closed", []):
+            active  = d.get("active", [])
+            closed  = d.get("closed", [])
+            for p in active:
                 oid = p.get("order_id")
                 if oid:
-                    pos_ids.add(oid)
-        except Exception:
-            pass
+                    active_ids.add(oid)
+            log.info("  Positions: %d active | %d closed", len(active), len(closed))
+        except Exception as exc:
+            log.error("  [FAIL] positions_state.json unreadable: %s", exc)
+            all_ok = False
+    else:
+        log.info("  Positions: no file (clean start)")
 
     if trades_file.exists():
         try:
@@ -1107,70 +1149,96 @@ def run_startup_diagnostics(cfg: dict) -> None:
                         continue
                     try:
                         t = json.loads(line)
-                        oid = t.get("order_id") or t.get("trade_id")
-                        if oid:
-                            trade_ids.add(oid)
+                        # Only count actual trade entries (status field present), not signal logs
+                        if t.get("status") and t.get("order_id"):
+                            history_ids.add(t["order_id"])
                     except Exception:
                         continue
+            log.info("  Trade History: %d trade entries in zisi_local_trades.jsonl", len(history_ids))
+        except Exception as exc:
+            log.error("  [FAIL] zisi_local_trades.jsonl unreadable: %s", exc)
+            all_ok = False
+
+    # Only flag as error if OPEN positions are absent from history (dangerous)
+    open_missing = active_ids - history_ids
+    if open_missing:
+        log.error("  [FAIL] %d open position(s) have no trade history entry: %s",
+                  len(open_missing), list(open_missing)[:3])
+        all_ok = False
+    elif active_ids:
+        log.info("  [OK] All open positions have trade history entries")
+
+    # ── [3] API CONNECTIVITY ───────────────────────────────────────────────────
+    log.info("[3] API CONNECTIVITY")
+    log.info(_DIV)
+
+    # Kalshi: use validate_connection() which tests full RSA-PSS auth flow
+    if _kalshi_auth.is_configured:
+        ok, msg = _kalshi_auth.validate_connection()
+        if ok:
+            log.info("  [OK] Kalshi: %s", msg)
+        else:
+            log.error("  [FAIL] Kalshi: %s", msg)
+            all_ok = False
+    else:
+        log.warning("  [SKIP] Kalshi: not configured (set KALSHI_KEY_ID + KALSHI_PRIVATE_KEY)")
+
+    # Polymarket: hit CLOB root
+    try:
+        r = _req.get("https://clob.polymarket.com", timeout=5)
+        if r.ok:
+            log.info("  [OK] Polymarket: HTTP %d", r.status_code)
+        else:
+            log.warning("  [WARN] Polymarket: HTTP %d", r.status_code)
+    except Exception as exc:
+        log.error("  [FAIL] Polymarket: %s", type(exc).__name__)
+        all_ok = False
+
+    # ── [4] ML PIPELINE ────────────────────────────────────────────────────────
+    log.info("[4] ML PIPELINE")
+    log.info(_DIV)
+
+    ml_prog = _base / "ml_progress.json"
+    labelled_file = _base / "ml_labelled_outcomes.jsonl"
+    labelled_count = 0
+    if labelled_file.exists():
+        try:
+            with labelled_file.open("r", encoding="utf-8") as fh:
+                labelled_count = sum(1 for line in fh if line.strip())
         except Exception:
             pass
-
-    log.info("Position State:  %d entries", len(pos_ids))
-    log.info("Trade History:   %d entries", len(trade_ids))
-
-    in_pos_not_hist = pos_ids - trade_ids
-    in_hist_not_pos = trade_ids - pos_ids
-    if in_pos_not_hist:
-        log.warning("[DIAG] In positions but not history: %s", list(in_pos_not_hist)[:5])
-    if in_hist_not_pos:
-        log.warning("[DIAG] In history but not positions: %d entries", len(in_hist_not_pos))
-    if not in_pos_not_hist and not in_hist_not_pos:
-        log.info("[OK] Positions <-> Trade History: CONSISTENT")
-
-    # Check 2: API keys
-    for key_name in ("KALSHI_API_KEY", "NEWSAPI_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
-        val = cfg.get(key_name, "")
-        if val:
-            log.info("[OK] %s: present", key_name)
-        else:
-            log.warning("[MISSING] %s: not set", key_name)
-
-    # Check 3: API connectivity
-    _checks = [
-        ("Kalshi",     "https://api.elections.kalshi.com"),
-        ("Polymarket", "https://clob.polymarket.com"),
-    ]
-    for name, url in _checks:
-        try:
-            r = _req.get(url, timeout=5)
-            if r.ok:
-                log.info("[OK] %s API: UP (HTTP %d)", name, r.status_code)
-            else:
-                log.warning("[WARN] %s API: HTTP %d", name, r.status_code)
-        except Exception as exc:
-            log.error("[DOWN] %s API: UNREACHABLE (%s)", name, type(exc).__name__)
-
-    # Check 4: ML model
-    ml_meta = Path(__file__).parent / "ml_model_meta.json"
-    ml_prog = Path(__file__).parent / "ml_progress.json"
-    if ml_meta.exists():
-        try:
-            meta = json.loads(ml_meta.read_text(encoding="utf-8"))
-            log.info("[OK] ML Model: Phase %s, %d examples", meta.get("phase", "?"), meta.get("examples", 0))
-        except Exception:
-            log.info("[OK] ML model meta found but unreadable")
-    elif ml_prog.exists():
-        try:
-            prog = json.loads(ml_prog.read_text(encoding="utf-8"))
-            log.info("[INFO] ML Progress: %d labelled examples (Phase 1)", prog.get("labelled_count", 0))
-        except Exception:
-            log.info("[INFO] ML Progress: file exists but unreadable")
+    log.info("  Labelled examples: %d (need 50 to train)", labelled_count)
+    if labelled_count >= 50:
+        log.info("  [OK] ML: training threshold reached")
     else:
-        log.info("[INFO] ML Model: not yet trained (Phase 1)")
+        log.info("  [INFO] ML: Phase 1 active — collecting examples (%d/50)", labelled_count)
 
-    log.info("=" * 60)
-    log.info("DIAGNOSTICS COMPLETE")
-    log.info("=" * 60)
+    # ── [5] ACCOUNT STATE ──────────────────────────────────────────────────────
+    log.info("[5] ACCOUNT STATE")
+    log.info(_DIV)
+
+    acc_file = _base / "account_state.json"
+    if acc_file.exists():
+        try:
+            acc = json.loads(acc_file.read_text(encoding="utf-8"))
+            balance = acc.get("balance", acc.get("bankroll", 0))
+            pnl     = acc.get("total_pnl", acc.get("pnl", 0))
+            mode    = cfg.get("BOT_MODE", "paper_trading")
+            log.info("  Balance: $%.2f | PnL: $%.2f | Mode: %s", balance, pnl, mode)
+        except Exception:
+            log.warning("  [WARN] account_state.json unreadable")
+    else:
+        log.info("  account_state.json not yet created")
+
+    # ── VERDICT ────────────────────────────────────────────────────────────────
+    log.info(_SEP)
+    if all_ok:
+        log.info("[OK] ALL DIAGNOSTICS PASSED — READY FOR PAPER RUN")
+    else:
+        log.error("[FAIL] SOME CHECKS FAILED — review above before trading")
+    log.info(_SEP)
+
+    return all_ok
 
 
 # ── Main loop ────────────────────────────────────────────────────────────────

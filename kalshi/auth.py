@@ -24,7 +24,10 @@ _API_PREFIX = "/trade-api/v2"
 
 class KalshiAuth:
     def __init__(self):
-        self.key_id = os.getenv("KALSHI_KEY_ID", "").strip()
+        # Accept KALSHI_KEY_ID (canonical) or KALSHI_API_KEY (common alias)
+        self.key_id = (
+            os.getenv("KALSHI_KEY_ID") or os.getenv("KALSHI_API_KEY") or ""
+        ).strip()
         raw_key = os.getenv("KALSHI_PRIVATE_KEY", "").strip().replace("\\n", "\n")
 
         self.base_url = "https://api.elections.kalshi.com/trade-api/v2"
@@ -32,7 +35,9 @@ class KalshiAuth:
         self.is_configured = False
 
         if not self.key_id:
-            log.warning("[KALSHI] KALSHI_KEY_ID not set — Kalshi trading disabled")
+            log.warning(
+                "[KALSHI] Neither KALSHI_KEY_ID nor KALSHI_API_KEY set — Kalshi disabled"
+            )
             return
         if not raw_key:
             log.warning("[KALSHI] KALSHI_PRIVATE_KEY not set — Kalshi trading disabled")
