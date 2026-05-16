@@ -1,35 +1,49 @@
 # ZiSi — Autonomous Prediction Market Trading Bot
 
-ZiSi is a self-learning paper-trading bot for Polymarket and Kalshi. It collects live crypto news, scores sentiment with a cascade of AI providers, matches markets, sizes positions with Kelly Criterion, shadow-copies expert wallets, and exits automatically. Target: grow $100 → $1,000 in paper mode, then go live.
+ZiSi is a self-learning, multi-source, AI-driven paper-trading bot for **Polymarket** and **Kalshi**. It harvests news from 10+ sources in real-time, scores sentiment through a 10-level AI cascade, matches markets with Kelly-sized positions, and learns from every trade outcome — autonomously.
+
+**Current stats (paper mode):** 72.9% win rate · $1,318 realized P&L · 680 closed trades · ML Phase 2 active
 
 ---
 
 ## Architecture
 
 ```
-News (NewsAPI + Cointelegraph RSS)
+News Sources (11 channels, zero dead zones)
+  Primary:  NewsAPI · CoinTelegraph · Decrypt · CryptoSlate RSS
+  Free ext: CryptoPanic · Reddit (4 subreddits) · Google News RSS · CoinDesk RSS
         ↓
-Sentiment (Claude → Gemini → Groq → Cerebras → Mistral → OpenRouter → Together → VADER)
+Rapid-Fire Scanner (background, 90s interval)
+  Detects breaking news → queues immediate Kalshi cycle without waiting 15 min
         ↓
-Signal Classification  (TYPE_A_HIGH / B_HIGH etc.)
+Sentiment Cascade (10 levels, auto-fallback)
+  Claude → Gemini Flash → Groq Llama → Cerebras → Mistral → OpenRouter
+        → Together AI → FinBERT → VADER → Keyword
         ↓
-Event Matching  (Polymarket smart-match + Kalshi 12-category)
+Signal Classification  (TYPE_A_HIGH / TYPE_A_LOW / TYPE_B_HIGH / TYPE_B_LOW)
         ↓
-Gate Chain  (liquidity → spread → price → confluence → MTF → routing)
+5 Einstein Advancements (size multipliers, stacked)
+  D: Fear & Greed Index (Alternative.me)
+  E: Asymmetric Directional Kelly (per YES/NO win rate)
+  F: UTC Hour Edge Multiplier (self-learned)
+  G: Rolling Coin Signal Quality Decay (regime detection)
+  H: Polymarket Volume Surge Detector (smart money signal)
         ↓
-Kelly Sizing  (regime + drawdown + signal-type multipliers)
+Gate Chain  (liquidity → spread → price → confluence → MTF → EV → routing)
         ↓
-Order Placement  (paper sim or live CLOB)
-        │
-        ├── Own signals → ZiSi UP/DOWN trades (RSI + momentum, 24/7)
-        └── Shadow Mules → Mule1 (PBot6) + Mule2 (Wallet2) copy-trade
+Kelly Sizing  (regime + drawdown + signal-type + Einstein multipliers, capped 2.8×)
+        ↓
+Execution
+  ├── Polymarket UP/DOWN  (RSI + momentum, 24/7, 3 windows/coin/cycle)
+  └── Kalshi macro events (15-min cycle + immediate rapid-fire trigger)
         ↓
 Position Monitor  (target / stop / signal-flip / max-hold exit)
         ↓
-ML Feedback  (label outcomes → train confidence model Phase 2)
+ML Feedback Loop
+  Outcome labeller → 695 labelled trades → Phase 2 logistic regression active
 ```
 
-Cycles run every **15 minutes** (96/day). UP/DOWN RSI trades run every cycle, 24/7.
+News cycles run every **15 minutes** (96/day). UP/DOWN RSI trades run every cycle, 24/7. The rapid-fire scanner fires extra Kalshi cycles within 90 seconds of breaking news.
 
 ---
 
@@ -38,45 +52,44 @@ Cycles run every **15 minutes** (96/day). UP/DOWN RSI trades run every cycle, 24
 ### Prerequisites
 - Python 3.11+
 - Node.js 18+
-- API keys (see `.env` setup below)
 
 ### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
-pip install vaderSentiment  # local fallback sentiment
+pip install vaderSentiment          # local fallback — no API key
 cd dashboard/backend && npm install && cd ../..
 ```
 
 ### 2. Configure `.env`
 
 ```env
-# Core trading APIs
+# Core trading
 KALSHI_API_KEY=your_key_id
 KALSHI_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
-NEWSAPI_KEY=your_key
+NEWSAPI_KEY=your_key                 # optional — RSS sources work without it
 
-# AI Sentiment chain (use as many as you have — first valid key wins)
-ANTHROPIC_API_KEY=your_key     # Claude — best quality
-GEMINI_API_KEY=your_key        # Free 1,500/day
-GROQ_API_KEY=your_key          # Free 14,400/day
-CEREBRAS_API_KEY=your_key      # Free tier
-MISTRAL_API_KEY=your_key       # Free tier
-OPENROUTER_API_KEY=your_key    # Free models
-TOGETHER_API_KEY=your_key      # $25 free credits
+# AI Sentiment chain (first valid key wins — all have free tiers)
+ANTHROPIC_API_KEY=your_key           # Claude — highest quality
+GEMINI_API_KEY=your_key             # Free 1,500 req/day
+GROQ_API_KEY=your_key               # Free 14,400 req/day
+CEREBRAS_API_KEY=your_key           # Free tier
+MISTRAL_API_KEY=your_key            # Free tier
+OPENROUTER_API_KEY=your_key         # Free open-source models
+TOGETHER_API_KEY=your_key           # $25 free credits
 
-# Telegram alerts
+# Telegram
 TELEGRAM_BOT_TOKEN=your_token
 TELEGRAM_CHAT_ID=your_chat_id
 
 # Bot settings
-BOT_MODE=paper_trading         # paper_trading | live_trading
+BOT_MODE=paper_trading              # paper_trading | live_trading
 ACCOUNT_BALANCE=100
 RISK_PER_TRADE_PERCENT=2
 SIGNAL_THRESHOLD=6
 ```
 
-### 3. Start
+### 3. Launch
 
 ```bash
 cd dashboard/backend
@@ -85,41 +98,87 @@ npm start
 
 Dashboard → **http://localhost:5000**
 
-The dashboard auto-spawns `python main.py`. Bot output streams to the terminal.
+The dashboard auto-spawns `python main.py`. Bot output streams live to the terminal.
 
 ---
 
 ## Features
 
-### ZiSi Own Trades
-- **UP/DOWN RSI cycle**: Monitors BTC, ETH, SOL Binance 1-min candles for RSI + momentum signals. Trades 3 windows per coin per cycle. Runs 24/7, unaffected by overnight dead-window.
-- **News sentiment trades**: Polymarket and Kalshi event matching from AI-scored news.
+### News Intelligence — 11 Sources
 
-### Shadow Mule System
-Copy-trades two expert wallets (Mule1 = PBot6, Mule2 = Wallet2) via Polymarket positions API:
-- Detects new positions every 15 seconds
-- If current window has < 20s left, enters **next available window** (same coin/direction)
-- Self-hedging dedup: if Mule2 enters both UP and DOWN on same window, only mirrors one
-- Per-mule toggle from dashboard without restarting the bot
+| Source | Type | Key Required |
+|---|---|---|
+| CoinTelegraph | RSS | No |
+| CoinDesk | RSS | No |
+| Decrypt | RSS | No |
+| CryptoSlate | RSS | No |
+| CryptoPanic | Free API | No |
+| Reddit r/CryptoCurrency | JSON API | No |
+| Reddit r/Bitcoin | JSON API | No |
+| Reddit r/ethereum | JSON API | No |
+| Google News (BTC/ETH/Macro) | RSS | No |
+| NewsAPI | REST | Optional |
+| Binance Funding Rate | REST | No |
 
-### Sentiment Cascade (10 levels)
-Priority: Claude → Gemini Flash → Groq Llama → Cerebras → Mistral → OpenRouter → Together → FinBERT → VADER → Keyword
+### Rapid-Fire Breaking News Scanner
 
-### ML Self-Learning
-Phase 1: Gemini confidence deflated 0.65× while collecting 50 labelled outcomes.
-Phase 2 (auto-activates at 50): Trained logistic regression replaces raw Gemini confidence.
+A background daemon thread runs every **90 seconds** harvesting from all free sources. When a headline matches 2+ extreme-confidence keywords (ETF approval, crash, hack, record high, etc.) for a tracked coin, it queues an immediate Kalshi execution cycle — **ZiSi reacts to breaking news within 90 seconds** instead of waiting up to 15 minutes.
+
+### UP/DOWN RSI Cycle (24/7)
+
+Monitors BTC, ETH, SOL via Binance 1-min candles. Trades up to 3 windows per coin per cycle using RSI + momentum signals. Runs uninterrupted through overnight dead windows.
+
+### Sentiment Cascade — 10 Levels
+
+```
+P1  Claude Sonnet      — premium, highest quality
+P2  Gemini 2.0 Flash   — free, 1,500/day, 1h backoff on quota
+P3  Groq Llama-70B     — free, 14,400/day
+P4  Cerebras Llama-70B — free tier
+P5  Mistral Small      — free tier
+P6  OpenRouter (Llama/Qwen/Phi — free models)
+P7  Together Llama-70B — $25 free credits
+P8  FinBERT            — local, financial-domain BERT
+P9  VADER              — local, no install beyond pip
+P10 Keyword fallback   — zero latency, always available
+```
+
+### ML Self-Learning (Phase 2 Active)
+
+- **Phase 1** (< 50 labelled trades): Gemini confidence × 0.65 deflation
+- **Phase 2** (≥ 50): Logistic regression trained on actual trade outcomes. Blended 50% Gemini + 50% model probability. Auto-activates on startup if 50+ labelled examples exist.
+- **695 labelled trades** as of May 2026. Val accuracy and ROC-AUC shown on dashboard.
+
+### 5 Einstein Position Sizing Advancements
+
+| Module | Signal | Effect |
+|---|---|---|
+| Fear & Greed | Extreme Fear + UP | 1.20× size |
+| Directional Kelly | Per-direction historical WR | Up to 1.60× or down to 0.50× |
+| UTC Hour Edge | Self-learned hourly WR | 1.15× / 0.85× |
+| Decay Detector | Rolling 30-trade coin WR | 0.80× when WR < 48% |
+| Volume Surge | vol24hr > 2× liquidity | 1.15× |
+
+All multipliers stack, capped at **2.8× base Kelly**.
+
+### Kalshi Macro Execution
+
+Trades 6 event categories: politics, economics, sports, financials, crypto, technology. Paper positions close after **30 minutes** with confidence-weighted simulation. Cross-cycle dedup prevents re-entering the same market. Open positions survive bot restarts via `_load_open_from_disk()`.
 
 ---
 
 ## Dashboard
 
+Real-time via SSE (Server-Sent Events) + 5s polling fallback.
+
 | Component | Refresh | Description |
 |---|---|---|
-| Bot Status strip | 5s | Balance, P&L, trades, win rate, uptime |
-| Mule controls | 5s | Toggle Mule1/Mule2 shadow copy-trading live |
-| Positions | 10s | Open + closed with unrealized P&L |
+| Bot Status strip | 5s SSE | Balance, P&L, trades, win rate, uptime |
+| Live Trade Feed | Instant SSE | Last 15 trades with flash animation |
+| Positions | 5s | Open + closed with timestamps, unrealized P&L |
 | Equity Curve | 15s | Balance over time |
-| ML Calibration | 15s | Training progress, val accuracy, ROC-AUC |
+| ML Calibration | 15s | Training samples, val accuracy, ROC-AUC, phase |
+| ZiSi Performance | 15s | WR, avg win/loss, all-time stats |
 | Signal Analytics | 15s | By coin, by signal strength |
 
 ### Dashboard API
@@ -127,104 +186,106 @@ Phase 2 (auto-activates at 50): Trained logistic regression replaces raw Gemini 
 | Endpoint | Description |
 |---|---|
 | `GET /api/positions` | Active + closed positions + summary |
-| `GET /api/health` | Full bot health, metrics, signal analytics |
+| `GET /api/events` | SSE stream: balance, trades, heartbeat |
+| `GET /api/health` | Full bot health + signal analytics |
 | `GET /api/equity` | Balance time-series |
 | `GET /api/system-health` | ML status, diagnostics |
-| `GET /api/control/mules` | Mule enabled/disabled status |
-| `POST /api/control/mule/:id/enable` | Enable mule (id = mule1 \| mule2) |
-| `POST /api/control/mule/:id/disable` | Disable mule |
+| `GET /api/performance` | ZiSi trade performance stats |
 | `POST /api/control/pause` | Pause signal processing |
 | `POST /api/control/resume` | Resume signal processing |
 
+### Telegram Commands
+
+| Command | Description |
+|---|---|
+| `/status` | Live balance, P&L, win rate, open positions |
+| `/pnl` | Breakdown by market (Polymarket vs Kalshi) |
+| `/positions` | All open positions |
+| `/performance` | By coin and direction |
+| `/help` | Command list |
+
 ---
 
-## Clean Slate Reset
+## Utilities
+
+### Clean Slate Reset
 
 ```bash
 python clean_slate.py              # interactive
-python clean_slate.py --force      # non-interactive
-python clean_slate.py --balance 200  # different starting balance
+python clean_slate.py --force      # skip confirmation
+python clean_slate.py --balance 200
 ```
 
-Resets: `positions_state.json`, `account_state.json`, `system_alerts.json`, `signal_queue.json`
+Resets: `positions_state.json`, `account_state.json`, `system_alerts.json`, `signal_queue.json`  
 Preserves: `zisi_local_trades.jsonl`, `ml_labelled_outcomes.jsonl`, `balance_history.jsonl`
 
 ---
 
-## Configuration
-
-| Variable | Default | Effect |
-|---|---|---|
-| `ACCOUNT_BALANCE` | 100 | Starting bankroll |
-| `RISK_PER_TRADE_PERCENT` | 2 | Max % of balance per trade |
-| `SIGNAL_THRESHOLD` | 6 | Min confidence (0–10) to process |
-| `BOT_MODE` | paper_trading | `paper_trading` or `live_trading` |
-| `MIN_EVENT_LIQUIDITY_USD` | 1000 | Min Polymarket market liquidity |
-| `MAX_SIMULTANEOUS_TRADES` | 100 | Open position cap |
-
----
-
-## Log Reference
-
-```
-[PAPER]          Paper trade filled (1 line per trade)
-[EXIT] ✅ WIN    Trade closed with profit
-[EXIT] ❌ LOSS   Trade closed with loss
-[UPDOWN]         UP/DOWN RSI cycle result
-[SHADOW] ✅      Shadow trade opened / mirrored / next-window
-[SHADOW] ✅ WIN  Shadow trade resolved
-[CYCLE-SUMMARY]  End-of-cycle: signals=N placed=M skipped=K
-[HEALTH]         Background health check
-[RECOVERY]       Startup reconciliation
-Heartbeat →      Balance + PnL at cycle end
-```
-
----
-
-## Files
+## Repository Structure
 
 ```
 ZiSi_Bot/
-├── main.py                     15-min cycle loop + orchestration
+├── main.py                     Main loop (15-min cycles + rapid-fire scanner)
 ├── trader.py                   Polymarket paper/live execution
-├── updown_trader.py            24/7 RSI + momentum UP/DOWN cycle
-├── shadow_mode.py              Mule copy-trade engine
+├── updown_trader.py            24/7 RSI UP/DOWN cycle + Einstein advancements
+├── rss_fetcher.py              Free multi-source news harvester (new)
 ├── sentiment_analyzer.py       10-level AI sentiment cascade
 ├── event_matcher.py            Polymarket event matching
 ├── signal_router.py            Platform routing (Poly vs Kalshi)
 ├── risk_manager.py             Kelly sizing + gate chain
-├── ml_pipeline.py              Self-learning outcome labeller + trainer
+├── ml_pipeline.py              Outcome labeller + logistic regression trainer
 ├── state_manager.py            Account balance + heartbeat persistence
 ├── health_monitor.py           90s background health checks
 ├── clean_slate.py              State reset utility
+├── data_fetcher.py             Primary news + price fetching
 ├── kalshi/
 │   ├── auth.py                 RSA-PSS signature
-│   ├── fetcher.py              12-category market fetch
+│   ├── fetcher.py              6-category market fetch
 │   ├── matcher.py              Signal → Kalshi matching
-│   └── trader.py               Kalshi execution
+│   └── trader.py               Execution + position lifecycle
 └── dashboard/
-    ├── backend/server.js       Express API + process manager
+    ├── backend/
+    │   ├── server.js           Express API + bot process manager
+    │   └── routes/             REST endpoints + SSE event stream
     └── frontend/src/           React dashboard (Vite)
+        └── components/
+            ├── BotStatus.jsx   Live balance strip
+            ├── Positions.jsx   Active + closed with timestamps
+            ├── LiveTradeFeed.jsx  Real-time trade feed (SSE)
+            ├── EquityChart.jsx
+            ├── MLStatus.jsx
+            └── PerformanceCard.jsx
 ```
+
+---
+
+## GitHub Actions
+
+Two CI workflows run on every push and pull request to `main`:
+
+| Workflow | Trigger | What it checks |
+|---|---|---|
+| `python-lint.yml` | push / PR | Syntax-checks all `.py` files with `ast.parse`. Flags import errors. |
+| `frontend-build.yml` | push / PR | `npm ci` + `npm run build` in `dashboard/frontend`. Catches JSX/CSS errors. |
 
 ---
 
 ## Troubleshooting
 
-**No trades for several cycles**
-Check `[CYCLE-SUMMARY]` — it shows which gate rejects most signals. Common: wide spreads, no matching events.
+**No trades for several cycles**  
+Check `[CYCLE-SUMMARY]` — shows which gate rejects most signals. Common: wide spreads, no matching events, dead-hour filter active (1–4 AM UTC).
 
-**UP/DOWN trades not executing**
-The RSI cycle runs at `:00` and `:30` minute marks. Check `[UPDOWN]` in logs for RSI values and market availability.
+**Kalshi not closing trades**  
+Open positions are restored from disk on restart via `_load_open_from_disk()`. Hold time is 30 minutes. Check `[KALSHI-CLOSE]` in logs after 30 min.
 
-**Shadow mule not trading**
-Check `shadow_state.json` exists. Toggle the mule OFF then ON from the dashboard to reset. Verify target wallets have active UP/DOWN positions.
+**Dashboard shows old win rate**  
+Win rate recomputes from `positions_state.json` closed array. After mule-history removal it will reflect ZiSi-only trades (72.9%).
 
-**Dashboard shows 0 closed trades**
-This means no trades have resolved yet in this session. Shadow trades resolve within 5–15 min after expiry. ZiSi's own UP/DOWN trades resolve at 30-min hold time.
+**ML still Phase 1**  
+`ensure_phase2_activated()` runs at startup. If `ml_labelled_outcomes.jsonl` has 50+ lines and `lr_model.pkl` doesn't exist, training runs immediately. Check `[ML-TRAIN]` in startup logs.
 
-**Balance not updating**
-Balance updates on each trade close. The heartbeat (every cycle) recomputes from the in-memory balance — if you see a discrepancy, wait for the next cycle.
+**Rapid scanner not firing**  
+`rapid_fire_queue.json` is created when a spike signal is detected. Check `[RAPID]` in logs. Scanner runs every 90s — check for RSS fetch failures under `[RSS]`.
 
-**Ctrl+C / shutdown**
-The bot responds immediately to Ctrl+C (uses threading.Event, not time.sleep). Shadow monitor stops cleanly. Give it 2–3 seconds to finish the current write.
+**Ctrl+C / shutdown**  
+Uses `threading.Event` — responds immediately. Shadow monitor + rapid scanner stop cleanly. Give 2–3 seconds for final disk writes.

@@ -5,11 +5,9 @@ Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env.
 
 Commands:
   /status       — balance, P&L, positions, uptime
+  /pnl          — P&L breakdown with win rate
   /trades       — last 5 closed trades
-  /performance  — full stats: by coin, by mule, by direction
-  /mule         — show mule status
-  /mule on 1    — enable Mule1
-  /mule off 2   — disable Mule2
+  /performance  — full stats: by coin and direction
   /pause        — pause the bot
   /resume       — resume / override circuit breaker
   /circuit      — circuit breaker status
@@ -158,37 +156,29 @@ def _format_trades() -> str:
 
 
 def _format_performance() -> str:
-    """Detailed breakdown: own trades + shadow mules."""
+    """Detailed breakdown: by coin and direction."""
     state   = _get_state()
     pos     = _get_positions()
-    shadow  = _get_shadow_state()
 
     balance  = state.get("balance", 100.0)
     pnl      = state.get("pnl", 0.0)
     summary  = pos.get("summary", {})
 
-    # Own trades
     wins     = summary.get("win_count", 0)
     losses   = summary.get("loss_count", 0)
     total    = wins + losses
     wr_str   = f"{100*wins//max(1,total)}%" if total > 0 else "—"
     realized = summary.get("realized_pnl", 0.0)
 
-    # Shadow trades
-    shadow_trades = shadow.get("shadow_trades", [])
-    s_wins   = sum(1 for t in shadow_trades if t.get("status") == "WIN")
-    s_losses = sum(1 for t in shadow_trades if t.get("status") == "LOSS")
-    s_total  = s_wins + s_losses
-    s_wr     = f"{100*s_wins//max(1,s_total)}%" if s_total > 0 else "—"
-
-    # Coin breakdown from closed positions
-    closed   = pos.get("closed", {})
+    # Coin breakdown + direction breakdown from closed positions
+    closed = pos.get("closed", [])
     coin_stats: dict = {}
-    for trade in closed.values():
+    dir_stats: dict  = {"YES": [0, 0], "NO": [0, 0]}  # [wins, total]
+    for trade in (closed if isinstance(closed, list) else []):
         title  = str(trade.get("event_title", ""))
-        profit = float(trade.get("profit", 0) or 0)
+        profit = float(trade.get("realized_pnl") or trade.get("profit") or 0)
         coin   = "OTHER"
-        for c in ("BTC", "ETH", "SOL"):
+        for c in ("BTC", "ETH", "SOL", "XRP"):
             if c in title.upper():
                 coin = c
                 break
@@ -197,6 +187,11 @@ def _format_performance() -> str:
             s["w"] += 1
         else:
             s["l"] += 1
+        d = str(trade.get("direction", "YES")).upper()
+        if d in dir_stats:
+            dir_stats[d][1] += 1
+            if profit > 0:
+                dir_stats[d][0] += 1
 
     coin_lines = []
     for coin, cs in sorted(coin_stats.items()):
@@ -206,51 +201,71 @@ def _format_performance() -> str:
 
     coin_section = "\n".join(coin_lines) if coin_lines else "  (no data yet)"
 
+    dir_lines = []
+    for d, (dw, dt) in dir_stats.items():
+        if dt > 0:
+            dir_lines.append(f"  {d}: W{dw}/L{dt-dw} ({100*dw//max(1,dt)}%)")
+    dir_section = "\n".join(dir_lines) if dir_lines else "  (no data yet)"
+
     lines = [
         f"*ZiSi Performance*",
         f"```",
         f"Balance:   ${balance:.2f}  (P&L: ${pnl:+.2f})",
-        f"",
-        f"Own Trades:",
-        f"  W/L:     {wins}/{losses}  Win rate: {wr_str}",
-        f"  P&L:     ${realized:+.4f}",
+        f"Trades:    {total}   Win rate: {wr_str}",
+        f"Realized:  ${realized:+.4f}",
         f"",
         f"By Coin:",
         coin_section,
         f"",
-        f"Shadow Mules:",
-        f"  W/L:     {s_wins}/{s_losses}  Win rate: {s_wr}",
-        f"  Total:   {s_total} trades",
+        f"By Direction:",
+        dir_section,
         f"```",
     ]
     return "\n".join(lines)
 
 
-def _format_mule_status() -> str:
-    cfg = _get_shadow_config()
-    m1  = cfg.get("PBOT6",   {}).get("enabled", True)
-    m2  = cfg.get("WALLET2", {}).get("enabled", True)
 
-    shadow = _get_shadow_state()
-    trades = shadow.get("shadow_trades", [])
 
-    def _mule_stats(tag: str) -> str:
-        mts = [t for t in trades if t.get("label") == tag]
-        w   = sum(1 for t in mts if t.get("status") == "WIN")
-        l   = sum(1 for t in mts if t.get("status") == "LOSS")
-        n   = w + l
-        wr  = f"{100*w//max(1,n)}%" if n > 0 else "—"
-        return f"W{w}/L{l} ({wr})"
+def _format_pnl_breakdown() -> str:
+    """/pnl — ZiSi P&L by market (Polymarket vs Kalshi) with win rates."""
+    try:
+        pos_file = _BOT_ROOT / "positions_state.json"
+        if not pos_file.exists():
+            return "No positions data available."
+        data = json.loads(pos_file.read_text(encoding="utf-8"))
+        closed = data.get("closed", [])
+    except Exception:
+        return "Error reading positions data."
 
+    state = _get_state()
+    balance   = float(state.get("balance", 100.0))
+    total_pnl = float(state.get("pnl", 0.0))
+
+    markets: dict = {}
+    for t in (closed if isinstance(closed, list) else []):
+        mkt = str(t.get("market", "POLYMARKET"))
+        pnl = float(t.get("realized_pnl") or t.get("profit") or 0)
+        won = pnl > 0
+        if mkt not in markets:
+            markets[mkt] = []
+        markets[mkt].append((pnl, won))
+
+    lines = []
+    for mkt, trades in sorted(markets.items()):
+        n    = len(trades)
+        wins = sum(1 for _, w in trades if w)
+        ep   = sum(p for p, _ in trades)
+        wr   = f"{100*wins//max(1,n)}%" if n > 0 else "—"
+        lines.append(f"{mkt:<12} {n:>4} trades  {wins}W/{n-wins}L  ({wr})  ${ep:+.2f}")
+
+    summary_str = "\n".join(lines) if lines else "No closed trades yet."
     return (
-        f"*Shadow Mule Status*\n"
+        f"📈 *P&L Breakdown*\n"
         f"```\n"
-        f"Mule1 (PBot6):   {'ON ✅' if m1 else 'OFF ❌'}  {_mule_stats('PBOT6')}\n"
-        f"Mule2 (Wallet2): {'ON ✅' if m2 else 'OFF ❌'}  {_mule_stats('WALLET2')}\n"
-        f"```\n"
-        f"Toggle:\n"
-        f"/mule on 1 or /mule off 1  — Mule1\n"
-        f"/mule on 2 or /mule off 2  — Mule2"
+        f"Balance:   ${balance:.2f}  (Total P&L: ${total_pnl:+.2f})\n"
+        f"─────────────────────────────────────\n"
+        f"{summary_str}\n"
+        f"```"
     )
 
 
@@ -278,26 +293,6 @@ def _format_daily_summary() -> str:
     )
 
 
-# ── Toggle helpers ────────────────────────────────────────────────────────────
-
-def _set_mule(idx: str, enabled: bool) -> str:
-    """Write shadow_config.json to enable/disable a mule."""
-    label_map = {"1": "PBOT6", "2": "WALLET2"}
-    name_map  = {"1": "Mule1", "2": "Mule2"}
-    label = label_map.get(idx)
-    if not label:
-        return f"Unknown mule index: {idx}. Use 1 or 2."
-    try:
-        config_file = _BOT_ROOT / "shadow_config.json"
-        cfg: dict = {}
-        if config_file.exists():
-            cfg = json.loads(config_file.read_text(encoding="utf-8"))
-        cfg[label] = {"enabled": enabled}
-        config_file.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-        action = "enabled ✅" if enabled else "disabled ❌"
-        return f"{name_map[idx]} ({label}) {action}."
-    except Exception as exc:
-        return f"Error updating mule config: {exc}"
 
 
 # ── Transport ─────────────────────────────────────────────────────────────────
@@ -345,22 +340,8 @@ def _handle_command(text: str, chat_id: str) -> None:
     elif cmd == "/performance":
         _send_message(_format_performance())
 
-    elif cmd == "/mule":
-        if len(parts) == 1:
-            _send_message(_format_mule_status())
-        elif len(parts) == 3 and parts[1] in ("on", "off") and parts[2] in ("1", "2"):
-            enabled = parts[1] == "on"
-            result  = _set_mule(parts[2], enabled)
-            _send_message(result)
-        else:
-            _send_message(
-                "Usage:\n"
-                "/mule          — show status\n"
-                "/mule on 1     — enable Mule1\n"
-                "/mule off 1    — disable Mule1\n"
-                "/mule on 2     — enable Mule2\n"
-                "/mule off 2    — disable Mule2"
-            )
+    elif cmd == "/pnl":
+        _send_message(_format_pnl_breakdown())
 
     elif cmd == "/pause":
         paused_flag.touch()
@@ -390,9 +371,9 @@ def _handle_command(text: str, chat_id: str) -> None:
         _send_message(
             "*ZiSi Commands*\n"
             "/status       — Balance, P&L, positions\n"
+            "/pnl          — P&L breakdown by market (Poly/Kalshi)\n"
             "/trades       — Last 5 closed trades\n"
-            "/performance  — Full stats by coin & mule\n"
-            "/mule         — Shadow mule status + toggles\n"
+            "/performance  — Full stats by coin & direction\n"
             "/circuit      — Circuit breaker status\n"
             "/pause        — Pause trading\n"
             "/resume       — Resume trading\n"
@@ -501,27 +482,76 @@ def notify_trade_executed(event_title: str, direction: str, size: float,
     if not _ENABLED:
         return
     icon = "🟢" if direction.upper() in ("UP", "YES", "BULLISH") else "🔴"
+
+    # Pull live balance for context
+    bal_line = ""
+    try:
+        import json, os
+        _sf = os.path.join(os.path.dirname(__file__), "account_state.json")
+        _st = json.loads(open(_sf).read())
+        _bal = float(_st.get("balance", 0))
+        _tpnl = float(_st.get("pnl", 0))
+        bal_line = f"Balance: ${_bal:.2f}  P&L: ${_tpnl:+.2f}\n"
+    except Exception:
+        pass
+
     _send_message(
         f"{icon} *Trade — {market}*\n"
         f"```\n"
         f"Event: {event_title[:50]}\n"
         f"Side:  {direction}\n"
         f"Size:  ${size:.2f}  Conf: {confidence:.2f}\n"
+        f"{bal_line}"
         f"```"
     )
 
 
 def notify_trade_closed(event_title: str, pnl: float, pnl_pct: float,
-                         hold_min: float, market: str = "POLYMARKET") -> None:
+                         hold_min: float, market: str = "POLYMARKET",
+                         balance: float = None, total_pnl: float = None) -> None:
     if not _ENABLED:
         return
     icon    = "✅" if pnl > 0 else "❌"
     outcome = "WIN" if pnl > 0 else "LOSS"
+
+    # Pull live balance/total_pnl/win-rate from state files if not supplied by caller
+    win_line = ""
+    if balance is None or total_pnl is None:
+        try:
+            import json, os
+            _sf = os.path.join(os.path.dirname(__file__), "account_state.json")
+            _st = json.loads(open(_sf).read())
+            if balance is None:
+                balance = float(_st.get("balance", 0))
+            if total_pnl is None:
+                total_pnl = float(_st.get("pnl", 0))
+        except Exception:
+            pass
+    try:
+        import json, os
+        _pf = os.path.join(os.path.dirname(__file__), "positions_state.json")
+        _ps = json.loads(open(_pf).read())
+        _sum = _ps.get("summary", {})
+        _wins = int(_sum.get("win_count", 0))
+        _losses = int(_sum.get("loss_count", 0))
+        _total_closed = _wins + _losses
+        if _total_closed > 0:
+            _wr_pct = round(_wins / _total_closed * 100)
+            win_line = f"Win Rate: {_wins}/{_total_closed}  ({_wr_pct}%)\n"
+    except Exception:
+        pass
+
+    bal_line = f"Balance: ${balance:.2f}\n" if balance is not None else ""
+    pnl_line = f"Total P&L: ${total_pnl:+.2f}\n" if total_pnl is not None else ""
+
     _send_message(
         f"{icon} *Closed — {market}* ({outcome})\n"
         f"```\n"
         f"Event: {event_title[:50]}\n"
-        f"P&L:   ${pnl:+.4f}  ({pnl_pct:+.1f}%)\n"
+        f"Trade P&L: ${pnl:+.4f}  ({pnl_pct:+.1f}%)\n"
         f"Held:  {hold_min:.0f} min\n"
+        f"{bal_line}"
+        f"{pnl_line}"
+        f"{win_line}"
         f"```"
     )

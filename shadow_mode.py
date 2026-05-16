@@ -49,13 +49,17 @@ POLY_POSITIONS_API = "https://data-api.polymarket.com/positions"
 POLY_GAMMA_API     = "https://gamma-api.polymarket.com"
 POLY_CLOB_API      = "https://clob.polymarket.com"
 
-# Kelly fraction for shadow trades (conservative — we're copy-trading, not originating signal)
-SHADOW_KELLY_FRACTION = 0.015   # 1.5% of balance per shadow trade
+# Kelly fraction for shadow trades (conservative — we're copy-trading, not originating signal).
+# Cap reduced from $5 to $3 to dampen P&L volatility from shadow binary outcomes.
+SHADOW_KELLY_FRACTION = 0.012   # 1.2% of balance per shadow trade
 SHADOW_MIN_TRADE_USD  = 1.00
-SHADOW_MAX_TRADE_USD  = 5.00
+SHADOW_MAX_TRADE_USD  = 3.00
 
-# Minimum seconds remaining in the market window before we'll shadow
-MIN_SECONDS_REMAINING = 20      # enter if >= 20s left — PBot often enters in last minute of 5-min window
+# Minimum seconds remaining in the market window before we'll shadow.
+# 45s gives time to detect, size, and enter before the window closes.
+# Late entries (< 45s remaining) have poorer expected value because price
+# often already reflects consensus direction by then.
+MIN_SECONDS_REMAINING = 45
 
 # Auto-disable mule when win rate falls below threshold (after MIN_TRADES resolved)
 AUTO_DISABLE_THRESHOLD  = 0.40   # 40% win rate floor
@@ -67,9 +71,10 @@ _per_mule_stats: dict = {
     "WALLET2": {"wins": 0, "losses": 0, "consec_losses": 0},
 }
 
-# Consecutive-loss pause: if a mule hits this many in a row, skip it for CONSEC_PAUSE_SECS
-CONSEC_LOSS_LIMIT  = 5
-CONSEC_PAUSE_SECS  = 30 * 60   # 30-minute cooldown
+# Consecutive-loss pause: if a mule hits this many in a row, skip it for CONSEC_PAUSE_SECS.
+# Reduced from 5 to 3 — pause faster when the mule is in a bad streak.
+CONSEC_LOSS_LIMIT  = 3
+CONSEC_PAUSE_SECS  = 45 * 60   # 45-minute cooldown (increased from 30 to let market settle)
 _mule_paused_until: dict = {"PBOT6": 0, "WALLET2": 0}
 
 # Persistent state file to survive restarts
@@ -77,6 +82,85 @@ _STATE_FILE = Path(__file__).parent / "shadow_state.json"
 
 # Global enable flag — set from main.py via SHADOW_MODE config
 _shadow_enabled = True
+
+# ── Mule Signal Store (intelligence-only — no execution) ─────────────────────
+# Mules no longer place paper trades. Instead, every observed mule position is
+# recorded here so updown_trader.py can query mule direction as a signal input.
+# Thread-safe; entries expire after MULE_SIGNAL_TTL_SECS seconds.
+_mule_signals: list = []
+_mule_signal_lock = threading.Lock()
+MULE_SIGNAL_TTL_SECS = 300  # 5-minute signal freshness window
+
+
+def record_mule_signal(label: str, coin: str, direction: str, slug: str,
+                        entry_price: float, expiry_ts: int) -> None:
+    """Record a mule's observed market position as a signal (no trade placed)."""
+    with _mule_signal_lock:
+        _mule_signals.append({
+            "label":      label,
+            "mule_name":  MULE_NAMES.get(label, label),
+            "coin":       coin,
+            "direction":  direction.upper(),
+            "slug":       slug,
+            "entry_price": entry_price,
+            "expiry_ts":  expiry_ts,
+            "ts":         int(time.time()),
+        })
+        # Keep last 100 signals
+        del _mule_signals[:-100]
+
+
+def get_mule_signals(coin: str = None, max_age_secs: int = MULE_SIGNAL_TTL_SECS) -> list:
+    """Return recent mule signals, optionally filtered by coin."""
+    cutoff = int(time.time()) - max_age_secs
+    with _mule_signal_lock:
+        sigs = [s for s in _mule_signals if s["ts"] >= cutoff]
+    if coin:
+        sigs = [s for s in sigs if s.get("coin", "").upper() == coin.upper()]
+    return sigs
+
+
+# ── Self-Hedging Conflict Detector ────────────────────────────────────────────
+# Tracks which mule is going which direction on each active event slug.
+# When Mule1 and Mule2 disagree → ZiSi skips that window (signal ambiguity).
+_slug_mule_directions: dict = {}   # slug → {label: "UP"/"DOWN"}
+_slug_expiry_ts: dict = {}         # slug → expiry unix timestamp
+_conflicted_event_slugs: set = set()
+
+
+def get_conflicted_slugs() -> set:
+    """Return set of event slugs where Mule1 and Mule2 are in directional conflict."""
+    _cleanup_expired_conflict_slugs()
+    return set(_conflicted_event_slugs)
+
+
+def _cleanup_expired_conflict_slugs() -> None:
+    now = int(time.time())
+    expired = [s for s, ts in _slug_expiry_ts.items() if ts < now - 120]
+    for s in expired:
+        _slug_mule_directions.pop(s, None)
+        _slug_expiry_ts.pop(s, None)
+        _conflicted_event_slugs.discard(s)
+
+
+def _register_mule_direction(slug: str, label: str, direction: str, expiry_ts: int) -> None:
+    """Record a mule's direction for a slug and detect cross-mule conflicts."""
+    if not slug:
+        return
+    if slug not in _slug_mule_directions:
+        _slug_mule_directions[slug] = {}
+    _slug_mule_directions[slug][label] = direction
+    _slug_expiry_ts[slug] = expiry_ts
+
+    dirs = list(_slug_mule_directions[slug].values())
+    if len(_slug_mule_directions[slug]) >= 2 and len(set(dirs)) > 1:
+        if slug not in _conflicted_event_slugs:
+            _conflicted_event_slugs.add(slug)
+            log.info(
+                "[SHADOW] ⚠️ MULE CONFLICT on %s → %s | ZiSi will skip this window",
+                slug[:45],
+                {MULE_NAMES.get(k, k): v for k, v in _slug_mule_directions[slug].items()},
+            )
 
 
 def set_shadow_enabled(enabled: bool) -> None:
@@ -339,19 +423,21 @@ class ShadowTradeRecord:
 
 class ShadowModeMonitor:
     """
-    Background thread that monitors target wallets and mirrors their trades.
-    Plugs into trader.py's paper position system via the provided callbacks.
+    Background thread that monitors target wallets as intelligence feeds.
+
+    Mules no longer execute paper trades. Instead, every observed mule position
+    is recorded in the module-level _mule_signals store. updown_trader.py reads
+    this store to use mule direction as a confidence signal. Conflict detection
+    (Mule1 vs Mule2 disagreeing) remains fully active.
     """
 
     def __init__(
         self,
-        place_paper_trade_fn,
-        close_paper_trade_fn,
-        get_balance_fn,
+        place_paper_trade_fn=None,   # kept for API compatibility — no longer called
+        close_paper_trade_fn=None,   # kept for API compatibility — no longer called
+        get_balance_fn=None,
         poll_interval: int = 15,
     ):
-        self.place_paper_trade = place_paper_trade_fn
-        self.close_paper_trade = close_paper_trade_fn
         self.get_balance = get_balance_fn
         self.poll_interval = poll_interval
 
@@ -382,373 +468,83 @@ class ShadowModeMonitor:
         _save_state({"seen_txs": seen_list, "shadow_trades": trades_list})
 
     def _process_new_trade(self, label: str, trade: dict) -> None:
-        """Evaluate one detected trade from a target wallet. Mirror if valid."""
+        """Record a mule's observed trade as a signal input. No paper trade placed."""
         if not _shadow_enabled:
             return
-        if not _mule_enabled.get(label, True):
+
+        slug    = trade.get("eventSlug", trade.get("slug", ""))
+        title   = trade.get("title", "")
+        outcome = trade.get("outcome", "")
+        price   = float(trade.get("price", 0.5))
+
+        if not outcome:
             return
-
-        tx_hash    = trade.get("transactionHash", "")
-        condition  = trade.get("conditionId", "")
-        slug       = trade.get("eventSlug", trade.get("slug", ""))
-        title      = trade.get("title", "")
-        outcome    = trade.get("outcome", "")      # 'Up' or 'Down'
-        tgt_price  = float(trade.get("price", 0.5))
-        tgt_size   = float(trade.get("size", 0))
-        trade_ts   = int(trade.get("timestamp", 0))
-
-        if not condition or not outcome:
-            return
-
         parsed = parse_updown_slug(slug)
         if not parsed:
-            log.debug("[SHADOW] Non-updown trade — skipping: %s", title[:50])
             return
 
         now_ts = int(time.time())
         expiry_ts = parsed["expiry_ts"]
         secs_remaining = expiry_ts - now_ts
+        direction = outcome.lower()
 
-        if secs_remaining < MIN_SECONDS_REMAINING:
-            log.info(
-                "[SHADOW] %s | %s | %ds remaining < %ds min — too late to enter",
-                label, title[:55], secs_remaining, MIN_SECONDS_REMAINING,
-            )
-            return
+        # Register for conflict detection (still fully active)
+        _register_mule_direction(slug, label, direction.upper(), expiry_ts)
 
-        # Fetch live price (target may have entered 60+ seconds ago; price moved)
-        live = _fetch_market_current_price(condition)
-        if live is None:
-            log.warning("[SHADOW] No live price for %s — skipping", condition[:16])
-            return
-
-        direction = outcome.lower()  # 'up' or 'down'
-        if direction == "up":
-            entry_price = live["up_price"]
-        else:
-            entry_price = live["down_price"]
-
-        # Skip if price has moved too far from entry (>15 cents) — stale signal
-        if abs(entry_price - tgt_price) > 0.15:
-            log.info(
-                "[SHADOW] %s | %s | Price drift too large (was %.2f, now %.2f) — skipping",
-                label, title[:55], tgt_price, entry_price,
-            )
-            return
-
-        # Don't enter if price is already near-resolved
-        if entry_price >= 0.90 or entry_price <= 0.10:
-            log.info(
-                "[SHADOW] %s | %s | Price %.2f near-resolved — no edge",
-                label, title[:55], entry_price,
-            )
-            return
-
-        # Kelly sizing: conservative fraction of current balance
-        balance = self.get_balance()
-        raw_size = balance * SHADOW_KELLY_FRACTION
-        position_size = round(max(SHADOW_MIN_TRADE_USD, min(SHADOW_MAX_TRADE_USD, raw_size)), 2)
-
-        # Place paper trade
-        order = self.place_paper_trade(
-            event_id=condition,
-            market_id=condition,
-            amount_dollars=position_size,
-            direction=direction.upper(),
-            entry_price=entry_price,
-            event_title=f"[SHADOW:{MULE_NAMES.get(label, label)}] {title}",
+        # Store as signal for updown_trader.py to query
+        record_mule_signal(
+            label=label, coin=parsed["coin"], direction=direction,
+            slug=slug, entry_price=price, expiry_ts=expiry_ts,
         )
-
-        if not order:
-            log.warning("[SHADOW] Paper trade placement failed for %s", title[:50])
-            return
-
-        expiry_dt = datetime.fromtimestamp(expiry_ts, tz=timezone.utc)
-        rec = ShadowTradeRecord(
-            order_id=order["order_id"],
-            label=label,
-            condition_id=condition,
-            event_slug=slug,
-            title=title,
-            direction=direction.upper(),
-            entry_price=entry_price,
-            position_size=position_size,
-            coin=parsed["coin"],
-            duration_min=parsed["duration_min"],
-            expiry_ts=expiry_ts,
-            expiry_time=expiry_dt,
-            entry_time=datetime.now(timezone.utc),
-            status="OPEN",
-        )
-        self._active_trades[order["order_id"]] = rec
         self.total_shadowed += 1
-        self._persist()
 
+        mule_name = MULE_NAMES.get(label, label)
         log.info(
-            "[SHADOW] ✅ TRADE PLACED | %s | %s %s @ %.3f | $%.2f | ~%ds remaining | src=%s",
+            "[SHADOW] 📡 SIGNAL | %s → %s %s @ %.3f | ~%ds | src=%s",
             title[:55], direction.upper(), parsed["coin"],
-            entry_price, position_size, secs_remaining, MULE_NAMES.get(label, label),
+            price, secs_remaining, mule_name,
         )
-
-        # Telegram alert
-        try:
-            from telegram_bot import send_alert as _tg
-            mule_name = MULE_NAMES.get(label, label)
-            dur_str = f"{parsed['duration_min']}min"
-            _tg(
-                f"👁 Shadow Trade — {mule_name}\n"
-                f"Market: {title[:60]}\n"
-                f"Direction: {direction.upper()} {parsed['coin']} ({dur_str})\n"
-                f"Price: {entry_price:.3f} | Size: ${position_size:.2f}\n"
-                f"Window closes: {expiry_dt.strftime('%H:%M:%S')} UTC"
-            )
-        except Exception:
-            pass
 
     def _process_position(self, label: str, pos: dict) -> None:
         """
-        Evaluate one CURRENT open position from a target wallet and mirror it.
-        Uses positions API data (conditionId/asset, outcome, avgPrice) rather
-        than completed-trade data — so we see 5-min windows while they're live.
+        Record a mule's current live position as a signal. No paper trade placed.
+        Uses positions API data so we see 5-min windows while they're live.
         """
         if not _shadow_enabled:
             return
-        if not _mule_enabled.get(label, True):
+
+        slug    = pos.get("eventSlug") or pos.get("slug", "")
+        title   = pos.get("title", pos.get("eventTitle", ""))
+        outcome = pos.get("outcome", pos.get("side", ""))
+        price   = float(pos.get("avgPrice") or pos.get("price", 0.5))
+
+        if not slug or not outcome:
             return
-
-        # Prefer conditionId for CLOB lookups; asset is a token ID that CLOB doesn't accept
-        condition = pos.get("conditionId") or pos.get("asset", "")
-        token_id  = pos.get("asset", "")   # token ID — used for midpoint fallback
-        slug      = pos.get("eventSlug") or pos.get("slug", "")
-        title     = pos.get("title", pos.get("eventTitle", ""))
-        outcome   = pos.get("outcome", pos.get("side", ""))
-        tgt_price = float(pos.get("avgPrice") or pos.get("price", 0.5))
-
-        if not (condition or token_id) or not outcome:
-            return
-
-        # Try to derive slug from condition if not returned directly
-        if not slug:
-            log.debug("[SHADOW] No slug for position conditionId=%s — skipping", (condition or token_id)[:16])
-            return
-
         parsed = parse_updown_slug(slug)
         if not parsed:
-            log.debug("[SHADOW] Non-updown position — skipping: %s", title[:50] or slug)
             return
 
         now_ts        = int(time.time())
         expiry_ts     = parsed["expiry_ts"]
         secs_remaining = expiry_ts - now_ts
+        direction     = outcome.lower()
 
-        if secs_remaining < MIN_SECONDS_REMAINING:
-            log.info(
-                "[SHADOW] %s | %s | %ds remaining — too late for this window, seeking next",
-                MULE_NAMES.get(label, label), title[:55] or slug, secs_remaining,
-            )
-            # PBot often enters in the final seconds; we detect it 15s later via polling.
-            # Rather than miss the trade entirely, enter the NEXT available window for the
-            # same coin so we still ride the same directional signal.
-            self._enter_next_shadow_window(label, parsed["coin"], outcome.lower())
-            return
+        # Register for conflict detection (still fully active)
+        _register_mule_direction(slug, label, direction.upper(), expiry_ts)
 
-        direction = outcome.lower()   # 'up' or 'down'
-        entry_price = None
-
-        # Try conditionId-based CLOB market price first
-        if condition:
-            live = _fetch_market_current_price(condition)
-            if live:
-                entry_price = live["up_price"] if direction == "up" else live["down_price"]
-
-        # Fallback: token ID midpoint (CLOB /midpoint?token_id=X)
-        if entry_price is None and token_id:
-            mid = _fetch_token_midpoint(token_id)
-            if mid is not None:
-                entry_price = mid
-                log.debug("[SHADOW] Used token midpoint %.3f for %s", entry_price, token_id[:16])
-
-        if entry_price is None:
-            log.warning("[SHADOW] No live price for %s — skipping", (condition or token_id)[:16])
-            return
-
-        if abs(entry_price - tgt_price) > 0.15:
-            log.info(
-                "[SHADOW] %s | %s | Price drift too large (was %.2f, now %.2f) — skipping",
-                label, title[:55], tgt_price, entry_price,
-            )
-            return
-
-        if entry_price >= 0.90 or entry_price <= 0.10:
-            log.info(
-                "[SHADOW] %s | %s | Price %.2f near-resolved — no edge",
-                label, title[:55], entry_price,
-            )
-            return
-
-        balance = self.get_balance()
-        raw_size = balance * SHADOW_KELLY_FRACTION
-        position_size = round(max(SHADOW_MIN_TRADE_USD, min(SHADOW_MAX_TRADE_USD, raw_size)), 2)
-
-        order = self.place_paper_trade(
-            event_id=condition,
-            market_id=condition,
-            amount_dollars=position_size,
-            direction=direction.upper(),
-            entry_price=entry_price,
-            event_title=f"[SHADOW:{MULE_NAMES.get(label, label)}] {title or slug}",
+        # Store as signal
+        record_mule_signal(
+            label=label, coin=parsed["coin"], direction=direction,
+            slug=slug, entry_price=price, expiry_ts=expiry_ts,
         )
-
-        if not order:
-            log.warning("[SHADOW] Paper trade placement failed for %s", title[:50] or slug)
-            return
-
-        expiry_dt = datetime.fromtimestamp(expiry_ts, tz=timezone.utc)
-        rec = ShadowTradeRecord(
-            order_id=order["order_id"],
-            label=label,
-            condition_id=condition,
-            event_slug=slug,
-            title=title or slug,
-            direction=direction.upper(),
-            entry_price=entry_price,
-            position_size=position_size,
-            coin=parsed["coin"],
-            duration_min=parsed["duration_min"],
-            expiry_ts=expiry_ts,
-            expiry_time=expiry_dt,
-            entry_time=datetime.now(timezone.utc),
-            status="OPEN",
-        )
-        self._active_trades[order["order_id"]] = rec
         self.total_shadowed += 1
-        self._persist()
 
+        mule_name = MULE_NAMES.get(label, label)
         log.info(
-            "[SHADOW] ✅ POSITION MIRRORED | %s | %s %s @ %.3f | $%.2f | ~%ds remaining | src=%s",
+            "[SHADOW] 📡 SIGNAL (position) | %s → %s %s | ~%ds | src=%s",
             (title or slug)[:55], direction.upper(), parsed["coin"],
-            entry_price, position_size, secs_remaining, MULE_NAMES.get(label, label),
+            secs_remaining, mule_name,
         )
-
-        try:
-            from telegram_bot import send_alert as _tg
-            mule_name = MULE_NAMES.get(label, label)
-            dur_str = f"{parsed['duration_min']}min"
-            _tg(
-                f"👁 Shadow Trade — {mule_name}\n"
-                f"Market: {(title or slug)[:60]}\n"
-                f"Direction: {direction.upper()} {parsed['coin']} ({dur_str})\n"
-                f"Price: {entry_price:.3f} | Size: ${position_size:.2f}\n"
-                f"Window closes: {expiry_dt.strftime('%H:%M:%S')} UTC"
-            )
-        except Exception:
-            pass
-
-    def _enter_next_shadow_window(self, label: str, coin: str, direction: str) -> None:
-        """
-        When PBot's current window has expired before we can mirror it, enter the
-        NEXT available Up/Down window for the same coin and direction.
-        Same directional thesis, fresh window — prevents missing every shadow trade.
-        """
-        try:
-            from updown_trader import _fetch_active_updown_markets
-            markets = _fetch_active_updown_markets(coin)
-        except Exception as exc:
-            log.warning("[SHADOW] Next-window fetch failed for %s %s: %s", label, coin, exc)
-            return
-
-        if not markets:
-            log.info("[SHADOW] No next window available for %s %s", label, coin)
-            return
-
-        now_ts = int(time.time())
-        next_market = None
-        for mkt in markets:
-            secs_left = mkt["expiry_ts"] - now_ts
-            if secs_left >= MIN_SECONDS_REMAINING * 3:  # need at least 3× min to be worthwhile
-                next_market = mkt
-                break
-
-        if next_market is None:
-            log.info("[SHADOW] All next windows too close for %s %s", label, coin)
-            return
-
-        secs_left = next_market["expiry_ts"] - now_ts
-        expiry_ts = next_market["expiry_ts"]
-
-        if direction == "up":
-            entry_price = next_market["up_price"]
-            market_obj  = next_market.get("up_market") or {}
-        else:
-            entry_price = next_market["dn_price"]
-            market_obj  = next_market.get("dn_market") or {}
-
-        if entry_price >= 0.90 or entry_price <= 0.10:
-            log.info("[SHADOW] Next window price %.2f near-resolved — skipping", entry_price)
-            return
-
-        condition_id = market_obj.get("conditionId") or market_obj.get("id") or next_market.get("id", "")
-        if not condition_id:
-            log.warning("[SHADOW] No conditionId for next window — skipping")
-            return
-
-        balance = self.get_balance()
-        position_size = round(max(SHADOW_MIN_TRADE_USD, min(SHADOW_MAX_TRADE_USD, balance * SHADOW_KELLY_FRACTION)), 2)
-        title = next_market.get("title", f"{coin} Up/Down")
-        expiry_dt = datetime.fromtimestamp(expiry_ts, tz=timezone.utc)
-
-        order = self.place_paper_trade(
-            event_id=condition_id,
-            market_id=condition_id,
-            amount_dollars=position_size,
-            direction=direction.upper(),
-            entry_price=entry_price,
-            event_title=f"[SHADOW:{MULE_NAMES.get(label, label)}] {title} (next window)",
-        )
-
-        if not order:
-            log.warning("[SHADOW] Next-window trade placement failed for %s %s", label, coin)
-            return
-
-        coin_parsed = next_market.get("coin", coin)
-        dur_min = next_market.get("duration_min", 5)
-        rec = ShadowTradeRecord(
-            order_id=order["order_id"],
-            label=label,
-            condition_id=condition_id,
-            event_slug=next_market.get("slug", ""),
-            title=title,
-            direction=direction.upper(),
-            entry_price=entry_price,
-            position_size=position_size,
-            coin=coin_parsed,
-            duration_min=dur_min,
-            expiry_ts=expiry_ts,
-            expiry_time=expiry_dt,
-            entry_time=datetime.now(timezone.utc),
-            status="OPEN",
-        )
-        self._active_trades[order["order_id"]] = rec
-        self.total_shadowed += 1
-        self._persist()
-
-        log.info(
-            "[SHADOW] ✅ NEXT WINDOW | %s | %s %s @ %.3f | $%.2f | ~%ds remaining | src=%s",
-            title[:55], direction.upper(), coin_parsed,
-            entry_price, position_size, secs_left, MULE_NAMES.get(label, label),
-        )
-        try:
-            from telegram_bot import send_alert as _tg
-            mule_name = MULE_NAMES.get(label, label)
-            _tg(
-                f"👁 Shadow (Next Window) — {mule_name}\n"
-                f"Market: {title[:60]}\n"
-                f"Direction: {direction.upper()} {coin_parsed} ({dur_min}min)\n"
-                f"Price: {entry_price:.3f} | Size: ${position_size:.2f}\n"
-                f"Window closes: {expiry_dt.strftime('%H:%M:%S')} UTC"
-            )
-        except Exception:
-            pass
 
     def _resolve_active_trades(self) -> None:
         """Check if any active shadow trades have resolved and close them."""
@@ -873,14 +669,41 @@ class ShadowModeMonitor:
             except Exception:
                 pass
 
+            # Feed shadow outcome into ML pipeline so it contributes to model training
             try:
-                self.close_paper_trade(
-                    order_id=order_id,
-                    current_price=1.0 if won else 0.0,
-                    exit_reason="SHADOW_RESOLVED",
-                )
-            except Exception as exc:
-                log.warning("[SHADOW] close_paper_trade failed for %s: %s", order_id, exc)
+                from ml_pipeline import link_trade_outcomes as _ml_link
+                _ml_link()
+            except Exception:
+                pass
+
+            try:
+                from trader import has_open_position as _has_pos
+                _is_ghost = not _has_pos(order_id)
+            except Exception:
+                _is_ghost = False
+
+            if _is_ghost:
+                # Pre-restart ghost: position cleared from memory on restart.
+                # Skip close_paper_trade (it would just log an error and return None).
+                # Apply balance update + write a synthetic closed entry directly.
+                try:
+                    from state_manager import get_current_balance as _gcb, update_balance as _ub
+                    _ub(_gcb() + pnl, reason=f"Shadow ghost {order_id[:16]} resolved: ${pnl:+.4f}")
+                    log.info(
+                        "[SHADOW] Ghost resolved: %s | %s %s | pnl=$%+.2f | bal=$%.2f",
+                        order_id[:16], direction, coin, pnl, _gcb(),
+                    )
+                except Exception as _be:
+                    log.warning("[SHADOW] Ghost balance update failed for %s: %s", order_id, _be)
+            else:
+                try:
+                    self.close_paper_trade(
+                        order_id=order_id,
+                        current_price=1.0 if won else 0.0,
+                        exit_reason="SHADOW_RESOLVED",
+                    )
+                except Exception as exc:
+                    log.warning("[SHADOW] close_paper_trade failed for %s: %s", order_id, exc)
 
             resolved_ids.append(order_id)
 
@@ -994,8 +817,7 @@ class ShadowModeMonitor:
         if self._thread:
             self._thread.join(timeout=5)
         self._persist()
-        log.info("[SHADOW] Monitor stopped | total=%d | W=%d L=%d | PnL=$%.2f",
-                 self.total_shadowed, self.wins, self.losses, self.pnl)
+        log.info("[SHADOW] Monitor stopped | signals observed=%d", self.total_shadowed)
 
     def get_stats(self) -> dict:
         wr = self.wins / max(1, self.wins + self.losses)

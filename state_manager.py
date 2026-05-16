@@ -81,7 +81,9 @@ def update_heartbeat(trades_executed: int = 0, paused: bool = False, reason: str
                 existing = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
             except Exception:
                 pass
+        starting = float(existing.get("starting_balance", _DEFAULT_BALANCE))
         existing["balance"] = _balance
+        existing["pnl"] = round(_balance - starting, 2)   # always correct
         existing["trades_executed"] = trades_executed
         existing["paused"] = paused
         existing["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -117,7 +119,9 @@ def _write_state(reason: str = "") -> None:
             existing = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
         except Exception:
             pass
+    starting = float(existing.get("starting_balance", _DEFAULT_BALANCE))
     existing["balance"] = _balance
+    existing["pnl"] = round(_balance - starting, 2)   # always correct — never accumulated
     existing["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     existing["last_change_reason"] = reason
     _STATE_FILE.write_text(json.dumps(existing, indent=2), encoding="utf-8")

@@ -422,7 +422,7 @@ def train_model() -> bool:
         from sklearn.model_selection import train_test_split
         from sklearn.metrics import accuracy_score, roc_auc_score
     except ImportError:
-        log.warning("[ML-TRAIN] scikit-learn not installed (pip install scikit-learn)")
+        log.debug("[ML-TRAIN] scikit-learn not installed — skipping ML training (pip install scikit-learn to enable)")
         return False
 
     try:
@@ -571,6 +571,46 @@ def get_blended_confidence(
         gem_norm, model_prob, blended,
     )
     return blended, "PHASE_2_BLENDED"
+
+
+def ensure_phase2_activated() -> bool:
+    """
+    One-time startup check: if we have enough labelled examples but the model
+    hasn't been trained yet (or is still Phase 1), train it immediately.
+
+    link_trade_outcomes() only auto-trains when new_labels > 0 — if all trades
+    were already labelled in prior sessions, new_labels = 0 and training never
+    fires. This function bypasses that condition.
+    Returns True if model is now active (Phase 2), False if still Phase 1.
+    """
+    global _model
+    if _model is not None:
+        return True  # already loaded
+
+    # Try loading a persisted model first (fastest path)
+    if load_model():
+        return True
+
+    # No model on disk — check if we have enough labelled data to train
+    labelled_count = 0
+    try:
+        if _LABELLED_FILE.exists():
+            labelled_count = sum(1 for l in _LABELLED_FILE.open() if l.strip())
+    except Exception:
+        pass
+
+    if labelled_count >= MIN_LABELLED_TO_TRAIN:
+        log.info(
+            "[ML] Startup: %d labelled examples available — triggering Phase 2 training",
+            labelled_count,
+        )
+        return train_model()
+
+    log.info(
+        "[ML] Startup: %d/%d labelled examples — Phase 1 active",
+        labelled_count, MIN_LABELLED_TO_TRAIN,
+    )
+    return False
 
 
 def get_model_status() -> dict:

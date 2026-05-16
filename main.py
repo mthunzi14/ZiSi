@@ -43,6 +43,7 @@ from trader import (
     persist_positions,
     get_position_summary,
     refresh_open_position_prices,
+    escalate_trailing_stops,
 )
 from logger import (
     log_trade_to_google_drive,
@@ -79,7 +80,7 @@ from kalshi.trader import KalshiTrader, get_kalshi_summary
 from markets_orchestrator import run_kalshi_for_cycle
 
 # ── ML pipeline ───────────────────────────────────────────────────────────────
-from ml_pipeline import collect_cycle_data, get_ml_progress, link_trade_outcomes, load_model as _load_ml_model
+from ml_pipeline import collect_cycle_data, get_ml_progress, link_trade_outcomes, load_model as _load_ml_model, ensure_phase2_activated as _ensure_phase2
 
 # ── Health monitor ─────────────────────────────────────────────────────────────
 from health_monitor import startup_recovery, start_health_monitor, stop_health_monitor
@@ -156,6 +157,14 @@ _cycle_skip_counts: dict = {}
 _cycle_signals_processed: int = 0
 _cycle_trades_placed: int = 0
 
+# ── Daily session P&L halt ────────────────────────────────────────────────────
+# If session P&L drops below this threshold, Polymarket entries are paused for
+# _DAILY_HALT_DURATION_SECS seconds to prevent runaway losses in a bad stretch.
+# This is softer than the drawdown halt and resets automatically.
+_DAILY_PNL_HALT_THRESHOLD = -20.0   # $20 session loss triggers 2h pause
+_DAILY_HALT_DURATION_SECS = 7200    # 2-hour automatic cooldown
+_daily_halt_until: float = 0.0      # unix timestamp after which entries resume
+
 
 def _record_skip(reason: str) -> None:
     global _cycle_skip_counts
@@ -191,6 +200,97 @@ _NO_TRADE_HOURS_UTC = frozenset({1, 2, 3, 4})
 
 _running = True
 _shutdown_event = threading.Event()
+
+# ── Rapid-fire scanner ────────────────────────────────────────────────────────
+# Background thread that fetches RSS/Reddit/CryptoPanic every 90 seconds.
+# If a very high-conviction headline is found, it writes to rapid_fire_queue.json
+# so the next main-loop iteration can run an immediate Kalshi cycle — without
+# waiting up to 15 minutes for the next scheduled news cycle.
+import re as _re
+_RAPID_FIRE_QUEUE = Path(__file__).parent / "rapid_fire_queue.json"
+_BULLISH_SPIKE = _re.compile(
+    r'\b(approved|approval|surged|surging|all.?time high|ath|etf|massive rally|'
+    r'launched|partnership|acquisition|record high|breakout|whale buy|institutional)\b', _re.I
+)
+_BEARISH_SPIKE = _re.compile(
+    r'\b(crashed|crash|collapse|collapses|hacked|hack|exploit|banned|ban|'
+    r'seized|bankrupt|halted|suspended|arrested|scam|rug.?pull|delisted)\b', _re.I
+)
+_RAPID_COINS = _re.compile(r'\b(bitcoin|btc|ethereum|eth|solana|sol|xrp|ripple)\b', _re.I)
+_COIN_NORM = {"bitcoin": "BTC", "btc": "BTC", "ethereum": "ETH", "eth": "ETH",
+              "solana": "SOL", "sol": "SOL", "xrp": "XRP", "ripple": "XRP"}
+
+
+def _rapid_scanner_thread() -> None:
+    """
+    Runs in a daemon thread. Every 90 s it harvests headlines from all free RSS/
+    Reddit/CryptoPanic sources and looks for extreme-confidence signals.
+    When a signal reaches spike threshold (2+ bullish OR 2+ bearish trigger-words
+    in the same headline, about a tracked coin), it is queued for immediate execution
+    in the next main-loop iteration.
+    """
+    try:
+        from rss_fetcher import get_all_headlines as _rss_headlines
+    except ImportError:
+        log.warning("[RAPID] rss_fetcher not found — rapid scanner disabled")
+        return
+
+    _rapid_seen: set = set()
+
+    while _running:
+        try:
+            headlines = _rss_headlines(max_age_minutes=10)
+            new_signals = []
+
+            for h in headlines[:40]:
+                title = h.get("title", "")
+                key   = title[:70].lower()
+                if key in _rapid_seen:
+                    continue
+
+                coins_found = _RAPID_COINS.findall(title)
+                if not coins_found:
+                    continue
+
+                bull_hits = len(_BULLISH_SPIKE.findall(title))
+                bear_hits = len(_BEARISH_SPIKE.findall(title))
+
+                if bull_hits >= 2 or bear_hits >= 2:
+                    _rapid_seen.add(key)
+                    coin = _COIN_NORM.get(coins_found[0].lower(), "BTC")
+                    direction = "BULLISH" if bull_hits >= bear_hits else "BEARISH"
+                    new_signals.append({
+                        "title":     title,
+                        "coin":      coin,
+                        "direction": direction,
+                        "source":    h.get("source", "RSS"),
+                        "confidence": 8.5 + min(1.0, (bull_hits + bear_hits - 2) * 0.25),
+                        "ts":        time.time(),
+                    })
+                    log.info(
+                        "[RAPID] 🚨 HIGH-CONVICTION: %s (%s %s) — \"%s\"",
+                        coin, direction, f"b={bull_hits} be={bear_hits}", title[:65],
+                    )
+
+            if new_signals:
+                # Merge into queue file (main loop drains it)
+                existing = []
+                try:
+                    if _RAPID_FIRE_QUEUE.exists():
+                        existing = json.loads(_RAPID_FIRE_QUEUE.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+                combined = (existing + new_signals)[-20:]  # cap at 20
+                _RAPID_FIRE_QUEUE.write_text(json.dumps(combined, indent=2), encoding="utf-8")
+
+        except Exception as _rse:
+            log.debug("[RAPID] Scanner error: %s", _rse)
+
+        # 90-second sleep, interruptible on shutdown
+        _shutdown_event.wait(timeout=90)
+        if not _running:
+            break
+        _shutdown_event.clear()
 
 
 def _handle_shutdown(signum, frame):
@@ -251,6 +351,98 @@ def calculate_historical_stats(trades: list) -> dict:
         "avg_loss": round(avg_loss, 6),
         "total_trades": len(closed),
     }
+
+
+# ── Hour-Based Win Rate Oracle ────────────────────────────────────────────────
+# Reads closed trade history, computes win rate by UTC hour (requires ≥5 trades
+# per hour bucket before adjusting), and returns a dynamically adjusted signal
+# threshold.  Loose hours (high win rate) → lower bar.  Dead hours → raise bar.
+
+_HOUR_ORACLE_CACHE: dict = {}   # hour → (win_rate, sample_count)
+_HOUR_ORACLE_LAST_UPDATE: float = 0.0
+
+
+def _refresh_hour_win_rates() -> None:
+    """
+    Re-compute per-hour win rates from zisi_local_trades.jsonl.
+    Called once at startup and at the start of each cycle (cheap — just reads JSONL).
+    """
+    global _HOUR_ORACLE_CACHE, _HOUR_ORACLE_LAST_UPDATE
+    import time as _time
+    if _time.time() - _HOUR_ORACLE_LAST_UPDATE < 300:  # refresh at most every 5 min
+        return
+
+    _base = Path(__file__).parent
+    trades_file = _base / "zisi_local_trades.jsonl"
+    if not trades_file.exists():
+        return
+
+    hour_wins:   dict = {}   # hour → int
+    hour_total:  dict = {}   # hour → int
+
+    try:
+        for line in trades_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or '"order_id"' not in line:
+                continue
+            try:
+                t = json.loads(line)
+                if t.get("status", "").upper() != "CLOSED":
+                    continue
+                ts = t.get("exit_timestamp") or t.get("timestamp", "")
+                if not ts:
+                    continue
+                hour = datetime.fromisoformat(ts.replace("Z", "+00:00")).hour
+                hour_total[hour] = hour_total.get(hour, 0) + 1
+                if float(t.get("profit", 0) or 0) > 0:
+                    hour_wins[hour] = hour_wins.get(hour, 0) + 1
+            except Exception:
+                continue
+    except Exception:
+        return
+
+    new_cache = {}
+    for h, total in hour_total.items():
+        wr = hour_wins.get(h, 0) / total
+        new_cache[h] = (round(wr, 3), total)
+
+    _HOUR_ORACLE_CACHE = new_cache
+    _HOUR_ORACLE_LAST_UPDATE = _time.time()
+
+
+def _get_adaptive_threshold(base_threshold: int) -> int:
+    """
+    Return a signal threshold adjusted by historical win rate for the current UTC hour.
+    Only adjusts when ≥ 5 closed trades exist for that hour (avoids noise on sparse data).
+
+    Win rate   Adjustment
+    > 65%      −1  (more permissive — historically strong hour)
+    55–65%     ±0  (neutral)
+    40–55%     ±0  (neutral — not enough edge to tighten)
+    < 40%      +1  (tighter — historically weak hour)
+    < 30%      +2  (very tight — historically terrible hour)
+    """
+    hour = datetime.now(timezone.utc).hour
+    entry = _HOUR_ORACLE_CACHE.get(hour)
+    if not entry or entry[1] < 5:
+        return base_threshold  # not enough data for this hour
+
+    win_rate, sample = entry
+    if win_rate > 0.65:
+        adjustment = -1
+    elif win_rate < 0.30:
+        adjustment = +2
+    elif win_rate < 0.40:
+        adjustment = +1
+    else:
+        adjustment = 0
+
+    if adjustment != 0:
+        log.info(
+            "[ORACLE] UTC hour %02d: win_rate=%.0f%% (%d trades) → threshold %d→%d",
+            hour, win_rate * 100, sample, base_threshold, base_threshold + adjustment,
+        )
+    return max(1, min(10, base_threshold + adjustment))
 
 
 # ── Circuit breaker ──────────────────────────────────────────────────────────
@@ -353,7 +545,14 @@ def _get_drawdown_pct() -> float:
 
 
 def _get_rolling_volatility() -> float:
-    """Return std-dev of returns across last 20 closed trades (as a fraction, e.g. 0.15 = 15%)."""
+    """Return std-dev of returns across last 20 closed trades (as a fraction, e.g. 0.15 = 15%).
+
+    Polymarket binary contracts naturally resolve at 0 or 1, so profit_percent
+    for paper trades is routinely ±100%. Stdev of a ±100% binary series caps at
+    exactly 100% (1.0). The threshold is set to 1.5 (150%) so it only fires for
+    truly impossible scenarios — it is NOT intended to pause on normal binary
+    outcomes, only on legitimate chaos (e.g. data corruption).
+    """
     import statistics
     closed = [
         float(t.get("profit_percent", 0) or 0) / 100.0
@@ -435,6 +634,47 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
     log.debug("Processing signal: %s", headline)
     log.debug("  Sentiment: %s | Confidence: %d/10", sentiment_dir.upper(), confidence)
 
+    # ── BLOCKER 3b: Daily session P&L halt ────────────────────────────────────
+    import time as _time_mod
+    global _daily_halt_until
+    now_ts = _time_mod.time()
+    if now_ts < _daily_halt_until:
+        _remaining_halt = int(_daily_halt_until - now_ts)
+        log.info("[DAILY-HALT] Session P&L halt active — resuming in %ds", _remaining_halt)
+        _record_skip("daily_pnl_halt")
+        return
+    else:
+        # Check current session P&L from state
+        try:
+            _session_pnl = float(get_current_balance()) - 100.0
+            try:
+                import json as _json, os as _os
+                _sf = _os.path.join(_os.path.dirname(__file__), "account_state.json")
+                _st = _json.loads(open(_sf).read())
+                _session_pnl = float(_st.get("pnl", 0))
+            except Exception:
+                pass
+            if _session_pnl <= _DAILY_PNL_HALT_THRESHOLD:
+                _daily_halt_until = now_ts + _DAILY_HALT_DURATION_SECS
+                log.warning(
+                    "[DAILY-HALT] Session P&L $%.2f ≤ $%.2f threshold — pausing Polymarket entries for 2h",
+                    _session_pnl, _DAILY_PNL_HALT_THRESHOLD,
+                )
+                try:
+                    from telegram_bot import send_alert as _tg_alert
+                    _tg_alert(
+                        f"⏸ *Daily Loss Halt*\n"
+                        f"Session P&L: ${_session_pnl:+.2f} hit ${_DAILY_PNL_HALT_THRESHOLD:.0f} floor.\n"
+                        f"Polymarket entries paused for 2h to prevent further drawdown.\n"
+                        f"Shadow & Kalshi trades continue unaffected."
+                    )
+                except Exception:
+                    pass
+                _record_skip("daily_pnl_halt")
+                return
+        except Exception:
+            pass
+
     # ── BLOCKER 4: Multi-level drawdown pause ──────────────────────────────────
     _dd = _get_drawdown_pct()
     if _dd >= 0.20:
@@ -465,10 +705,12 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
         cfg["_drawdown_kelly_halved"] = True
 
     # ── BLOCKER 5: Volatility pause ────────────────────────────────────────────
+    # Threshold is 1.50 (150%) — binary Polymarket contracts resolve at ±100%
+    # so a stdev of ~100% is NORMAL; 150% would indicate corrupt data.
     _vol = _get_rolling_volatility()
-    if _vol > 0.20:
+    if _vol > 1.50:
         log.warning(
-            "[VOL-PAUSE] Rolling volatility %.1f%% > 20%% — skipping entry to avoid chaos",
+            "[VOL-PAUSE] Rolling volatility %.1f%% > 150%% — skipping entry to avoid chaos",
             _vol * 100,
         )
         try:
@@ -572,7 +814,12 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
     elif direction == "YES":
         market = next((m for m in markets if "YES" in str(m.get("outcomeLabel", "")).upper()), markets[0] if markets else None)
     else:
-        market = next((m for m in markets if "NO" in str(m.get("outcomeLabel", "")).upper()), markets[1] if len(markets) > 1 else None)
+        # For NO direction: prefer a market labelled "NO", fall back to markets[1],
+        # then markets[0] — UP/DOWN events have a single market object covering both sides.
+        market = next(
+            (m for m in markets if "NO" in str(m.get("outcomeLabel", "")).upper()),
+            markets[1] if len(markets) > 1 else (markets[0] if markets else None),
+        )
 
     if not market:
         log.warning("  Could not identify %s market — skipping", direction)
@@ -1073,12 +1320,22 @@ def _write_heartbeat(reason: str = "cycle_start") -> None:
                     existing = json.loads(_fh.read())
             except Exception:
                 pass
+        # Total closed: JSONL (ZiSi) + positions_state (shadow) — authoritative count
+        positions_file = os.path.join(os.path.dirname(_STATE_FILE_PATH), "positions_state.json")
+        total_closed = len(closed)
+        try:
+            ps = json.loads(Path(positions_file).read_text(encoding="utf-8"))
+            total_closed = len(ps.get("closed", []))
+        except Exception:
+            pass
+
+        effective_pnl = round(live_balance - _start_bal, 2)
         existing.update({
             "balance": live_balance,
             "starting_balance": _start_bal,
-            "pnl": round(live_balance - _start_bal, 2),
+            "pnl": effective_pnl,
             "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "trades_executed": len(closed),
+            "trades_executed": total_closed,
             "phase": "phase_1",
             "paused": False,
             "last_update_reason": reason,
@@ -1086,10 +1343,9 @@ def _write_heartbeat(reason: str = "cycle_start") -> None:
         })
         with open(_STATE_FILE_PATH, "w", encoding="utf-8") as fh:
             json.dump(existing, fh, indent=2)
-        effective_pnl = round(live_balance - _start_bal, 2)
         log.info(
-            "Heartbeat → $%.2f | pnl: $%+.2f | jsonl_closed: %d",
-            live_balance, effective_pnl, len(closed),
+            "Heartbeat → $%.2f | pnl: $%+.2f | closed: %d (zisi=%d)",
+            live_balance, effective_pnl, total_closed, len(closed),
         )
     except Exception as exc:
         import traceback
@@ -1119,29 +1375,41 @@ def sync_balance_to_state() -> tuple:
                         pass
 
         closed_trades = [t for t in all_trades if t.get("status", "").upper() == "CLOSED"]
-        total_pnl = sum(float(t.get("profit", 0) or 0) for t in closed_trades)
-        current_balance = round(_get_starting_balance() + total_pnl, 2)
+        jsonl_pnl = sum(float(t.get("profit", 0) or 0) for t in closed_trades)
 
-        state_data = {
-            "starting_balance": _get_starting_balance(),
+        # Authority for balance: state_manager (includes shadow P&L).
+        # Never recompute from JSONL — that excludes shadow trades.
+        current_balance = get_current_balance()
+        start_bal = _get_starting_balance()
+        effective_pnl = round(current_balance - start_bal, 2)
+
+        # Only update trades_executed + pnl; preserve all other fields.
+        existing: dict = {}
+        if os.path.exists(_STATE_FILE_PATH):
+            try:
+                with open(_STATE_FILE_PATH, "r", encoding="utf-8") as _fh:
+                    existing = json.loads(_fh.read())
+            except Exception:
+                pass
+        existing.update({
             "balance": current_balance,
-            "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "starting_balance": start_bal,
+            "pnl": effective_pnl,
             "trades_executed": len(closed_trades),
+            "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "phase": "phase_1",
-            "paused": False,
             "status": "running",
-            "pnl": round(total_pnl, 2),
-        }
+        })
         with open(_STATE_FILE_PATH, "w", encoding="utf-8") as fh:
-            json.dump(state_data, fh, indent=2)
+            json.dump(existing, fh, indent=2)
 
         # ── Record to equity curve ────────────────────────────────────────────
         try:
-            record_balance(current_balance, round(total_pnl, 2), len(closed_trades))
+            record_balance(current_balance, effective_pnl, len(closed_trades))
         except Exception:
             pass
 
-        return current_balance, round(total_pnl, 2), len(closed_trades)
+        return current_balance, effective_pnl, len(closed_trades)
 
     except Exception as exc:
         log.error("Balance sync failed: %s", exc)
@@ -1198,192 +1466,120 @@ def analyze_trade_frequency() -> dict:
 
 def run_startup_diagnostics(cfg: dict) -> bool:
     """
-    5-section startup diagnostic: config, data integrity, API connectivity, ML, account.
+    Compact startup diagnostic — one clean block, no verbose separators.
     Returns True only if all critical checks pass.
     """
     import requests as _req
 
-    _SEP = "=" * 75
-    _DIV = "-" * 75
-    all_ok = True
+    _base   = Path(__file__).parent
+    all_ok  = True
+    lines   = []          # collect rows; flush once as a block
+    ok_sym  = "✓"
+    warn_sym = "!"
+    fail_sym = "✗"
 
-    log.info(_SEP)
-    log.info("ZISI STARTUP DIAGNOSTICS")
-    log.info(_SEP)
+    def _row(sym, text):
+        lines.append(f"  {sym}  {text}")
 
-    # ── [1] CONFIGURATION ──────────────────────────────────────────────────────
-    log.info("[1] CONFIGURATION")
-    log.info(_DIV)
-
-    # Kalshi: accepts KALSHI_KEY_ID or its alias KALSHI_API_KEY
-    kalshi_key_id = os.getenv("KALSHI_KEY_ID") or os.getenv("KALSHI_API_KEY") or ""
-    kalshi_priv   = os.getenv("KALSHI_PRIVATE_KEY") or ""
-    if kalshi_key_id and kalshi_priv:
-        alias = "KALSHI_API_KEY" if os.getenv("KALSHI_API_KEY") and not os.getenv("KALSHI_KEY_ID") else "KALSHI_KEY_ID"
-        log.info("  [OK] Kalshi: %s + KALSHI_PRIVATE_KEY present", alias)
+    # ── API keys ───────────────────────────────────────────────────────────────
+    kalshi_key = os.getenv("KALSHI_KEY_ID") or os.getenv("KALSHI_API_KEY") or ""
+    kalshi_priv = os.getenv("KALSHI_PRIVATE_KEY") or ""
+    if kalshi_key and kalshi_priv:
+        _row(ok_sym, "Kalshi keys present")
     else:
-        missing = []
-        if not kalshi_key_id: missing.append("KALSHI_KEY_ID (or KALSHI_API_KEY)")
-        if not kalshi_priv:   missing.append("KALSHI_PRIVATE_KEY")
-        log.error("  [FAIL] Kalshi: missing %s", ", ".join(missing))
+        missing_keys = []
+        if not kalshi_key:  missing_keys.append("KALSHI_KEY_ID")
+        if not kalshi_priv: missing_keys.append("KALSHI_PRIVATE_KEY")
+        _row(fail_sym, f"Kalshi keys missing: {', '.join(missing_keys)}")
         all_ok = False
 
-    for key_name in (
-        "NEWSAPI_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
-        "GROQ_API_KEY", "CEREBRAS_API_KEY", "MISTRAL_API_KEY",
-        "OPENROUTER_API_KEY", "TOGETHER_API_KEY",
-    ):
-        val = cfg.get(key_name, "")
-        if val:
-            log.info("  [OK] %s: present", key_name)
-        else:
-            log.warning("  [WARN] %s: not set (sentiment fallback skipped)", key_name)
+    key_checks = {
+        "NEWSAPI_KEY": "NewsAPI", "GEMINI_API_KEY": "Gemini",
+        "ANTHROPIC_API_KEY": "Claude", "GROQ_API_KEY": "Groq",
+    }
+    missing_ai = [label for env, label in key_checks.items() if not cfg.get(env)]
+    if missing_ai:
+        _row(warn_sym, f"Optional AI keys missing: {', '.join(missing_ai)} (fallback active)")
+    else:
+        _row(ok_sym, "All AI/news keys present")
 
-    log.info("  Signal threshold: %d/10 | Risk: %.0f%% | Max positions: %d | Kalshi cap: 50/cycle | Mode: %s",
-             cfg.get("SIGNAL_THRESHOLD", 6),
-             cfg.get("RISK_PER_TRADE_PERCENT", 3),
-             cfg.get("MAX_SIMULTANEOUS_TRADES", 100),
-             cfg.get("BOT_MODE", "paper_trading"))
-
-    # ── [2] DATA INTEGRITY ─────────────────────────────────────────────────────
-    log.info("[2] DATA INTEGRITY")
-    log.info(_DIV)
-
-    _base = Path(__file__).parent
+    # ── Data files ─────────────────────────────────────────────────────────────
     pos_file    = _base / "positions_state.json"
     trades_file = _base / "zisi_local_trades.jsonl"
 
-    active_ids: set = set()
-    history_ids: set = set()
-
+    n_active = n_closed = n_trades = 0
     if pos_file.exists():
         try:
-            d = json.loads(pos_file.read_text(encoding="utf-8"))
-            active  = d.get("active", [])
-            closed  = d.get("closed", [])
-            for p in active:
-                oid = p.get("order_id")
-                if oid:
-                    active_ids.add(oid)
-            log.info("  Positions: %d active | %d closed", len(active), len(closed))
+            d       = json.loads(pos_file.read_text(encoding="utf-8"))
+            n_active = len(d.get("active", []))
+            n_closed = len(d.get("closed", []))
         except Exception as exc:
-            log.error("  [FAIL] positions_state.json unreadable: %s", exc)
+            _row(fail_sym, f"positions_state.json unreadable: {exc}")
             all_ok = False
-    else:
-        log.info("  Positions: no file (clean start)")
 
     if trades_file.exists():
         try:
-            with trades_file.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        t = json.loads(line)
-                        # Only count actual trade entries (status field present), not signal logs
-                        if t.get("status") and t.get("order_id"):
-                            history_ids.add(t["order_id"])
-                    except Exception:
-                        continue
-            log.info("  Trade History: %d trade entries in zisi_local_trades.jsonl", len(history_ids))
-        except Exception as exc:
-            log.error("  [FAIL] zisi_local_trades.jsonl unreadable: %s", exc)
-            all_ok = False
-
-    # Warn (not fail) if open positions lack history — happens on clean restarts
-    open_missing = active_ids - history_ids
-    if open_missing:
-        log.warning("  [WARN] %d open position(s) have no trade history (stale from prior run): %s",
-                    len(open_missing), list(open_missing)[:3])
-    elif active_ids:
-        log.info("  [OK] All open positions have trade history entries")
-
-    # ── [3] API CONNECTIVITY ───────────────────────────────────────────────────
-    log.info("[3] API CONNECTIVITY")
-    log.info(_DIV)
-
-    # Kalshi: use validate_connection() which tests full RSA-PSS auth flow
-    if _kalshi_auth.is_configured:
-        ok, msg = _kalshi_auth.validate_connection()
-        if ok:
-            log.info("  [OK] Kalshi: %s", msg)
-        else:
-            log.error("  [FAIL] Kalshi: %s", msg)
-            all_ok = False
-    else:
-        log.warning("  [SKIP] Kalshi: not configured (set KALSHI_KEY_ID + KALSHI_PRIVATE_KEY)")
-
-    # Polymarket: hit CLOB root
-    try:
-        r = _req.get("https://clob.polymarket.com", timeout=5)
-        if r.ok:
-            log.info("  [OK] Polymarket: Connected")
-        else:
-            log.warning("  [WARN] Polymarket: HTTP %d", r.status_code)
-    except Exception as exc:
-        log.error("  [FAIL] Polymarket: %s", type(exc).__name__)
-        all_ok = False
-
-    # ── [4] ML PIPELINE ────────────────────────────────────────────────────────
-    log.info("[4] ML PIPELINE")
-    log.info(_DIV)
-
-    ml_prog = _base / "ml_progress.json"
-    labelled_file = _base / "ml_labelled_outcomes.jsonl"
-    labelled_count = 0
-    if labelled_file.exists():
-        try:
-            with labelled_file.open("r", encoding="utf-8") as fh:
-                labelled_count = sum(1 for line in fh if line.strip())
+            n_trades = sum(
+                1 for line in trades_file.read_text(encoding="utf-8").splitlines()
+                if line.strip() and '"order_id"' in line
+            )
         except Exception:
             pass
-    log.info("  Labelled examples: %d", labelled_count)
-    if labelled_count >= 200:
-        log.info("  [OK] ML: Self-learning continuous — gradient boosted model active (%d examples)", labelled_count)
-    elif labelled_count >= 50:
-        log.info("  [OK] ML: Self-learning continuous — logistic regression active (%d examples)", labelled_count)
+
+    _row(ok_sym, f"Data  →  open: {n_active} | closed: {n_closed} | JSONL history: {n_trades} trades")
+
+    # ── Connectivity ───────────────────────────────────────────────────────────
+    if _kalshi_auth.is_configured:
+        ok, msg = _kalshi_auth.validate_connection()
+        _row(ok_sym if ok else fail_sym, f"Kalshi API: {msg}")
+        if not ok:
+            all_ok = False
     else:
-        log.info("  [INFO] ML: Self-learning continuous — Gemini deflation active | %d/50 examples to upgrade calibration", labelled_count)
+        _row(warn_sym, "Kalshi not configured (KALSHI_KEY_ID + KALSHI_PRIVATE_KEY)")
 
-    # ── [5] ACCOUNT STATE ──────────────────────────────────────────────────────
-    log.info("[5] ACCOUNT STATE")
-    log.info(_DIV)
+    try:
+        r = _req.get("https://clob.polymarket.com", timeout=5)
+        _row(ok_sym if r.ok else warn_sym, f"Polymarket CLOB: {'OK' if r.ok else f'HTTP {r.status_code}'}")
+    except Exception as exc:
+        _row(fail_sym, f"Polymarket CLOB: unreachable ({type(exc).__name__})")
+        all_ok = False
 
+    # ── ML pipeline ────────────────────────────────────────────────────────────
+    labelled_count = 0
+    labelled_file = _base / "ml_labelled_outcomes.jsonl"
+    if labelled_file.exists():
+        try:
+            labelled_count = sum(1 for l in labelled_file.open() if l.strip())
+        except Exception:
+            pass
+    if labelled_count >= 200:
+        ml_phase = f"Phase 3 — gradient boosted ({labelled_count} examples)"
+    elif labelled_count >= 50:
+        ml_phase = f"Phase 2 — logistic regression ({labelled_count} examples)"
+    else:
+        ml_phase = f"Phase 1 — Gemini deflation ({labelled_count}/50 examples to upgrade)"
+    _row(ok_sym, f"ML: {ml_phase}")
+
+    # ── Account state ──────────────────────────────────────────────────────────
     acc_file = _base / "account_state.json"
     if acc_file.exists():
         try:
-            acc = json.loads(acc_file.read_text(encoding="utf-8"))
+            acc     = json.loads(acc_file.read_text(encoding="utf-8"))
             balance = acc.get("balance", acc.get("bankroll", 0))
             pnl     = acc.get("total_pnl", acc.get("pnl", 0))
-            mode    = cfg.get("BOT_MODE", "paper_trading")
-            log.info("  Balance: $%.2f | PnL: $%.2f | Mode: %s", balance, pnl, mode)
+            pnl_sign = "+" if pnl >= 0 else ""
+            _row(ok_sym, f"Account: ${balance:.2f} balance | P&L {pnl_sign}${pnl:.2f} | {cfg.get('BOT_MODE', 'paper_trading')}")
         except Exception:
-            log.warning("  [WARN] account_state.json unreadable")
+            _row(warn_sym, "account_state.json unreadable — will recreate")
     else:
-        log.info("  account_state.json not yet created")
+        _row(ok_sym, f"Account: fresh start | {cfg.get('BOT_MODE', 'paper_trading')} mode")
 
-    # ── [6] RUNTIME ────────────────────────────────────────────────────────────
-    log.info("[6] RUNTIME")
-    log.info(_DIV)
-    try:
-        from state_manager import get_runtime_summary as _grs
-        rt = _grs()
-        if rt:
-            log.info("  Uptime: %.1f hrs (%dd %dh) | ML self-learning continuous",
-                     rt["total_hours"], rt["days"], rt["hours"])
-        else:
-            log.info("  Runtime timer: first start — timer initialises on main loop entry")
-    except Exception:
-        log.info("  Runtime timer: not yet initialised")
-
-    # ── VERDICT ────────────────────────────────────────────────────────────────
-    log.info(_SEP)
-    if all_ok:
-        log.info("[OK] ALL DIAGNOSTICS PASSED — READY FOR PAPER RUN")
-    else:
-        log.error("[FAIL] SOME CHECKS FAILED — review above before trading")
-    log.info(_SEP)
+    # ── Flush block ────────────────────────────────────────────────────────────
+    verdict = "READY" if all_ok else "CHECK REQUIRED"
+    log.info("─── ZiSi Startup Diagnostics ──────────────────────── %s ───", verdict)
+    for line in lines:
+        log.info(line)
+    log.info("────────────────────────────────────────────────────────────────")
 
     return all_ok
 
@@ -1432,17 +1628,22 @@ def main() -> None:
     # Start Telegram bot daemon (no-op if TELEGRAM_BOT_TOKEN not set)
     _telegram_thread = start_telegram_bot()
 
-    # Start shadow copy-trade monitor (PBot-6 + Wallet-2 — polls every 15s via positions API)
+    # Start rapid-fire RSS scanner (background, daemon)
+    _rapid_thread = threading.Thread(target=_rapid_scanner_thread, daemon=True, name="rapid-scanner")
+    _rapid_thread.start()
+    log.info("[RAPID] Rapid-fire RSS scanner started — checks every 90s for breaking news")
+
+    # Start shadow intelligence monitor (PBot-6 + Wallet-2 — intelligence-only, no execution)
+    # Mules no longer place paper trades. They feed directional signals into updown_trader.py
+    # and maintain conflict detection. ZiSi makes its own independent execution decisions.
     global _shadow_monitor
     try:
         _shadow_monitor = ShadowModeMonitor(
-            place_paper_trade_fn=place_order,
-            close_paper_trade_fn=execute_exit,
             get_balance_fn=get_current_balance,
             poll_interval=15,
         )
         _shadow_monitor.start()
-        log.info("[SHADOW] Shadow mode monitor started — watching PBot-6 + Wallet-2")
+        log.info("[SHADOW] Intelligence monitor started — watching PBot-6 + Wallet-2 (signal-only mode)")
     except Exception as _sme:
         log.warning("[SHADOW] Shadow monitor failed to start (non-fatal): %s", _sme)
 
@@ -1475,11 +1676,19 @@ def main() -> None:
     except Exception as _cwre:
         log.warning("[STARTUP] Category win rate load failed: %s", _cwre)
 
-    # ── Load persisted ML model (no-op if < 50 labelled examples) ─────────────
+    # ── Load persisted ML model — Phase 2 auto-activation on startup ──────────
+    # ensure_phase2_activated() loads the existing model if available, or trains
+    # a new one if 50+ labelled examples exist and no model is on disk yet.
+    # This bypasses the new_labels > 0 requirement in link_trade_outcomes() that
+    # prevented auto-training when all trades were already labelled.
     try:
-        _load_ml_model()
+        _phase2_active = _ensure_phase2()
+        if _phase2_active:
+            log.info("[STARTUP] ✅ ML Phase 2 ACTIVE — logistic regression calibration enabled")
+        else:
+            log.info("[STARTUP] ML Phase 1 — collecting labelled examples (0.65× deflation)")
     except Exception as _mle:
-        log.warning("[STARTUP] ML model load failed: %s", _mle)
+        log.warning("[STARTUP] ML model load/train failed: %s", _mle)
 
     last_check_minute = -1  # Forces an immediate check on first iteration
     cycle_count = 0
@@ -1495,6 +1704,46 @@ def main() -> None:
 
             now = datetime.now(timezone.utc)
             interval = 15  # 15-minute cycles: 96/day
+
+            # ── Rapid-fire queue drain ────────────────────────────────────────
+            # Between normal 15-min cycles, the rapid scanner may have queued
+            # high-conviction RSS signals. Process them with an immediate Kalshi
+            # cycle so we don't wait up to 15 min to act on breaking news.
+            try:
+                if _RAPID_FIRE_QUEUE.exists():
+                    _rapid_queued = json.loads(_RAPID_FIRE_QUEUE.read_text(encoding="utf-8"))
+                    if _rapid_queued:
+                        log.info("[RAPID] ⚡ %d rapid signal(s) queued — running immediate Kalshi cycle", len(_rapid_queued))
+                        _RAPID_FIRE_QUEUE.write_text("[]", encoding="utf-8")
+                        # Build synthetic signals for Kalshi
+                        _rapid_signals = []
+                        for _rq in _rapid_queued:
+                            _rapid_signals.append({
+                                "coin":        _rq.get("coin", "BTC"),
+                                "sentiment":   _rq.get("direction", "BULLISH"),
+                                "confidence":  _rq.get("confidence", 8.5),
+                                "signal_type": "TYPE_A_HIGH",
+                                "kelly_multiplier": 1.2,
+                                "headline":    _rq.get("title", "")[:80],
+                                "source":      _rq.get("source", "RSS"),
+                            })
+                        if _rapid_signals and _running:
+                            try:
+                                _kalshi_rapid = run_kalshi_for_cycle(
+                                    signals=_rapid_signals,
+                                    kalshi_fetcher=_kalshi_fetcher,
+                                    kalshi_matcher=_kalshi_matcher,
+                                    kalshi_trader=_kalshi_trader,
+                                    kelly_fn=calculate_position_size_kelly,
+                                    account_balance=cfg["ACCOUNT_BALANCE"],
+                                    hist_stats=calculate_historical_stats(list(_trade_history)),
+                                )
+                                if _kalshi_rapid.get("kalshi_trades", 0) > 0:
+                                    log.info("[RAPID] ✅ %d Kalshi trade(s) from rapid signal", _kalshi_rapid["kalshi_trades"])
+                            except Exception as _rke:
+                                log.debug("[RAPID] Kalshi cycle failed: %s", _rke)
+            except Exception as _rqe:
+                log.debug("[RAPID] Queue drain error: %s", _rqe)
 
             # Run on every Nth minute boundary (e.g. :00, :30)
             on_schedule = (now.minute % interval == 0) and (now.minute != last_check_minute)
@@ -1578,6 +1827,22 @@ def main() -> None:
                 except Exception as _rpe:
                     log.debug("[PRICE-REFRESH] Skipped: %s", _rpe)
 
+                # ── Trailing stop escalator ────────────────────────────────
+                # Ratchets stop-loss upward as open positions move toward target
+                try:
+                    _trail_updated = escalate_trailing_stops()
+                    if _trail_updated:
+                        log.info("[TRAIL] %d trailing stop(s) escalated this cycle", _trail_updated)
+                except Exception as _te:
+                    log.debug("[TRAIL] Escalator skipped: %s", _te)
+
+                # ── Hour win-rate oracle ───────────────────────────────────
+                # Refresh once per cycle; cheap JSONL scan with 5-min cache
+                try:
+                    _refresh_hour_win_rates()
+                except Exception:
+                    pass
+
                 # ── Circuit breaker check ──────────────────────────────────
                 # Reads latest balance from file (authoritative across restarts)
                 _cb_bal, _cb_pnl, _ = sync_balance_to_state()
@@ -1616,9 +1881,33 @@ def main() -> None:
                     log.debug("[FUNDING] Unavailable: %s", _fre)
                     _btc_fr = _eth_fr = {"sentiment": "NEUTRAL", "signal_strength": 0.0}
 
-                # ── Step 1: Fetch news ──────────────────────────────────────
+                # ── Step 1: Fetch news (existing sources + free RSS harvest) ──
                 articles = fetch_crypto_articles()
-                log.info("News: %d articles fetched", len(articles) if articles else 0)
+                log.info("News: %d articles fetched (primary sources)", len(articles) if articles else 0)
+
+                # Augment with free RSS/Reddit/CryptoPanic headlines (no API key)
+                try:
+                    from rss_fetcher import get_all_headlines as _rss_get, headlines_to_text as _rss_txt
+                    _rss_items = _rss_get(max_age_minutes=25)
+                    _rss_articles = [
+                        {
+                            "title":          h.get("title", ""),
+                            "description":    h.get("title", ""),
+                            "source":         h.get("source", "RSS"),
+                            "source_quality": 0.65,
+                            "url":            h.get("url", ""),
+                            "published_at":   h.get("published_at", ""),
+                            "coin_hint":      h.get("coin_hint", "CRYPTO"),
+                        }
+                        for h in _rss_items
+                    ]
+                    # Avoid duplicating titles already in primary articles
+                    _existing_titles = {(a.get("title") or "")[:60].lower() for a in articles}
+                    _new_rss = [a for a in _rss_articles if (a["title"] or "")[:60].lower() not in _existing_titles]
+                    articles = articles + _new_rss
+                    log.info("[RSS] +%d RSS/Reddit/CryptoPanic headlines → %d total articles", len(_new_rss), len(articles))
+                except Exception as _rsse:
+                    log.debug("[RSS] Augmentation skipped: %s", _rsse)
 
                 if not articles:
                     log.info("No articles — skipping cycle")
@@ -1757,14 +2046,30 @@ def main() -> None:
                     len(_cm_result.get("kalshi_candidates", [])),
                 )
 
+                # ── Hour-based win-rate oracle threshold ───────────────────
+                # Dynamically tightens/loosens the confidence bar based on
+                # this UTC hour's historical win rate across all closed trades.
+                _base_thresh = cfg.get("SIGNAL_THRESHOLD", 6)
+                _adaptive_thresh = _get_adaptive_threshold(_base_thresh)
+
                 log.info(
-                    "[EXECUTION] Processing %d deduped signals against %d markets...",
-                    len(signals_deduped), len(all_events),
+                    "[EXECUTION] Processing %d deduped signals against %d markets... "
+                    "(oracle threshold=%d/10)",
+                    len(signals_deduped), len(all_events), _adaptive_thresh,
                 )
                 _exec_count = 0
                 for sig in signals_deduped:
                     if not _running:
                         break
+                    # Oracle gate: skip signals below the adaptive threshold
+                    _sig_conf = sig.get("confidence", 0)
+                    if _sig_conf < _adaptive_thresh:
+                        log.debug(
+                            "[ORACLE] Skipping signal conf=%d < threshold=%d (dead hour)",
+                            _sig_conf, _adaptive_thresh,
+                        )
+                        _record_skip("oracle_hour_filter")
+                        continue
                     _process_signal(sig, all_events, cfg)
                     _exec_count += 1
                 _cycle_signals_processed += _exec_count
@@ -1792,7 +2097,7 @@ def main() -> None:
                         # ── Check + close aged Kalshi paper positions ─────────
                         try:
                             _kalshi_closed = _kalshi_trader.check_and_close_positions(
-                                paper_hold_minutes=60
+                                paper_hold_minutes=30
                             )
                             for _cp in _kalshi_closed:
                                 win_lbl = "WIN" if (_cp.get("realized_pnl") or 0) > 0 else "LOSS"
@@ -1877,26 +2182,7 @@ def main() -> None:
                 if cfg["DAILY_REPORT_EMAIL"]:
                     _maybe_send_daily_report(cfg)
 
-                # ── Step 9: 8-hour scheduled email update ──────────────────
-                if _email_scheduler.should_send_scheduled():
-                    metrics_for_email = {
-                        "session_pnl": snap.get("total_pnl", 0),
-                        "trades_executed": snap.get("total_trades", 0),
-                        "win_rate": snap.get("win_rate", 0) / 100,
-                        "profit_factor": snap.get("profit_factor", 0),
-                        "max_drawdown": snap.get("max_drawdown", 0),
-                        "current_drawdown": 0,
-                        "consecutive_losses": snap.get("consecutive_losses", 0),
-                        "signals_evaluated": len(signals),
-                        "polymarket_matches": snap.get("cm_poly_candidates", 0),
-                        "hypothetical_trades": snap.get("liquidity_skips", 0) + snap.get("price_skips", 0),
-                        "risk_of_ruin": "Low",
-                    }
-                    _email_scheduler.send_scheduled_update(
-                        metrics_for_email,
-                        {"balance": cfg["ACCOUNT_BALANCE"] + snap.get("total_pnl", 0)},
-                    )
-                    log.info("[EMAIL] 8-hour scheduled update sent")
+                # ── Step 9: 8-hour scheduled email update (disabled — Telegram is the sole channel) ──
 
                 # ── Step 10: Alert checks ───────────────────────────────────
                 if snap.get("total_trades", 0) >= 5:

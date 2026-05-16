@@ -31,6 +31,8 @@ _gemini_client = None
 # gemini-2.0-flash: available on v1 API (gemini-1.5-flash is v1beta only → 404)
 _GEMINI_MODEL = "gemini-2.0-flash"
 _GEMINI_MODEL_FALLBACK = "gemini-2.0-flash-lite"
+# Quota-exhaustion backoff: unix timestamp after which Gemini calls are allowed again
+_gemini_exhausted_until: float = 0.0
 
 # Lazy-initialised Groq client (free tier: 14,400 req/day)
 _groq_client = None
@@ -766,6 +768,13 @@ def analyze_articles_with_gemini(articles: list[dict]) -> list[dict]:
     Supports both google.genai (new) and google.generativeai (deprecated) SDKs.
     Returns same dict shape as all other analysis functions.
     """
+    import time as _time
+    global _gemini_exhausted_until
+    if _time.time() < _gemini_exhausted_until:
+        _remaining = int(_gemini_exhausted_until - _time.time())
+        log.info("[GEMINI] Quota cooldown active — skipping for %ds", _remaining)
+        return []
+
     wrapper = _get_gemini_client()
     if wrapper is None:
         return []
@@ -831,6 +840,16 @@ def analyze_articles_with_gemini(articles: list[dict]) -> list[dict]:
                 chunk_start + 1, chunk_start + len(chunk), exc,
             )
         except Exception as exc:
+            exc_str = str(exc)
+            if "RESOURCE_EXHAUSTED" in exc_str or "quota" in exc_str.lower() or "429" in exc_str:
+                # Free-tier daily quota hit — back off for 60 minutes
+                import time as _time
+                _gemini_exhausted_until = _time.time() + 3600
+                log.warning(
+                    "[GEMINI] RESOURCE_EXHAUSTED — quota hit. Pausing Gemini for 60 min. "
+                    "Groq/other analyzers will handle signals in the meantime."
+                )
+                break  # No point trying remaining chunks
             log.warning(
                 "[SENTIMENT-BATCH] Gemini chunk %d-%d failed — will try fallback: %s",
                 chunk_start + 1, chunk_start + len(chunk), exc,

@@ -33,18 +33,27 @@ router.get('/', (req, res) => {
       features: [],
     };
 
+    // Count actual labelled examples regardless of whether model is trained yet
+    let labelled_count = 0;
+    try {
+      const labelledFile = path.join(BOT_ROOT, 'ml_labelled_outcomes.jsonl');
+      if (fs.existsSync(labelledFile)) {
+        const content = fs.readFileSync(labelledFile, 'utf-8');
+        labelled_count = content.split('\n').filter(l => l.trim()).length;
+      }
+    } catch (_) { /* non-fatal */ }
+
     if (modelMeta) {
       // Python train_model() writes: accuracy, auc, n_examples, n_train, phase, model_type
       const acc  = modelMeta.accuracy;
       const auc  = modelMeta.auc;
-      const n    = modelMeta.n_examples ?? modelMeta.n_train ?? 0;
       const ts   = modelMeta.trained_at;
       // model is trained when phase is PHASE_2_CALIBRATED (set by train_model())
       const isPhase2 = (modelMeta.phase || '').startsWith('PHASE_2');
 
       let phase_label;
       if (!isPhase2) {
-        phase_label = 'Phase 1 — Deflation (0.65×)';
+        phase_label = `Phase 1 — Deflation (0.65×) · ${labelled_count}/50 labelled`;
       } else if (acc != null && acc >= 0.60) {
         phase_label = 'Phase 2 — Logistic Regression active';
       } else {
@@ -55,12 +64,16 @@ router.get('/', (req, res) => {
         phase: isPhase2 ? 'PHASE_2_LOGISTIC' : 'PHASE_1_UNCALIBRATED',
         phase_label,
         model_trained: isPhase2,
-        training_samples: n,
+        training_samples: labelled_count,   // real labelled count, not model meta
         val_accuracy: acc != null ? parseFloat((acc * 100).toFixed(1)) : null,
         val_roc_auc:  auc != null ? parseFloat(auc.toFixed(4)) : null,
         trained_at: ts ?? null,
         features: modelMeta.features ?? [],
       };
+    } else {
+      // No model yet — just show labelled count
+      ml_status.training_samples = labelled_count;
+      ml_status.phase_label = `Phase 1 — Deflation (0.65×) · ${labelled_count}/50 labelled`;
     }
 
     // ── Alert summary ──────────────────────────────────────────────────────

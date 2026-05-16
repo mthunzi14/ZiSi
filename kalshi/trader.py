@@ -30,6 +30,56 @@ _closed_positions: List[Dict] = []
 _kalshi_write_lock = threading.Lock()
 
 
+def _load_closed_from_disk() -> None:
+    """
+    Restore _closed_positions from positions_state.json on startup.
+    Without this, a bot restart wipes the Kalshi closed history from the dashboard
+    because persist_positions() would merge empty _closed_positions over disk state.
+    """
+    global _closed_positions
+    try:
+        p = Path(__file__).parent.parent / "positions_state.json"
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            kalshi = [x for x in (data.get("closed") or []) if x.get("market") == "KALSHI"]
+            if kalshi:
+                _closed_positions = kalshi
+                log.info("[KALSHI] Restored %d closed positions from disk", len(kalshi))
+    except Exception as exc:
+        log.warning("[KALSHI] Could not restore closed positions from disk: %s", exc)
+
+
+def _load_open_from_disk() -> None:
+    """
+    Restore _open_positions from positions_state.json on startup.
+
+    Critical: without this, every bot restart empties _open_positions.
+    The next call to persist_positions() (triggered by execute_trade) strips
+    all old Kalshi active entries from disk and replaces them with the new trade
+    only — previous positions vanish and check_and_close_positions() never sees
+    them → 0 Kalshi closed trades accumulate across sessions.
+    """
+    global _open_positions
+    try:
+        p = Path(__file__).parent.parent / "positions_state.json"
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            kalshi = {
+                x["order_id"]: x
+                for x in (data.get("active") or [])
+                if x.get("market") == "KALSHI" and x.get("order_id")
+            }
+            if kalshi:
+                _open_positions.update(kalshi)
+                log.info("[KALSHI] Restored %d open positions from disk", len(kalshi))
+    except Exception as exc:
+        log.warning("[KALSHI] Could not restore open positions from disk: %s", exc)
+
+
+_load_closed_from_disk()
+_load_open_from_disk()
+
+
 class KalshiTrader:
     def __init__(self, auth):
         self.auth = auth
@@ -144,7 +194,7 @@ class KalshiTrader:
 
     # ── Position lifecycle ────────────────────────────────────────────────────
 
-    def check_and_close_positions(self, paper_hold_minutes: int = 240) -> List[Dict]:
+    def check_and_close_positions(self, paper_hold_minutes: int = 30) -> List[Dict]:
         """
         Close paper positions that have been open for >= paper_hold_minutes.
 
@@ -224,13 +274,36 @@ class KalshiTrader:
             _closed_positions.append(dict(pos))
             del _open_positions[order_id]
 
-            # Write closed trade to zisi_local_trades.jsonl so balance is updated
+            # Write closed trade to zisi_local_trades.jsonl
             self._write_closed_to_trades(pos)
+
+            # Update in-memory balance so account_state.json stays in sync
+            try:
+                from state_manager import get_current_balance as _gcb, update_balance as _ub
+                _ub(
+                    _gcb() + pnl_dollars,
+                    reason=f"Kalshi close {exit_reason}: {pos.get('event_title','')[:40]} ${pnl_dollars:+.4f}",
+                )
+            except Exception as _sm_exc:
+                log.warning("[KALSHI-BALANCE] state_manager update failed: %s", _sm_exc)
 
             log.info(
                 "[KALSHI-CLOSE] %s | %s | $%+.4f (%.1f%%) | held %.0fm",
                 exit_reason, pos["event_title"][:50], pnl_dollars, pnl_pct, hold_min,
             )
+
+            try:
+                from telegram_bot import notify_trade_closed as _tg_close
+                _tg_close(
+                    event_title=pos.get("event_title", "")[:50],
+                    pnl=pnl_dollars,
+                    pnl_pct=pnl_pct,
+                    hold_min=hold_min,
+                    market="KALSHI",
+                )
+            except Exception:
+                pass
+
             newly_closed.append(pos)
 
         if newly_closed:

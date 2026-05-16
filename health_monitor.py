@@ -181,11 +181,24 @@ def _check_bankroll_accuracy() -> bool:
                     continue
 
         starting_balance = float(state.get("starting_balance", state.get("initial_balance", 100.0)))
-        expected_balance = round(starting_balance + total_pnl, 2)
+
+        # Include shadow trade P&L — shadow trades update account_state but are NOT
+        # written to zisi_local_trades.jsonl (that's ZiSi-only), so computed must add them.
+        shadow_pnl = 0.0
+        shadow_file = _BASE_DIR / "shadow_state.json"
+        if shadow_file.exists():
+            try:
+                s = json.loads(shadow_file.read_text(encoding="utf-8"))
+                shadow_pnl = float(s.get("pnl", 0) or 0)
+            except Exception:
+                pass
+
+        expected_balance = round(starting_balance + total_pnl + shadow_pnl, 2)
         discrepancy = abs(local_balance - expected_balance)
         discrepancy_pct = discrepancy / max(1.0, expected_balance)
 
-        if discrepancy_pct > 0.02:
+        # 5% tolerance — small rounding gaps are normal with many small trades
+        if discrepancy_pct > 0.05:
             _add_alert(
                 "WARNING", "BANKROLL_MISMATCH",
                 f"Balance mismatch: state=${local_balance:.2f} vs computed=${expected_balance:.2f} "

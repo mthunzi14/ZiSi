@@ -15,6 +15,7 @@ import alertsRouter from './routes/alerts.js';
 import systemHealthRouter from './routes/systemHealth.js';
 import signalQueueRouter from './routes/signalQueue.js';
 import eventsRouter from './routes/events.js';
+import performanceRouter from './routes/performance.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -40,6 +41,7 @@ app.use('/api/alerts',       alertsRouter);
 app.use('/api/system-health', systemHealthRouter);
 app.use('/api/signal-queue',  signalQueueRouter);
 app.use('/api/events',        eventsRouter);
+app.use('/api/performance',   performanceRouter);
 
 app.use((err, req, res, next) => {
   console.error('Error:', err);

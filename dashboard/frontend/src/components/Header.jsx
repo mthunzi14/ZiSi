@@ -78,7 +78,7 @@ export default function Header({ metrics, onRefresh, autoRefresh = true }) {
 
   return (
     <>
-      {toast && <div className="pos-toast header-toast">{toast}</div>}
+      {toast && <div className="header-toast">{toast}</div>}
 
       <header className="page-header">
         <div className="header-logo">

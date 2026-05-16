@@ -9,30 +9,24 @@ export default function BotStatus() {
     pnl: ssePnl,
     trades: sseTrades,
     botStatus: sseBotStatus,
-    winCount, lossCount,
+    winCount, lossCount, closedCount,
     connected,
   } = useSSE();
 
-  // ── Polling: uptime, dailySignals, mules (change infrequently) ───────────
+  // ── Polling: uptime, dailySignals (change infrequently) ─────────────────
   const [uptime,       setUptime]       = useState('—');
   const [dailySignals, setDailySignals] = useState(0);
   const [isPaused,     setIsPaused]     = useState(false);
-  const [mules,        setMules]        = useState({
-    mule1: { name: 'Mule1', enabled: true },
-    mule2: { name: 'Mule2', enabled: true },
-  });
 
   useEffect(() => {
     const fetchSlow = async () => {
       try {
-        const [healthRes, controlRes, mulesRes] = await Promise.all([
+        const [healthRes, controlRes] = await Promise.all([
           fetch('/api/health'),
           fetch('/api/control/status'),
-          fetch('/api/control/mules'),
         ]);
         const health  = await healthRes.json();
         const control = await controlRes.json();
-        if (mulesRes.ok) setMules(await mulesRes.json());
 
         const h = Math.floor(health.runtime?.hours || 0);
         const m = Math.floor(((health.runtime?.hours || 0) % 1) * 60);
@@ -60,19 +54,6 @@ export default function BotStatus() {
     }
   };
 
-  const handleMuleToggle = async (id) => {
-    const current = mules[id]?.enabled ?? true;
-    const action  = current ? 'disable' : 'enable';
-    try {
-      const res = await fetch(`/api/control/mule/${id}/${action}`, { method: 'POST' });
-      if (res.ok) {
-        setMules(prev => ({ ...prev, [id]: { ...prev[id], enabled: !current } }));
-      }
-    } catch (e) {
-      console.error('Mule toggle failed:', e);
-    }
-  };
-
   // ── Derived display values ────────────────────────────────────────────────
   const isRunning   = (sseBotStatus === 'running' || sseBotStatus === 'loading') && !isPaused;
   const isOffline   = sseBotStatus === 'offline' || (!connected && sseBotStatus !== 'loading');
@@ -82,8 +63,9 @@ export default function BotStatus() {
                     : isOffline      ? 'Offline'
                     : 'Running';
 
-  const totalTrades = sseTrades || (winCount + lossCount);
-  const winRate     = totalTrades > 0 ? winCount / totalTrades : null;
+  // closedCount from positions_state is the single source of truth (includes shadow trades)
+  const totalTrades = closedCount > 0 ? closedCount : (sseTrades || (winCount + lossCount));
+  const winRate     = (winCount + lossCount) > 0 ? winCount / (winCount + lossCount) : null;
   const pnlColor    = ssePnl > 0 ? '#59d499' : ssePnl < 0 ? '#ff6363' : 'var(--color-ash-text)';
   const pnlSign     = ssePnl >= 0 ? '+' : '-';
 
@@ -150,21 +132,7 @@ export default function BotStatus() {
         </button>
       </div>
 
-      {/* ── Row 2: Mule controls ── */}
-      <div className="mule-row">
-        <span className="mule-row-label">Shadow Mules</span>
-        {Object.entries(mules).map(([id, m]) => (
-          <button
-            key={id}
-            onClick={() => handleMuleToggle(id)}
-            className={`strip-mule-btn ${m.enabled ? 'mule-on' : 'mule-off'}`}
-            title={m.enabled ? `Click to disable ${m.name}` : `Click to enable ${m.name}`}
-          >
-            {m.enabled ? `👁 ${m.name} ON` : `○ ${m.name} OFF`}
-          </button>
-        ))}
-        <span className="mule-row-hint">Click to toggle shadow copy-trading</span>
-      </div>
+      {/* Mule row removed — mules are now intelligence-only signal feeds, not trade executors */}
     </div>
   );
 }

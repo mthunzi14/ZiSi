@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+// useCallback retained for load() memoization
 import { useSSE } from '../hooks/useSSE';
 import './Positions.css';
 
@@ -28,6 +29,18 @@ function holdStr(minutes) {
   const h = Math.floor(minutes / 60);
   const m = Math.round(minutes % 60);
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+function fmtDatetime(ts) {
+  if (!ts) return '—';
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleString([], {
+      month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+  } catch { return '—'; }
 }
 
 /**
@@ -87,6 +100,7 @@ function ActiveTable({ rows }) {
             <th>Size</th>
             <th>Unrealized P&amp;L</th>
             <th>Held</th>
+            <th>Opened</th>
             <th>Resolves</th>
             <th>Target / Stop</th>
           </tr>
@@ -127,6 +141,9 @@ function ActiveTable({ rows }) {
                 {/* Dynamic hold time — recalculates from real open_time each render */}
                 <td className="pos-mono pos-held-live">
                   {dynamicHoldStr(openTimeStr)}
+                </td>
+                <td className="pos-mono pos-opened-at">
+                  {fmtDatetime(openTimeStr)}
                 </td>
                 <td className="pos-mono pos-resolves">
                   {pos.resolution_date
@@ -181,6 +198,7 @@ function ClosedTable({ rows }) {
               <th>P&amp;L</th>
               <th>P&amp;L %</th>
               <th>Held</th>
+              <th>Closed At</th>
               <th>Result</th>
             </tr>
           </thead>
@@ -210,6 +228,9 @@ function ClosedTable({ rows }) {
                   {fmtPct(pos.realized_pnl_pct)}
                 </td>
                 <td className="pos-mono">{holdStr(parseFloat(pos.hold_hours || 0) * 60)}</td>
+                <td className="pos-mono pos-closed-at">
+                  {fmtDatetime(pos.close_time || pos.exit_timestamp)}
+                </td>
                 <td>
                   <span className={`pos-result-badge ${pos.realized_pnl > 0 ? 'badge-win' : 'badge-loss'}`}>
                     {pos.realized_pnl > 0 ? 'WIN' : 'LOSS'}
@@ -235,14 +256,13 @@ export default function Positions() {
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState(null);
   const [lastRefresh, setLastRefresh] = useState(null);
-  const [toast, setToast]             = useState(null);
   const loadRef = useRef(null);
 
   // Tick every 15 s — forces ActiveTable to re-render so dynamicHoldStr
   // recalculates from real open_time without waiting for an API refresh.
   const [, setTick] = useState(0);
   useEffect(() => {
-    const iv = setInterval(() => setTick(t => t + 1), 15_000);
+    const iv = setInterval(() => setTick(t => t + 1), 5_000);
     return () => clearInterval(iv);
   }, []);
 
@@ -275,15 +295,8 @@ export default function Positions() {
   // Background polling — reduced frequency since SSE handles hot updates
   useEffect(() => {
     load();
-    const iv = setInterval(load, 15_000);
+    const iv = setInterval(load, 5_000);
     return () => clearInterval(iv);
-  }, [load]);
-
-  const handleRefresh = useCallback(async () => {
-    setLoading(true);
-    await load();
-    setToast('✓ Refreshed');
-    setTimeout(() => setToast(null), 2500);
   }, [load]);
 
   const summary = data?.summary || {};
@@ -323,12 +336,9 @@ export default function Positions() {
         <div className="pos-header-right">
           {lastRefresh && (
             <span className="pos-refresh-time">
-              Live ● Updated {lastRefresh.toLocaleTimeString()}
+              Live ● {lastRefresh.toLocaleTimeString()}
             </span>
           )}
-          <button className="pos-refresh-btn" onClick={handleRefresh} disabled={loading}>
-            {loading ? '⟳' : '↻'} Refresh
-          </button>
         </div>
       </div>
 
@@ -387,7 +397,7 @@ export default function Positions() {
             )}
           </h3>
           <span className="pos-section-sub">
-            Live open trades — held time updates every minute · prices refresh every 30s
+            Live open trades — held time + prices update every 5s via SSE
           </span>
         </div>
         {loading && !data ? (
@@ -415,8 +425,6 @@ export default function Positions() {
         )}
       </div>
 
-      {/* ── Toast notification ── */}
-      {toast && <div className="pos-toast">{toast}</div>}
     </div>
   );
 }

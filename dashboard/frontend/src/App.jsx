@@ -17,6 +17,8 @@ import Positions from './components/Positions';
 import SignalPipeline from './components/SignalPipeline';
 import EquityChart from './components/EquityChart';
 import SignalQueue from './components/SignalQueue';
+import PerformanceCard from './components/PerformanceCard';
+import LiveTradeFeed from './components/LiveTradeFeed';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -59,6 +61,12 @@ export default function App() {
 
               {/* Row 4: Equity curve */}
               <EquityChart />
+
+              {/* Row 4b: Entity performance comparison */}
+              <PerformanceCard />
+
+              {/* Row 4c: Live trade feed (SSE-powered, real-time) */}
+              <LiveTradeFeed />
 
               {/* Row 5: Open/closed positions */}
               <Positions />

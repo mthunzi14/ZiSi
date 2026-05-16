@@ -50,7 +50,7 @@ def run_kalshi_for_cycle(
 
     # Fetch macro events once per cycle
     try:
-        events = kalshi_fetcher.fetch_events(["politics", "economics", "sports", "financials"])
+        events = kalshi_fetcher.fetch_events(["politics", "economics", "sports", "financials", "crypto", "technology"])
         summary["kalshi_events_fetched"] = len(events)
         if not events:
             log.info("[KALSHI] No events returned from API")
@@ -66,6 +66,14 @@ def run_kalshi_for_cycle(
     # that would lock out valid markets from later signals in the same cycle.
     _traded_tickers: set = set()
     _cycle_trade_count = 0
+
+    # Cross-cycle dedup: build set of tickers already held as open positions.
+    # Prevents re-entering the same Kalshi market every cycle while it's still open.
+    try:
+        from kalshi.trader import _open_positions as _kalshi_positions
+        _open_tickers: set = {p.get("ticker", "") for p in _kalshi_positions.values() if p.get("ticker")}
+    except Exception:
+        _open_tickers = set()
 
     for signal in signals:
         if _cycle_trade_count >= MAX_KALSHI_TRADES_PER_CYCLE:
@@ -96,6 +104,14 @@ def run_kalshi_for_cycle(
                     log.info(
                         "[KALSHI-DEDUP] Ticker already traded this cycle: %s",
                         event.get("title", "")[:60],
+                    )
+                    continue
+
+                # Cross-cycle check: skip if this ticker already has an open position
+                if ticker in _open_tickers:
+                    log.info(
+                        "[KALSHI-DEDUP] Open position already held for ticker %s — skipping re-entry",
+                        ticker,
                     )
                     continue
 

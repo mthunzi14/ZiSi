@@ -598,6 +598,11 @@ def count_open_trades() -> int:
     return len([p for p in _open_positions.values() if p.get("status") not in ("CLOSED", "CANCELLED")])
 
 
+def has_open_position(order_id: str) -> bool:
+    """True if order_id is tracked in the current session's open positions."""
+    return order_id in _open_positions
+
+
 def get_all_open_trades() -> list[dict]:
     """Return all currently open position dicts (enriched with targets)."""
     return [
@@ -809,7 +814,7 @@ def execute_exit(order_id: str, current_price: float, exit_reason: str = "UNKNOW
     pos = _open_positions.get(order_id)
 
     if pos is None:
-        log.error("Cannot exit: order %s not found in open positions", order_id)
+        log.debug("Cannot exit: order %s not found in open positions (likely pre-restart ghost)", order_id)
         return None
 
     shares = pos["shares_acquired"]
@@ -854,20 +859,30 @@ def execute_exit(order_id: str, current_price: float, exit_reason: str = "UNKNOW
     }
 
     title_short = (pos.get("event_title") or order_id)[:50]
-    log.info(
-        "[EXIT] %s | %s | %s @ %.4f | pnl=$%+.2f",
-        "✅ WIN" if profit > 0 else "❌ LOSS", title_short, exit_reason, current_price, profit,
-    )
 
     update_trade_record(order_id, exit_data)
     persist_positions()
 
+    # Update balance first so we can log the post-trade balance
+    new_balance = get_current_balance()
     try:
         new_balance = get_current_balance() + profit
         update_balance(new_balance, reason=f"Trade {order_id} closed with ${profit:+.2f}")
-        log.debug("[BALANCE] $%.2f after %s | P&L $%+.2f", new_balance, order_id, profit)
     except Exception as exc:
         log.error("Failed to update balance after trade %s: %s", order_id, exc)
+
+    outcome = "✅ WIN" if profit > 0 else "❌ LOSS"
+    log.info(
+        "[EXIT] %s | %s | %s @ %.4f | pnl=$%+.2f | bal=$%.2f",
+        outcome, title_short, exit_reason, current_price, profit, new_balance,
+    )
+
+    # Feed every closed trade into the ML pipeline immediately
+    try:
+        from ml_pipeline import link_trade_outcomes as _ml_link
+        _ml_link()
+    except Exception:
+        pass
 
     return exit_data
 
@@ -966,21 +981,69 @@ def persist_positions() -> None:
     # Newest closed trades first
     closed.sort(key=lambda p: p.get("exit_time", ""), reverse=True)
 
-    # ── Merge with existing Kalshi positions (they are written by kalshi/trader.py) ──
-    # Read the current file and keep any Kalshi rows so they aren't wiped.
+    # ── Merge with existing positions file ─────────────────────────────────────
+    # On restart _open_positions starts empty — closed trades would be lost.
+    # We preserve them by:
+    #   1. Reading Kalshi rows from the file (written by kalshi/trader.py)
+    #   2. Reading Polymarket CLOSED rows that aren't in the current in-memory set
+    #   3. Loading any JSONL closed trades that are in neither (full history recovery)
     out_path = Path(__file__).parent / "positions_state.json"
     kalshi_active: list[dict] = []
     kalshi_closed: list[dict] = []
+    existing_poly_closed: list[dict] = []
     try:
         if out_path.exists():
             existing = json.loads(out_path.read_text(encoding="utf-8"))
             kalshi_active = [p for p in existing.get("active", []) if p.get("market") == "KALSHI"]
             kalshi_closed = [p for p in existing.get("closed", []) if p.get("market") == "KALSHI"]
+            in_mem_ids = {p["order_id"] for p in closed}
+            existing_poly_closed = [
+                p for p in existing.get("closed", [])
+                if p.get("market") == "POLYMARKET" and p.get("order_id") not in in_mem_ids
+            ]
+    except Exception:
+        pass
+
+    # Also recover any JSONL-only closed trades not already represented above
+    _jsonl_path = Path(__file__).parent / "zisi_local_trades.jsonl"
+    jsonl_closed: list[dict] = []
+    try:
+        if _jsonl_path.exists():
+            known_ids = {p["order_id"] for p in closed} | {p.get("order_id") for p in existing_poly_closed}
+            for line in _jsonl_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    oid = entry.get("order_id", "")
+                    if (entry.get("status", "").upper() == "CLOSED" and oid and oid not in known_ids):
+                        known_ids.add(oid)
+                        jsonl_closed.append({
+                            "order_id":         oid,
+                            "market":           "POLYMARKET",
+                            "event_title":      entry.get("event_title", ""),
+                            "direction":        entry.get("direction", "?"),
+                            "entry_price":      round(float(entry.get("entry_price", 0)), 4),
+                            "exit_price":       round(float(entry.get("exit_price", 0)), 4),
+                            "size":             round(float(entry.get("amount_spent", entry.get("position_size", 0))), 2),
+                            "realized_pnl":     round(float(entry.get("profit", 0) or 0), 2),
+                            "realized_pnl_pct": round(float(entry.get("profit_percent", 0) or 0), 2),
+                            "exit_reason":      entry.get("exit_reason", "CLOSED"),
+                            "hold_hours":       round(float(entry.get("hold_duration", 0) or 0), 2),
+                            "entry_time":       entry.get("timestamp", ""),
+                            "exit_time":        entry.get("exit_timestamp", ""),
+                        })
+                except Exception:
+                    pass
     except Exception:
         pass
 
     merged_active = active + kalshi_active
-    merged_closed = closed + kalshi_closed
+    # Merge order: in-memory first (most recent), then file-preserved, then JSONL history
+    merged_closed = closed + existing_poly_closed + jsonl_closed + kalshi_closed
+    # Sort newest-first by exit_time
+    merged_closed.sort(key=lambda p: p.get("exit_time", p.get("exit_timestamp", "")), reverse=True)
 
     summary = {
         "active_count":  len(merged_active),
@@ -1030,6 +1093,71 @@ def persist_positions() -> None:
         _open_positions.pop(_oid, None)
     if _to_prune:
         log.debug("[MEMORY] Pruned %d stale CLOSED positions from memory", len(_to_prune))
+
+
+# ---------------------------------------------------------------------------
+# Trailing Stop Escalator — ratchets stop-loss up as profit builds
+# ---------------------------------------------------------------------------
+
+def escalate_trailing_stops() -> int:
+    """
+    For every open position with a target_price and stop_loss set,
+    ratchet the stop-loss upward as unrealized P&L accumulates.
+
+    Escalation ladder (measured as % of distance from entry to target):
+      ≥ 50% of target reached  →  move stop to breakeven (entry price)
+      ≥ 75% of target reached  →  move stop to lock in 40% of target profit
+      ≥ 90% of target reached  →  move stop to lock in 70% of target profit
+
+    This converts a potential win→loss reversal into a guaranteed profit once
+    the position is well in-the-money.  Returns count of stops updated.
+    """
+    updated = 0
+
+    for order_id, pos in list(_open_positions.items()):
+        if pos.get("status") in ("CLOSED", "CANCELLED"):
+            continue
+
+        entry  = float(pos.get("entry_price", 0) or 0)
+        target = pos.get("target_price")
+        stop   = pos.get("stop_loss")
+        current = float(pos.get("current_price", entry) or entry)
+
+        if not target or not stop or entry <= 0:
+            continue
+
+        target = float(target)
+        stop   = float(stop)
+
+        target_dist = target - entry
+        if target_dist <= 0:
+            continue  # inverted or zero-range target — skip
+
+        progress = (current - entry) / target_dist   # 0 = at entry, 1 = at target
+
+        new_stop = stop
+        if progress >= 0.90:
+            # Lock in 70% of the full profit
+            new_stop = max(stop, round(entry + 0.70 * target_dist, 4))
+        elif progress >= 0.75:
+            # Lock in 40% of the full profit
+            new_stop = max(stop, round(entry + 0.40 * target_dist, 4))
+        elif progress >= 0.50:
+            # Move stop to breakeven
+            new_stop = max(stop, round(entry, 4))
+
+        if new_stop > stop:
+            pos["stop_loss"] = new_stop
+            log.info(
+                "[TRAIL] %s | progress=%.0f%% | stop %.4f → %.4f (locked)",
+                order_id, progress * 100, stop, new_stop,
+            )
+            updated += 1
+
+    if updated:
+        persist_positions()
+
+    return updated
 
 
 # ---------------------------------------------------------------------------

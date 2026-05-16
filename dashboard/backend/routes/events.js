@@ -5,12 +5,11 @@
  * events whenever key bot state files change on disk.
  *
  * Event types emitted:
- *   trade_opened     — new position detected in positions_state.json
- *   trade_closed     — position moved to closed section
- *   balance_update   — account_state.json balance changed
- *   heartbeat        — sent every 30s so browsers don't time out the connection
- *
- * No extra npm packages required — pure Node.js + Express.
+ *   trade_opened       — new position detected in positions_state.json
+ *   trade_closed       — position moved to closed section
+ *   balance_update     — account_state.json balance changed
+ *   positions_snapshot — periodic full re-sync of position counts
+ *   heartbeat          — sent every 5s so browsers don't time out
  */
 
 import express from 'express';
@@ -31,7 +30,6 @@ let _clientId  = 0;
 
 /**
  * Broadcast a typed event to all connected SSE clients.
- * Called by the file watchers below.
  */
 export function broadcastEvent(type, data) {
   if (_clients.size === 0) return;
@@ -46,10 +44,19 @@ export function broadcastEvent(type, data) {
 }
 
 // ── File watchers ─────────────────────────────────────────────────────────────
+// Watcher instances — we close these before re-attaching to prevent accumulation.
+let _stateWatcher     = null;
+let _positionsWatcher = null;
 
 let _lastBalance    = null;
 let _lastActiveKeys = null;
 let _lastClosedKeys = null;
+
+// Debounce timers — Windows fires 2-3 watch events per single file write.
+// Coalesce rapid-fire events into one handler invocation.
+let _stateDebounce     = null;
+let _positionsDebounce = null;
+const DEBOUNCE_MS = 80;
 
 function _safeRead(filePath) {
   try {
@@ -59,67 +66,87 @@ function _safeRead(filePath) {
   }
 }
 
+function _positionKeys(arr) {
+  return (arr || []).map(p => p.order_id || '').filter(Boolean).sort().join(',');
+}
+
+function _handleStateChange() {
+  const state = _safeRead(STATE_FILE);
+  if (!state) return;
+  const balance = parseFloat(state.balance || 100);
+  if (balance !== _lastBalance) {
+    _lastBalance = balance;
+    broadcastEvent('balance_update', {
+      balance,
+      pnl:    parseFloat(state.pnl  || 0),
+      trades: state.trades_executed || 0,
+      status: state.status          || 'running',
+    });
+  }
+}
+
+function _handlePositionsChange() {
+  const data = _safeRead(POSITIONS_FILE);
+  if (!data) return;
+
+  const activeArr = data.active || [];
+  const closedArr = data.closed || [];
+  const activeKeys = _positionKeys(activeArr);
+  const closedKeys = _positionKeys(closedArr);
+
+  // Trade opened: new order_id in active that wasn't there before
+  if (activeKeys !== _lastActiveKeys && _lastActiveKeys !== null) {
+    const prevSet = new Set((_lastActiveKeys || '').split(',').filter(Boolean));
+    activeArr
+      .filter(p => p.order_id && !prevSet.has(p.order_id))
+      .forEach(pos => broadcastEvent('trade_opened', pos));
+  }
+  _lastActiveKeys = activeKeys;
+
+  // Trade closed: new order_id in closed that wasn't there before
+  if (closedKeys !== _lastClosedKeys && _lastClosedKeys !== null) {
+    const prevSet = new Set((_lastClosedKeys || '').split(',').filter(Boolean));
+    closedArr
+      .filter(p => p.order_id && !prevSet.has(p.order_id))
+      .forEach(pos => broadcastEvent('trade_closed', {
+        ...pos,
+        profit: pos.realized_pnl ?? pos.profit ?? 0,
+      }));
+  }
+  _lastClosedKeys = closedKeys;
+}
+
 function _watchStateFile() {
-  if (!fs.existsSync(STATE_FILE)) return;
-  fs.watch(STATE_FILE, { persistent: false }, () => {
-    const state = _safeRead(STATE_FILE);
-    if (!state) return;
-    const balance = parseFloat(state.balance || 100);
-    if (balance !== _lastBalance) {
-      _lastBalance = balance;
-      broadcastEvent('balance_update', {
-        balance,
-        pnl:    parseFloat(state.pnl  || 0),
-        trades: state.trades_executed || 0,
-        status: state.status          || 'running',
-      });
-    }
-  });
+  if (_stateWatcher) { try { _stateWatcher.close(); } catch (_) {} }
+  if (!fs.existsSync(STATE_FILE)) { _stateWatcher = null; return; }
+  try {
+    _stateWatcher = fs.watch(STATE_FILE, { persistent: false }, () => {
+      clearTimeout(_stateDebounce);
+      _stateDebounce = setTimeout(_handleStateChange, DEBOUNCE_MS);
+    });
+  } catch (_) { _stateWatcher = null; }
 }
 
 function _watchPositionsFile() {
-  if (!fs.existsSync(POSITIONS_FILE)) return;
-  fs.watch(POSITIONS_FILE, { persistent: false }, () => {
-    const data = _safeRead(POSITIONS_FILE);
-    if (!data) return;
-
-    const activeKeys = Object.keys(data.active || {}).sort().join(',');
-    const closedKeys = Object.keys(data.closed || {}).sort().join(',');
-
-    if (activeKeys !== _lastActiveKeys && _lastActiveKeys !== null) {
-      const newKeys    = activeKeys.split(',').filter(k => k && !(_lastActiveKeys || '').split(',').includes(k));
-      const removedKeys = (_lastActiveKeys || '').split(',').filter(k => k && !activeKeys.split(',').includes(k));
-      if (newKeys.length > 0) {
-        newKeys.forEach(k => {
-          const pos = data.active[k];
-          if (pos) broadcastEvent('trade_opened', pos);
-        });
-      }
-    }
-    _lastActiveKeys = activeKeys;
-
-    if (closedKeys !== _lastClosedKeys && _lastClosedKeys !== null) {
-      const newClosed = closedKeys.split(',').filter(k => k && !(_lastClosedKeys || '').split(',').includes(k));
-      if (newClosed.length > 0) {
-        newClosed.forEach(k => {
-          const pos = data.closed[k];
-          if (pos) broadcastEvent('trade_closed', pos);
-        });
-      }
-    }
-    _lastClosedKeys = closedKeys;
-  });
+  if (_positionsWatcher) { try { _positionsWatcher.close(); } catch (_) {} }
+  if (!fs.existsSync(POSITIONS_FILE)) { _positionsWatcher = null; return; }
+  try {
+    _positionsWatcher = fs.watch(POSITIONS_FILE, { persistent: false }, () => {
+      clearTimeout(_positionsDebounce);
+      _positionsDebounce = setTimeout(_handlePositionsChange, DEBOUNCE_MS);
+    });
+  } catch (_) { _positionsWatcher = null; }
 }
 
-// Seed initial state so first-change detection works correctly
+// Seed initial snapshot so first-change detection works
 function _seedInitialState() {
   const state = _safeRead(STATE_FILE);
   if (state) _lastBalance = parseFloat(state.balance || 100);
 
   const positions = _safeRead(POSITIONS_FILE);
   if (positions) {
-    _lastActiveKeys = Object.keys(positions.active || {}).sort().join(',');
-    _lastClosedKeys = Object.keys(positions.closed || {}).sort().join(',');
+    _lastActiveKeys = _positionKeys(positions.active);
+    _lastClosedKeys = _positionKeys(positions.closed);
   }
 }
 
@@ -127,32 +154,66 @@ _seedInitialState();
 _watchStateFile();
 _watchPositionsFile();
 
-// Re-attach watchers every 60s in case files are replaced (not modified in-place)
+// Re-attach watchers every 30s — fs.watch can silently stop on Windows.
+// Closing old watchers first prevents accumulation.
 setInterval(() => {
   _watchStateFile();
   _watchPositionsFile();
-}, 60_000);
+}, 30_000);
 
-// Heartbeat: keep SSE connections alive
+// Heartbeat every 5s — keeps SSE connections alive; also serves as a
+// liveness signal so the frontend can detect connection drops fast.
 setInterval(() => {
   broadcastEvent('heartbeat', { ts: Date.now() });
-}, 30_000);
+}, 5_000);
+
+// Full re-sync every 15s — corrects any drift from missed events.
+setInterval(() => {
+  const state     = _safeRead(STATE_FILE);
+  const positions = _safeRead(POSITIONS_FILE);
+
+  if (state) {
+    const balance = parseFloat(state.balance || 100);
+    broadcastEvent('balance_update', {
+      balance,
+      pnl:    parseFloat(state.pnl ?? (balance - parseFloat(state.starting_balance || 100))),
+      trades: state.trades_executed || 0,
+      status: state.status || 'running',
+    });
+    _lastBalance = balance;
+  }
+
+  if (positions) {
+    const summary = positions.summary || {};
+    broadcastEvent('positions_snapshot', {
+      active_count:  (positions.active  || []).length,
+      closed_count:  (positions.closed  || []).length,
+      win_count:     summary.win_count   || 0,
+      loss_count:    summary.loss_count  || 0,
+      realized_pnl:  summary.realized_pnl || 0,
+      unrealized_pnl: summary.unrealized_pnl || 0,
+    });
+    _lastActiveKeys = _positionKeys(positions.active);
+    _lastClosedKeys = _positionKeys(positions.closed);
+  }
+}, 15_000);
 
 // ── SSE endpoint ─────────────────────────────────────────────────────────────
 
 router.get('/', (req, res) => {
-  res.setHeader('Content-Type',  'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection',    'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');  // disable nginx buffering if behind proxy
+  res.setHeader('Content-Type',      'text/event-stream');
+  res.setHeader('Cache-Control',     'no-cache');
+  res.setHeader('Connection',        'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
   const id = ++_clientId;
   _clients.set(id, res);
 
-  // Send immediate snapshot so client has data before first file-change event
+  // Immediately send current snapshot to new subscriber
   const state     = _safeRead(STATE_FILE);
   const positions = _safeRead(POSITIONS_FILE);
+
   if (state) {
     res.write(`event: balance_update\ndata: ${JSON.stringify({
       balance: parseFloat(state.balance || 100),
@@ -161,14 +222,16 @@ router.get('/', (req, res) => {
       status:  state.status          || 'running',
     })}\n\n`);
   }
+
   if (positions) {
     const summary = positions.summary || {};
     res.write(`event: positions_snapshot\ndata: ${JSON.stringify({
-      active_count: Object.keys(positions.active || {}).length,
-      closed_count: Object.keys(positions.closed || {}).length,
-      win_count:    summary.win_count  || 0,
-      loss_count:   summary.loss_count || 0,
-      realized_pnl: summary.realized_pnl || 0,
+      active_count:   (positions.active  || []).length,
+      closed_count:   (positions.closed  || []).length,
+      win_count:      summary.win_count   || 0,
+      loss_count:     summary.loss_count  || 0,
+      realized_pnl:   summary.realized_pnl  || 0,
+      unrealized_pnl: summary.unrealized_pnl || 0,
     })}\n\n`);
   }
 
