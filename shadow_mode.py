@@ -57,6 +57,21 @@ SHADOW_MAX_TRADE_USD  = 5.00
 # Minimum seconds remaining in the market window before we'll shadow
 MIN_SECONDS_REMAINING = 20      # enter if >= 20s left — PBot often enters in last minute of 5-min window
 
+# Auto-disable mule when win rate falls below threshold (after MIN_TRADES resolved)
+AUTO_DISABLE_THRESHOLD  = 0.40   # 40% win rate floor
+AUTO_DISABLE_MIN_TRADES = 20     # need at least this many resolved trades before checking
+
+# Per-mule resolved trade counts (session only — resets on restart)
+_per_mule_stats: dict = {
+    "PBOT6":   {"wins": 0, "losses": 0, "consec_losses": 0},
+    "WALLET2": {"wins": 0, "losses": 0, "consec_losses": 0},
+}
+
+# Consecutive-loss pause: if a mule hits this many in a row, skip it for CONSEC_PAUSE_SECS
+CONSEC_LOSS_LIMIT  = 5
+CONSEC_PAUSE_SECS  = 30 * 60   # 30-minute cooldown
+_mule_paused_until: dict = {"PBOT6": 0, "WALLET2": 0}
+
 # Persistent state file to survive restarts
 _STATE_FILE = Path(__file__).parent / "shadow_state.json"
 
@@ -779,6 +794,59 @@ class ShadowModeMonitor:
             self.pnl += pnl
             rec.status = "WIN" if won else "LOSS"
 
+            # ── Per-mule stat tracking + auto-disable ────────────────────────
+            rec_label_for_stats = getattr(rec, "label", "")
+            if rec_label_for_stats in _per_mule_stats:
+                stats = _per_mule_stats[rec_label_for_stats]
+                if won:
+                    stats["wins"] += 1
+                    stats["consec_losses"] = 0
+                else:
+                    stats["losses"] += 1
+                    stats["consec_losses"] += 1
+
+                m_total = stats["wins"] + stats["losses"]
+                m_wr    = stats["wins"] / m_total if m_total > 0 else 1.0
+
+                # Consecutive-loss cooldown
+                if stats["consec_losses"] >= CONSEC_LOSS_LIMIT:
+                    _mule_paused_until[rec_label_for_stats] = int(time.time()) + CONSEC_PAUSE_SECS
+                    stats["consec_losses"] = 0
+                    mname = MULE_NAMES.get(rec_label_for_stats, rec_label_for_stats)
+                    log.warning(
+                        "[SHADOW] %s hit %d consecutive losses — pausing for 30 min",
+                        mname, CONSEC_LOSS_LIMIT,
+                    )
+                    try:
+                        from telegram_bot import send_alert as _tg
+                        _tg(
+                            f"⏸ {mname} paused (30 min)\n"
+                            f"{CONSEC_LOSS_LIMIT} consecutive losses detected.\n"
+                            f"Will auto-resume. Use /mule on {'1' if rec_label_for_stats == 'PBOT6' else '2'} to override."
+                        )
+                    except Exception:
+                        pass
+
+                # Auto-disable if sustained poor win rate
+                if m_total >= AUTO_DISABLE_MIN_TRADES and m_wr < AUTO_DISABLE_THRESHOLD and _mule_enabled.get(rec_label_for_stats, True):
+                    mname = MULE_NAMES.get(rec_label_for_stats, rec_label_for_stats)
+                    log.warning(
+                        "[SHADOW] Auto-disabling %s — win rate %.0f%% < %.0f%% threshold after %d trades",
+                        mname, m_wr * 100, AUTO_DISABLE_THRESHOLD * 100, m_total,
+                    )
+                    set_mule_enabled(rec_label_for_stats, False)
+                    try:
+                        from telegram_bot import send_alert as _tg
+                        idx = "1" if rec_label_for_stats == "PBOT6" else "2"
+                        _tg(
+                            f"🔴 {mname} auto-disabled\n"
+                            f"Win rate: {m_wr:.0%} after {m_total} trades\n"
+                            f"Threshold: {AUTO_DISABLE_THRESHOLD:.0%}\n"
+                            f"Re-enable: /mule on {idx}"
+                        )
+                    except Exception:
+                        pass
+
             sim_tag = " [sim]" if simulated else ""
             emoji   = "✅" if won else "❌"
             pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
@@ -841,6 +909,13 @@ class ShadowModeMonitor:
 
             if not _mule_enabled.get(label, True):
                 log.debug("[SHADOW] %s disabled — skipping poll", mule_name)
+                continue
+
+            # Consecutive-loss cooldown
+            now_ts_poll = int(time.time())
+            if _mule_paused_until.get(label, 0) > now_ts_poll:
+                mins_left = (_mule_paused_until[label] - now_ts_poll) // 60
+                log.debug("[SHADOW] %s in cooldown (%dm left)", mule_name, mins_left)
                 continue
 
             positions = _fetch_wallet_positions(wallet)
@@ -925,6 +1000,16 @@ class ShadowModeMonitor:
     def get_stats(self) -> dict:
         wr = self.wins / max(1, self.wins + self.losses)
         _load_mule_config()
+        per_mule = {}
+        for label, stats in _per_mule_stats.items():
+            total = stats["wins"] + stats["losses"]
+            per_mule[MULE_NAMES.get(label, label)] = {
+                "wins": stats["wins"],
+                "losses": stats["losses"],
+                "win_rate": round(stats["wins"] / total, 4) if total > 0 else None,
+                "enabled": _mule_enabled.get(label, True),
+                "paused_until": _mule_paused_until.get(label, 0),
+            }
         return {
             "total_shadowed": self.total_shadowed,
             "wins": self.wins,
@@ -937,4 +1022,5 @@ class ShadowModeMonitor:
                 MULE_NAMES.get(k, k): _mule_enabled.get(k, True)
                 for k in SHADOW_WALLETS
             },
+            "per_mule": per_mule,
         }

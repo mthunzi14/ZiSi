@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useSSE } from '../hooks/useSSE';
 import './Positions.css';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -230,11 +231,12 @@ function ClosedTable({ rows }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function Positions() {
-  const [data, setData]           = useState(null);
-  const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState(null);
+  const [data, setData]               = useState(null);
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState(null);
   const [lastRefresh, setLastRefresh] = useState(null);
-  const [toast, setToast]         = useState(null);
+  const [toast, setToast]             = useState(null);
+  const loadRef = useRef(null);
 
   // Tick every 15 s — forces ActiveTable to re-render so dynamicHoldStr
   // recalculates from real open_time without waiting for an API refresh.
@@ -259,10 +261,21 @@ export default function Positions() {
     }
   }, []);
 
-  // Auto-refresh every 10 s
+  // Keep a ref so SSE handler can call load() without stale closure
+  useEffect(() => { loadRef.current = load; }, [load]);
+
+  // SSE: reload positions immediately when a trade opens or closes
+  const { lastTradeClosed, lastTradeOpened } = useSSE();
+  useEffect(() => {
+    if (lastTradeClosed || lastTradeOpened) {
+      loadRef.current?.();
+    }
+  }, [lastTradeClosed, lastTradeOpened]);
+
+  // Background polling — reduced frequency since SSE handles hot updates
   useEffect(() => {
     load();
-    const iv = setInterval(load, 10_000);
+    const iv = setInterval(load, 15_000);
     return () => clearInterval(iv);
   }, [load]);
 
@@ -310,7 +323,7 @@ export default function Positions() {
         <div className="pos-header-right">
           {lastRefresh && (
             <span className="pos-refresh-time">
-              Updated {lastRefresh.toLocaleTimeString()}
+              Live ● Updated {lastRefresh.toLocaleTimeString()}
             </span>
           )}
           <button className="pos-refresh-btn" onClick={handleRefresh} disabled={loading}>

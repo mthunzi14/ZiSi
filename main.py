@@ -432,8 +432,8 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
     sentiment_dir = signal_data.get("sentiment", "neutral")
     confidence = signal_data.get("confidence", 0)
 
-    log.info("Processing signal: %s", headline)
-    log.info("  Sentiment: %s | Confidence: %d/10", sentiment_dir.upper(), confidence)
+    log.debug("Processing signal: %s", headline)
+    log.debug("  Sentiment: %s | Confidence: %d/10", sentiment_dir.upper(), confidence)
 
     # ── BLOCKER 4: Multi-level drawdown pause ──────────────────────────────────
     _dd = _get_drawdown_pct()
@@ -495,29 +495,23 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
     log.info(format_signal_log(signal_data, smart_event, smart_confidence))
 
     if not matching:
-        log.info("  No matching Polymarket events — skipping")
+        log.debug("  No matching Polymarket events — skipping")
         _record_skip("no_event_match")
         return
 
-    log.info("  Found %d matching events (smart confidence=%.2f)", len(matching), smart_confidence)
+    log.debug("  Found %d matching events (smart confidence=%.2f)", len(matching), smart_confidence)
 
-    # 2. Select best event.
-    # Priority: T1 smart match wins outright — it uses word-boundary matching
-    # and liquidity checks.  Only fall back to select_best_event() when the
-    # smart matcher found nothing, so we never silently swap to a lower-quality
-    # (but higher raw-relevance) event like "When will Bitcoin hit $150k?" (price=0).
     if smart_event is not None and smart_confidence > 0:
         best_event = smart_event
-        log.info("  [SMART-SELECT] Using T1/T2 smart match: %s (conf=%.2f)",
-                 best_event.get("title", "")[:70], smart_confidence)
+        log.debug("  [SMART-SELECT] %s (conf=%.2f)", best_event.get("title", "")[:70], smart_confidence)
     else:
         best_event = select_best_event(matching, sentiment_dir)
     if not best_event:
-        log.info("  No suitable event selected — skipping")
+        log.debug("  No suitable event selected — skipping")
         _record_skip("no_event_selected")
         return
 
-    log.info("  Selected: %s", best_event["title"])
+    log.debug("  Selected: %s", best_event["title"])
 
     # 2b-DEDUP: One Polymarket trade per event per cycle.
     # When only one liquid Bitcoin market exists, all bearish signals would
@@ -630,7 +624,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
         _record_skip("price_too_high")
         return
 
-    log.info("  Direction: %s | Price: %.4f", direction, current_price)
+    log.debug("  Direction: %s | Price: %.4f", direction, current_price)
 
     # 4b. Entry price check — avoid overpaying relative to signal strength
     price_check = validate_entry_price(current_price, confidence)
@@ -663,8 +657,8 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
         },
         market_category=event_market_cat,
     )
-    log.info("  Market category: %s", event_market_cat or "DEFAULT")
-    log.info(
+    log.debug("  Market category: %s", event_market_cat or "DEFAULT")
+    log.debug(
         "  Confluence: %.2f (%s) | Price confirmation: %.2f",
         confluence["confluence_score"], confluence["level"], price_confirmation,
     )
@@ -675,7 +669,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
         return
 
     mtf = _price_analyzer.get_timeframe_confirmation(symbol, sentiment_dir)
-    log.info("  MTF: %d/3 (%s)", mtf["confirmations"], mtf["alignment"])
+    log.debug("  MTF: %d/3 (%s)", mtf["confirmations"], mtf["alignment"])
 
     if mtf["confirmation_score"] < 0.33 and confluence["confluence_score"] < 0.70:
         log.info(
@@ -695,7 +689,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
         has_kalshi=_kalshi_auth.is_configured,
         polymarket_yes_price=current_price,
     )
-    log.info(
+    log.debug(
         "  [ROUTING] %s | conf=%.1f spread=%.3f | %s",
         _routing["target"], float(confidence), _spread_for_routing, _routing["reason"],
     )
@@ -827,7 +821,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
     )
 
     # 8. Place order
-    log.info("  PLACING ORDER...")
+    log.debug("  PLACING ORDER…")
     order = place_order(
         event_id=best_event["id"],
         market_id=market_id,
@@ -843,7 +837,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
 
     global _cycle_trades_placed
     _cycle_trades_placed += 1
-    log.info("  FILLED: %.2f shares @ %.4f | order_id=%s", order["shares_acquired"], order["entry_price"], order["order_id"])
+    log.debug("  FILLED: %.2f shares @ %.4f | order_id=%s", order["shares_acquired"], order["entry_price"], order["order_id"])
     log.info(
         "[TRADE-PLACED] %s | %s | $%.2f @ %.4f | conf=%d | %s",
         direction, best_event.get("title", "")[:55],
@@ -891,7 +885,7 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
             ),
         )
 
-    log.info("  Trade logged and alerted. ✓")
+    log.debug("  Trade logged and alerted. ✓")
 
     # Telegram notification for every executed trade
     try:
@@ -1016,7 +1010,7 @@ def _monitor_open_positions(cfg: dict) -> None:
                 f"Reason:   {exit_check['exit_reason']}\n"
             ),
         )
-        log.info("  Exit complete for %s", order_id)
+        log.debug("  Exit complete for %s", order_id)
 
 
 # ── Heartbeat helper ─────────────────────────────────────────────────────────
@@ -1580,7 +1574,7 @@ def main() -> None:
                 try:
                     _refreshed = refresh_open_position_prices()
                     if _refreshed:
-                        log.info("[PRICE-REFRESH] Refreshed %d position price(s)", _refreshed)
+                        log.debug("[PRICE-REFRESH] %d position price(s) refreshed", _refreshed)
                 except Exception as _rpe:
                     log.debug("[PRICE-REFRESH] Skipped: %s", _rpe)
 
@@ -1623,34 +1617,22 @@ def main() -> None:
                     _btc_fr = _eth_fr = {"sentiment": "NEUTRAL", "signal_strength": 0.0}
 
                 # ── Step 1: Fetch news ──────────────────────────────────────
-                log.info("Fetching crypto news (Cointelegraph RSS + NewsAPI)...")
                 articles = fetch_crypto_articles()
+                log.info("News: %d articles fetched", len(articles) if articles else 0)
 
                 if not articles:
-                    log.info("No articles returned — sleeping until next cycle")
+                    log.info("No articles — skipping cycle")
                     time.sleep(60)
                     continue
 
-                log.info("Got %d articles", len(articles))
-
-                # ── Step 2: Sentiment analysis ─────────────────────────────
-                log.info("Analysing sentiment (batch)...")
-                # One API call for all articles instead of N separate calls
                 analyses = analyze_articles_batch(articles)
-
-                # ── Step 3: Use all articles — no threshold filter ─────────
-                # DistilBERT trained on movie reviews, not reliable for crypto news.
-                # Signal router's confidence scoring handles quality gates downstream.
-                signals = analyses
-                log.info("[SENTIMENT] Keeping all %d articles (no threshold filter)", len(signals))
-                log.info("[SENTIMENT] Quality gates: signal router confidence ≥0.70 will filter")
+                signals  = analyses
+                log.info("Sentiment: %d signals ready", len(signals))
 
                 if not signals:
-                    log.info("No articles to process after sentiment analysis — skipping")
+                    log.info("No signals after sentiment analysis — skipping")
                     time.sleep(60)
                     continue
-
-                log.info("Found %d high-confidence signal(s)", len(signals))
 
                 # ── GAP #4: Store signals for SIGNAL_FLIP detection ────────
                 _current_cycle_signals[:] = signals   # update module-level store in-place
@@ -1662,9 +1644,8 @@ def main() -> None:
                 for s in signals:
                     t = s.get("signal_type", "?")
                     type_counts[t] = type_counts.get(t, 0) + 1
-                log.info("[ROUTING] %d signals classified | types: %s", len(signals), type_counts)
-                log.info(
-                    "[VERIFY-SIGNAL-TYPES] A_HIGH=%d A_LOW=%d B_HIGH=%d B_LOW=%d",
+                log.info("[ROUTING] %d signals | A_HIGH=%d A_LOW=%d B_HIGH=%d B_LOW=%d",
+                    len(signals),
                     type_counts.get("TYPE_A_HIGH", 0), type_counts.get("TYPE_A_LOW", 0),
                     type_counts.get("TYPE_B_HIGH", 0), type_counts.get("TYPE_B_LOW", 0),
                 )
@@ -1707,7 +1688,7 @@ def main() -> None:
                 )
 
                 # ── Step 4: Fetch Polymarket events ────────────────────────
-                log.info("Fetching Polymarket events...")
+                log.debug("Fetching Polymarket events...")
                 # Primary crypto fetch (base_queries already includes bitcoin,
                 # ethereum, solana, etc.)
                 all_events = fetch_polymarket_events("bitcoin ethereum cryptocurrency")

@@ -1,25 +1,29 @@
 import { useState, useEffect } from 'react';
+import { useSSE } from '../hooks/useSSE';
 import './BotStatus.css';
 
 export default function BotStatus() {
-  const [data, setData] = useState({
-    status: 'loading',
-    balance: 100.00,
-    pnl: 0.00,
-    realTrades: 0,
-    dailyTrades: 0,
-    dailySignals: 0,
-    winRate: 0,
-    uptime: '—',
-    isPaused: false,
-  });
-  const [mules, setMules] = useState({
+  // ── SSE: instant balance / PnL / trade-count updates ─────────────────────
+  const {
+    balance: sseBalance,
+    pnl: ssePnl,
+    trades: sseTrades,
+    botStatus: sseBotStatus,
+    winCount, lossCount,
+    connected,
+  } = useSSE();
+
+  // ── Polling: uptime, dailySignals, mules (change infrequently) ───────────
+  const [uptime,       setUptime]       = useState('—');
+  const [dailySignals, setDailySignals] = useState(0);
+  const [isPaused,     setIsPaused]     = useState(false);
+  const [mules,        setMules]        = useState({
     mule1: { name: 'Mule1', enabled: true },
     mule2: { name: 'Mule2', enabled: true },
   });
 
   useEffect(() => {
-    const fetchAll = async () => {
+    const fetchSlow = async () => {
       try {
         const [healthRes, controlRes, mulesRes] = await Promise.all([
           fetch('/api/health'),
@@ -32,50 +36,25 @@ export default function BotStatus() {
 
         const h = Math.floor(health.runtime?.hours || 0);
         const m = Math.floor(((health.runtime?.hours || 0) % 1) * 60);
-
-        const ps      = health.positions_summary || {};
-        const psWins  = ps.win_count  || 0;
-        const psTotal = (ps.win_count || 0) + (ps.loss_count || 0);
-        // Win rate: prefer positions_summary (current session), fallback JSONL
-        const effWinRate = psTotal > 0 ? psWins / psTotal : (health.winRate || 0);
-        // Trade count: include open + closed positions
-        const effTrades  = psTotal > 0 ? psTotal : (health.realTrades || 0);
-        // Unrealized PnL from open positions
-        const unrealizedPnl = parseFloat(ps.unrealized_pnl || 0);
-        // Balance: account_state.json is the authority (updated on every trade close)
-        const liveBalance = parseFloat(health.balance || 100);
-        // Show equity = balance + unrealized
-        const equityBalance = liveBalance + unrealizedPnl;
-        // P&L = balance minus starting ($100). health.pnl = balance - starting_balance.
-        const effPnl = parseFloat(health.pnl || (liveBalance - 100));
-
-        setData({
-          status:       health.status || 'offline',
-          balance:      parseFloat((equityBalance).toFixed(2)),
-          pnl:          parseFloat(effPnl.toFixed(2)),
-          realTrades:   effTrades,
-          dailyTrades:  health.dailyTrades || 0,
-          dailySignals: health.dailySignals || 0,
-          winRate:      effWinRate,
-          uptime:       h > 0 || m > 0 ? `${h}h ${m}m` : '< 1m',
-          isPaused:     control.status === 'paused',
-        });
+        setUptime(h > 0 || m > 0 ? `${h}h ${m}m` : '< 1m');
+        setDailySignals(health.dailySignals || 0);
+        setIsPaused(control.status === 'paused');
       } catch {
-        setData(prev => ({ ...prev, status: 'offline' }));
+        // health failures show in botStatus via SSE
       }
     };
 
-    fetchAll();
-    const interval = setInterval(fetchAll, 5_000);
+    fetchSlow();
+    const interval = setInterval(fetchSlow, 10_000);   // slower poll — SSE handles the hot path
     return () => clearInterval(interval);
   }, []);
 
   const handleToggle = async () => {
     try {
-      const ep  = data.isPaused ? '/api/control/resume' : '/api/control/pause';
+      const ep  = isPaused ? '/api/control/resume' : '/api/control/pause';
       const res = await fetch(ep, { method: 'POST' });
       const out = await res.json();
-      setData(prev => ({ ...prev, isPaused: out.status === 'paused' }));
+      setIsPaused(out.status === 'paused');
     } catch (e) {
       console.error('Toggle failed:', e);
     }
@@ -94,64 +73,80 @@ export default function BotStatus() {
     }
   };
 
-  const isOnline    = data.status === 'running' && !data.isPaused;
-  const statusColor = isOnline ? '#59d499' : data.isPaused ? '#f59e0b' : '#ff6363';
-  const statusLabel = data.status === 'loading' ? 'Loading…' : data.isPaused ? 'Paused' : isOnline ? 'Running' : 'Offline';
-  const pnlColor    = data.pnl > 0 ? '#59d499' : data.pnl < 0 ? '#ff6363' : 'var(--color-ash-text)';
-  const pnlSign     = data.pnl >= 0 ? '+' : '-';
+  // ── Derived display values ────────────────────────────────────────────────
+  const isRunning   = (sseBotStatus === 'running' || sseBotStatus === 'loading') && !isPaused;
+  const isOffline   = sseBotStatus === 'offline' || (!connected && sseBotStatus !== 'loading');
+  const statusColor = isOffline ? '#ff6363' : isPaused ? '#f59e0b' : '#59d499';
+  const statusLabel = sseBotStatus === 'loading' ? 'Loading…'
+                    : isPaused       ? 'Paused'
+                    : isOffline      ? 'Offline'
+                    : 'Running';
+
+  const totalTrades = sseTrades || (winCount + lossCount);
+  const winRate     = totalTrades > 0 ? winCount / totalTrades : null;
+  const pnlColor    = ssePnl > 0 ? '#59d499' : ssePnl < 0 ? '#ff6363' : 'var(--color-ash-text)';
+  const pnlSign     = ssePnl >= 0 ? '+' : '-';
 
   return (
     <div className="bot-strip-wrap">
-      {/* ── Row 1: Core metrics ── */}
+      {/* ── Row 1: Core metrics (SSE-powered — updates instantly) ── */}
       <div className="bot-strip">
         <div className="strip-status" style={{ borderColor: statusColor }}>
           <span className="strip-dot" style={{ background: statusColor }} />
           <span style={{ color: statusColor, fontWeight: 700, fontSize: '0.8rem' }}>{statusLabel}</span>
+          {connected && (
+            <span style={{ marginLeft: 4, fontSize: '0.6rem', color: '#59d499', opacity: 0.7 }}>●</span>
+          )}
         </div>
 
         <div className="strip-divider" />
 
         <div className="strip-metric">
           <span className="strip-label">Balance</span>
-          <span className="strip-value" style={{ color: '#59d499' }}>${data.balance.toFixed(2)}</span>
+          <span className="strip-value" style={{ color: '#59d499' }}>${sseBalance.toFixed(2)}</span>
         </div>
 
         <div className="strip-metric">
           <span className="strip-label">P&amp;L</span>
           <span className="strip-value" style={{ color: pnlColor }}>
-            {pnlSign}${Math.abs(data.pnl).toFixed(2)}
+            {pnlSign}${Math.abs(ssePnl).toFixed(2)}
           </span>
         </div>
 
         <div className="strip-metric">
           <span className="strip-label">Trades</span>
-          <span className="strip-value">{data.realTrades}</span>
+          <span className="strip-value">{totalTrades}</span>
         </div>
 
         <div className="strip-metric">
           <span className="strip-label">Win Rate</span>
           <span className="strip-value">
-            {data.realTrades > 0 ? `${(data.winRate * 100).toFixed(0)}%` : '—'}
+            {winRate !== null ? `${(winRate * 100).toFixed(0)}%` : '—'}
           </span>
         </div>
 
         <div className="strip-metric">
+          <span className="strip-label">W / L</span>
+          <span className="strip-value">{winCount} / {lossCount}</span>
+        </div>
+
+        <div className="strip-metric">
           <span className="strip-label">Signals Today</span>
-          <span className="strip-value">{data.dailySignals}</span>
+          <span className="strip-value">{dailySignals}</span>
         </div>
 
         <div className="strip-metric">
           <span className="strip-label">Uptime</span>
-          <span className="strip-value">{data.uptime}</span>
+          <span className="strip-value">{uptime}</span>
         </div>
 
         <div style={{ flex: 1 }} />
 
         <button
           onClick={handleToggle}
-          className={`strip-toggle ${data.isPaused ? 'paused' : 'running'}`}
+          className={`strip-toggle ${isPaused ? 'paused' : 'running'}`}
         >
-          {data.isPaused ? '▶ Resume' : '⏸ Pause'}
+          {isPaused ? '▶ Resume' : '⏸ Pause'}
         </button>
       </div>
 
