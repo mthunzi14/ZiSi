@@ -1,15 +1,15 @@
-# ZiSi — Prediction Market Sentiment Trading Bot
+# ZiSi — Autonomous Prediction Market Trading Bot
 
-ZiSi is an autonomous paper-trading bot for prediction markets (Polymarket + Kalshi). It collects live crypto news, scores sentiment with AI, matches to open markets, sizes positions with Kelly Criterion, and exits automatically on profit targets, stop-loss, or max hold time.
+ZiSi is a self-learning paper-trading bot for Polymarket and Kalshi. It collects live crypto news, scores sentiment with a cascade of AI providers, matches markets, sizes positions with Kelly Criterion, shadow-copies expert wallets, and exits automatically. Target: grow $100 → $1,000 in paper mode, then go live.
 
 ---
 
-## How It Works
+## Architecture
 
 ```
 News (NewsAPI + Cointelegraph RSS)
         ↓
-Sentiment Analysis  (Gemini / Anthropic / Groq — batch)
+Sentiment (Claude → Gemini → Groq → Cerebras → Mistral → OpenRouter → Together → VADER)
         ↓
 Signal Classification  (TYPE_A_HIGH / B_HIGH etc.)
         ↓
@@ -20,13 +20,16 @@ Gate Chain  (liquidity → spread → price → confluence → MTF → routing)
 Kelly Sizing  (regime + drawdown + signal-type multipliers)
         ↓
 Order Placement  (paper sim or live CLOB)
+        │
+        ├── Own signals → ZiSi UP/DOWN trades (RSI + momentum, 24/7)
+        └── Shadow Mules → Mule1 (PBot6) + Mule2 (Wallet2) copy-trade
         ↓
 Position Monitor  (target / stop / signal-flip / max-hold exit)
         ↓
 ML Feedback  (label outcomes → train confidence model Phase 2)
 ```
 
-Cycles run every **15 minutes** (96/day). Each cycle processes 25+ articles.
+Cycles run every **15 minutes** (96/day). UP/DOWN RSI trades run every cycle, 24/7.
 
 ---
 
@@ -40,36 +43,37 @@ Cycles run every **15 minutes** (96/day). Each cycle processes 25+ articles.
 ### 1. Install dependencies
 
 ```bash
-cd C:\Users\mthun\Downloads\ZiSi_Bot
 pip install -r requirements.txt
+pip install vaderSentiment  # local fallback sentiment
 cd dashboard/backend && npm install && cd ../..
 ```
 
 ### 2. Configure `.env`
 
 ```env
-# Kalshi (key ID + RSA private key PEM)
-KALSHI_API_KEY=your_key_id_here
-KALSHI_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----
-
-# Polymarket (CLOB endpoints — defaults work without changes)
-POLYMARKET_GAMMA_API_URL=https://gamma-api.polymarket.com
-POLYMARKET_DATA_API_URL=https://data-api.polymarket.com
-POLYMARKET_CLOB_API_URL=https://clob.polymarket.com
-
-# AI sentiment (at least one required; Gemini flash is free)
-GEMINI_API_KEY=your_key
-ANTHROPIC_API_KEY=your_key    # optional fallback
-GROQ_API_KEY=your_key         # optional fallback
-
-# News
+# Core trading APIs
+KALSHI_API_KEY=your_key_id
+KALSHI_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 NEWSAPI_KEY=your_key
 
-# Notifications (optional)
+# AI Sentiment chain (use as many as you have — first valid key wins)
+ANTHROPIC_API_KEY=your_key     # Claude — best quality
+GEMINI_API_KEY=your_key        # Free 1,500/day
+GROQ_API_KEY=your_key          # Free 14,400/day
+CEREBRAS_API_KEY=your_key      # Free tier
+MISTRAL_API_KEY=your_key       # Free tier
+OPENROUTER_API_KEY=your_key    # Free models
+TOGETHER_API_KEY=your_key      # $25 free credits
+
+# Telegram alerts
 TELEGRAM_BOT_TOKEN=your_token
-GMAIL_SENDER_EMAIL=you@gmail.com
-GMAIL_APP_PASSWORD=your_app_password
-GOOGLE_DRIVE_FOLDER_ID=your_folder_id
+TELEGRAM_CHAT_ID=your_chat_id
+
+# Bot settings
+BOT_MODE=paper_trading         # paper_trading | live_trading
+ACCOUNT_BALANCE=100
+RISK_PER_TRADE_PERCENT=2
+SIGNAL_THRESHOLD=6
 ```
 
 ### 3. Start
@@ -81,88 +85,99 @@ npm start
 
 Dashboard → **http://localhost:5000**
 
-The dashboard spawns `python main.py` automatically. Bot output streams directly to the terminal.
+The dashboard auto-spawns `python main.py`. Bot output streams to the terminal.
+
+---
+
+## Features
+
+### ZiSi Own Trades
+- **UP/DOWN RSI cycle**: Monitors BTC, ETH, SOL Binance 1-min candles for RSI + momentum signals. Trades 3 windows per coin per cycle. Runs 24/7, unaffected by overnight dead-window.
+- **News sentiment trades**: Polymarket and Kalshi event matching from AI-scored news.
+
+### Shadow Mule System
+Copy-trades two expert wallets (Mule1 = PBot6, Mule2 = Wallet2) via Polymarket positions API:
+- Detects new positions every 15 seconds
+- If current window has < 20s left, enters **next available window** (same coin/direction)
+- Self-hedging dedup: if Mule2 enters both UP and DOWN on same window, only mirrors one
+- Per-mule toggle from dashboard without restarting the bot
+
+### Sentiment Cascade (10 levels)
+Priority: Claude → Gemini Flash → Groq Llama → Cerebras → Mistral → OpenRouter → Together → FinBERT → VADER → Keyword
+
+### ML Self-Learning
+Phase 1: Gemini confidence deflated 0.65× while collecting 50 labelled outcomes.
+Phase 2 (auto-activates at 50): Trained logistic regression replaces raw Gemini confidence.
+
+---
+
+## Dashboard
+
+| Component | Refresh | Description |
+|---|---|---|
+| Bot Status strip | 5s | Balance, P&L, trades, win rate, uptime |
+| Mule controls | 5s | Toggle Mule1/Mule2 shadow copy-trading live |
+| Positions | 10s | Open + closed with unrealized P&L |
+| Equity Curve | 15s | Balance over time |
+| ML Calibration | 15s | Training progress, val accuracy, ROC-AUC |
+| Signal Analytics | 15s | By coin, by signal strength |
+
+### Dashboard API
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/positions` | Active + closed positions + summary |
+| `GET /api/health` | Full bot health, metrics, signal analytics |
+| `GET /api/equity` | Balance time-series |
+| `GET /api/system-health` | ML status, diagnostics |
+| `GET /api/control/mules` | Mule enabled/disabled status |
+| `POST /api/control/mule/:id/enable` | Enable mule (id = mule1 \| mule2) |
+| `POST /api/control/mule/:id/disable` | Disable mule |
+| `POST /api/control/pause` | Pause signal processing |
+| `POST /api/control/resume` | Resume signal processing |
 
 ---
 
 ## Clean Slate Reset
 
-Before a fresh run, reset state files without deleting trade history:
-
 ```bash
-python clean_slate.py              # interactive (confirms before wiping)
+python clean_slate.py              # interactive
 python clean_slate.py --force      # non-interactive
-python clean_slate.py --balance 200  # reset with different starting balance
+python clean_slate.py --balance 200  # different starting balance
 ```
 
-What gets reset: `positions_state.json`, `account_state.json`, `system_alerts.json`, `signal_queue.json`
-
-What is preserved: `zisi_local_trades.jsonl`, `ml_labelled_outcomes.jsonl`, `balance_history.jsonl`, `category_win_rates.json`
+Resets: `positions_state.json`, `account_state.json`, `system_alerts.json`, `signal_queue.json`
+Preserves: `zisi_local_trades.jsonl`, `ml_labelled_outcomes.jsonl`, `balance_history.jsonl`
 
 ---
 
 ## Configuration
 
-Key values are in `.env` / `config.py`:
-
 | Variable | Default | Effect |
 |---|---|---|
-| `ACCOUNT_BALANCE` | 100.00 | Starting bankroll |
-| `RISK_PER_TRADE_PERCENT` | 2.5 | Max % of balance per trade |
-| `SIGNAL_THRESHOLD` | 7 | Min Gemini confidence (0–10) to process |
+| `ACCOUNT_BALANCE` | 100 | Starting bankroll |
+| `RISK_PER_TRADE_PERCENT` | 2 | Max % of balance per trade |
+| `SIGNAL_THRESHOLD` | 6 | Min confidence (0–10) to process |
 | `BOT_MODE` | paper_trading | `paper_trading` or `live_trading` |
 | `MIN_EVENT_LIQUIDITY_USD` | 1000 | Min Polymarket market liquidity |
-
-Trading gates (not in `.env`, hardcoded in `main.py`):
-
-| Gate | Threshold | Reason |
-|---|---|---|
-| Liquidity | ≥ $1 000 | Avoid dead markets |
-| Spread | ≤ 8% | Avoid wide bid/ask |
-| Price | 0.10 – 0.90 | Avoid near-resolved markets |
-| Confluence | ≥ 0.50 | Require multi-source signal agreement |
-| MTF | ≥ 0.33 OR conf ≥ 0.70 | Price + trend confirmation |
-| Drawdown pause | ≥ 15% | Stop digging when losing |
-| Drawdown halt | ≥ 20% | Hard stop — require manual restart |
+| `MAX_SIMULTANEOUS_TRADES` | 100 | Open position cap |
 
 ---
 
-## Log Patterns
+## Log Reference
 
 ```
-[SIGNAL]         News article scored
-[GATE]           Gate decision
-[CYCLE-SUMMARY]  End-of-cycle: signals=N placed=M skipped=K (reason_A:x | reason_B:y)
-[TRADE]          Order placement
-[PAPER]          Paper-trade simulated fill
-[FILLED]         Shares acquired
-[EXIT]           Position closed
-[KALSHI]         Kalshi activity
-[ROUTING]        Platform routing decision
-[SKIP]           Gate rejection reason
-[CYCLE-MANAGER]  Multi-signal routing pass
-[HEALTH]         90-second background health check
-[RECOVERY]       Startup position reconciliation
-[DIAG]           Startup diagnostic output
+[PAPER]          Paper trade filled (1 line per trade)
+[EXIT] ✅ WIN    Trade closed with profit
+[EXIT] ❌ LOSS   Trade closed with loss
+[UPDOWN]         UP/DOWN RSI cycle result
+[SHADOW] ✅      Shadow trade opened / mirrored / next-window
+[SHADOW] ✅ WIN  Shadow trade resolved
+[CYCLE-SUMMARY]  End-of-cycle: signals=N placed=M skipped=K
+[HEALTH]         Background health check
+[RECOVERY]       Startup reconciliation
+Heartbeat →      Balance + PnL at cycle end
 ```
-
----
-
-## Dashboard API
-
-| Endpoint | Description |
-|---|---|
-| `GET /api/positions` | Active + closed positions with summary |
-| `GET /api/positions/active` | Open positions only |
-| `GET /api/trades` | Full trade history (from `zisi_local_trades.jsonl`) |
-| `GET /api/metrics` | Daily metrics (win rate, Sharpe, drawdown) |
-| `GET /api/health` | 5-point health check result |
-| `GET /api/equity` | Balance-over-time equity curve |
-| `GET /api/alerts` | Last 50 system alerts |
-| `GET /api/signal-queue` | Last 50 signal routing decisions |
-| `GET /api/system-health` | Detailed diagnostics |
-| `POST /api/control/pause` | Pause signal processing |
-| `POST /api/control/resume` | Resume signal processing |
 
 ---
 
@@ -170,80 +185,46 @@ Trading gates (not in `.env`, hardcoded in `main.py`):
 
 ```
 ZiSi_Bot/
-├── main.py                     Entry point + 15-min cycle loop
-├── trader.py                   Polymarket order execution (paper + live)
-├── kalshi/
-│   ├── auth.py                 RSA-PSS signature auth
-│   ├── fetcher.py              12-category market fetch
-│   ├── matcher.py              Signal → Kalshi event matching
-│   └── trader.py               Kalshi order execution
-├── sentiment_analyzer.py       AI sentiment scoring (Gemini/Anthropic/Groq)
+├── main.py                     15-min cycle loop + orchestration
+├── trader.py                   Polymarket paper/live execution
+├── updown_trader.py            24/7 RSI + momentum UP/DOWN cycle
+├── shadow_mode.py              Mule copy-trade engine
+├── sentiment_analyzer.py       10-level AI sentiment cascade
 ├── event_matcher.py            Polymarket event matching
-├── risk_manager.py             Kelly sizing, liquidity/price gates
-├── signal_router.py            Platform routing decision logic
-├── cycle_manager.py            Multi-signal routing + conflict detection
+├── signal_router.py            Platform routing (Poly vs Kalshi)
+├── risk_manager.py             Kelly sizing + gate chain
+├── ml_pipeline.py              Self-learning outcome labeller + trainer
+├── state_manager.py            Account balance + heartbeat persistence
 ├── health_monitor.py           90s background health checks
-├── regime_detector.py          ATR-based market regime + Kelly multiplier
-├── ml_pipeline.py              Feature collection + model training
-├── clean_slate.py              State file reset utility
-│
-├── dashboard/
-│   ├── backend/server.js       Express API + bot process manager
-│   └── frontend/src/           React dashboard
-│
-└── State files (gitignored, runtime only):
-    ├── positions_state.json    Open/closed positions
-    ├── account_state.json      Balance + PnL
-    ├── zisi_local_trades.jsonl Trade history (append-only)
-    ├── ml_labelled_outcomes.jsonl  ML training data
-    ├── system_alerts.json      Health monitor alerts
-    └── signal_queue.json       Last 50 signal evaluations
+├── clean_slate.py              State reset utility
+├── kalshi/
+│   ├── auth.py                 RSA-PSS signature
+│   ├── fetcher.py              12-category market fetch
+│   ├── matcher.py              Signal → Kalshi matching
+│   └── trader.py               Kalshi execution
+└── dashboard/
+    ├── backend/server.js       Express API + process manager
+    └── frontend/src/           React dashboard (Vite)
 ```
-
----
-
-## Understanding Trade Volume
-
-ZiSi is intentionally conservative. With 25 articles per cycle, most signals are filtered out:
-
-| Gate | Typical rejection rate |
-|---|---|
-| No matching Polymarket event | ~50% of signals |
-| Price out of range (0.10–0.90) | ~20% |
-| Spread > 8% | ~10% |
-| Confluence < 0.50 | ~10% |
-| Routing → Kalshi | ~5% |
-
-**Expected trade volume**: 2–5 trades/day in normal market conditions. The `[CYCLE-SUMMARY]` log line at cycle end shows exactly where signals drop out.
-
----
-
-## Phase 1 → Phase 2 Upgrade Path
-
-| Phase | Goal | Signal source | Kelly base |
-|---|---|---|---|
-| Phase 1 (now) | Collect 50+ labelled outcomes | Gemini raw confidence | 0.25 deflated |
-| Phase 2 | Use trained ML model | Blended (Gemini + ML) | Full Kelly |
-
-The ML model trains automatically once 50 labelled examples accumulate. No manual action needed.
 
 ---
 
 ## Troubleshooting
 
 **No trades for several cycles**
-- Check `[CYCLE-SUMMARY]` in logs — it shows which gate is rejecting most signals
-- Common cause: all Polymarket markets in the right price range already have wide spreads
+Check `[CYCLE-SUMMARY]` — it shows which gate rejects most signals. Common: wide spreads, no matching events.
 
-**Kalshi disabled at startup**
-- Ensure `.env` has both `KALSHI_API_KEY` (the key UUID) and `KALSHI_PRIVATE_KEY` (PEM format)
-- Test: `python -c "from kalshi.auth import KalshiAuth; a=KalshiAuth(); print(a.is_configured, a.validate_connection())"`
+**UP/DOWN trades not executing**
+The RSI cycle runs at `:00` and `:30` minute marks. Check `[UPDOWN]` in logs for RSI values and market availability.
 
-**Dashboard shows 0 positions**
-- Verify bot is running: check terminal output
-- Confirm `positions_state.json` exists and has correct structure
-- Run `python clean_slate.py --force` to reinitialize state files
+**Shadow mule not trading**
+Check `shadow_state.json` exists. Toggle the mule OFF then ON from the dashboard to reset. Verify target wallets have active UP/DOWN positions.
 
-**Bot keeps restarting**
-- Read the Python traceback in the terminal
-- Most common: missing API key, import error, or corrupted state file
+**Dashboard shows 0 closed trades**
+This means no trades have resolved yet in this session. Shadow trades resolve within 5–15 min after expiry. ZiSi's own UP/DOWN trades resolve at 30-min hold time.
+
+**Balance not updating**
+Balance updates on each trade close. The heartbeat (every cycle) recomputes from the in-memory balance — if you see a discrepancy, wait for the next cycle.
+
+**Ctrl+C / shutdown**
+The bot responds immediately to Ctrl+C (uses threading.Event, not time.sleep). Shadow monitor stops cleanly. Give it 2–3 seconds to finish the current write.

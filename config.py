@@ -95,8 +95,8 @@ def load_config() -> dict:
         # Risk management — balance loaded from account_state.json, not .env
         "ACCOUNT_BALANCE": get_current_balance(),
         "RISK_PER_TRADE_PERCENT": float(os.getenv("RISK_PER_TRADE_PERCENT", "2")),
-        "SIGNAL_THRESHOLD": int(os.getenv("SIGNAL_THRESHOLD", "7")),
-        "MAX_SIMULTANEOUS_TRADES": int(os.getenv("MAX_SIMULTANEOUS_TRADES", "5")),
+        "SIGNAL_THRESHOLD": int(os.getenv("SIGNAL_THRESHOLD", "6")),
+        "MAX_SIMULTANEOUS_TRADES": int(os.getenv("MAX_SIMULTANEOUS_TRADES", "30")),
         "MIN_EVENT_LIQUIDITY_USD": float(os.getenv("MIN_EVENT_LIQUIDITY_USD", "1000")),
 
         # Position management
@@ -159,8 +159,8 @@ def validate_config(config: dict) -> bool:
         errors.append("SIGNAL_THRESHOLD must be between 5 and 10")
 
     max_trades = config.get("MAX_SIMULTANEOUS_TRADES", 0)
-    if not (1 <= max_trades <= 10):
-        errors.append("MAX_SIMULTANEOUS_TRADES must be between 1 and 10")
+    if not (1 <= max_trades <= 500):
+        errors.append("MAX_SIMULTANEOUS_TRADES must be between 1 and 500")
 
     if config.get("BOT_MODE") not in ("paper_trading", "live_trading"):
         errors.append("BOT_MODE must be 'paper_trading' or 'live_trading'")
@@ -200,5 +200,5 @@ def log_config_startup(config: dict | None = None) -> None:
         f"Risk: {cfg['RISK_PER_TRADE_PERCENT']:.0f}% | "
         f"Mode: {mode_tag} | "
         f"Signal threshold: {cfg['SIGNAL_THRESHOLD']}/10 | "
-        f"Max trades: {cfg['MAX_SIMULTANEOUS_TRADES']}"
+        f"Max simultaneous positions: {cfg['MAX_SIMULTANEOUS_TRADES']}"
     )

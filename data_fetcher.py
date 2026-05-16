@@ -268,7 +268,7 @@ def fetch_news_from_newsapi() -> list[dict]:
         "q": "bitcoin OR ethereum OR cryptocurrency OR crypto",
         "sortBy": "publishedAt",
         "language": "en",
-        "pageSize": 20,
+        "pageSize": 30,
         "apiKey": api_key,
     }
 
@@ -341,22 +341,18 @@ def _is_garbage(article: dict) -> bool:
     return not _is_crypto_article(article)
 
 
-def fetch_cointelegraph_rss() -> list[dict]:
-    """
-    Fetch the latest articles from Cointelegraph's RSS feed.
-    Returns them normalised to the same shape as fetch_news_from_newsapi().
-    Requires feedparser (pip install feedparser).
-    """
+def _fetch_rss_feed(url: str, source_name: str, source_weight: str = "HIGH") -> list[dict]:
+    """Generic RSS fetcher. Returns [] on any failure."""
     try:
-        import feedparser  # lazy import — optional dependency
+        import feedparser
     except ImportError:
-        log.warning("[COINTELEGRAPH] feedparser not installed — skipping (pip install feedparser)")
+        log.warning("[RSS] feedparser not installed — skipping %s (pip install feedparser)", source_name)
         return []
 
     try:
-        feed = feedparser.parse("https://cointelegraph.com/rss")
+        feed = feedparser.parse(url)
         if not feed.entries:
-            log.warning("[COINTELEGRAPH] Empty RSS response")
+            log.warning("[RSS] Empty response from %s", source_name)
             return []
 
         articles: list[dict] = []
@@ -365,7 +361,7 @@ def fetch_cointelegraph_rss() -> list[dict]:
             pub_at = entry.get("published") or ""
             age_min = _parse_article_age_minutes(pub_at)
             articles.append({
-                "source": "Cointelegraph",
+                "source": source_name,
                 "author": entry.get("author") or "",
                 "title": entry.get("title") or "",
                 "description": summary,
@@ -373,17 +369,29 @@ def fetch_cointelegraph_rss() -> list[dict]:
                 "image": "",
                 "publishedAt": pub_at,
                 "content": summary,
-                "source_weight": "HIGH",
+                "source_weight": source_weight,
                 "article_age_minutes": age_min,
                 "article_fresh": age_min is not None and age_min <= _MAX_ARTICLE_AGE_MINUTES,
             })
 
-        log.info("[COINTELEGRAPH-RSS] Fetched %d articles", len(articles))
+        log.info("[%s-RSS] Fetched %d articles", source_name.upper().replace(" ", "-"), len(articles))
         return articles
 
     except Exception as exc:
-        log.warning("[COINTELEGRAPH] RSS fetch failed: %s", exc)
+        log.warning("[RSS] %s fetch failed: %s", source_name, exc)
         return []
+
+
+def fetch_cointelegraph_rss() -> list[dict]:
+    return _fetch_rss_feed("https://cointelegraph.com/rss", "Cointelegraph", "HIGH")
+
+
+def fetch_decrypt_rss() -> list[dict]:
+    return _fetch_rss_feed("https://decrypt.co/feed", "Decrypt", "HIGH")
+
+
+def fetch_cryptoslate_rss() -> list[dict]:
+    return _fetch_rss_feed("https://cryptoslate.com/feed/", "CryptoSlate", "MEDIUM")
 
 
 def _deduplicate_articles(primary: list[dict], secondary: list[dict]) -> list[dict]:
@@ -427,6 +435,7 @@ SOURCE_QUALITY_MAP: dict = {
     # Tier 2: Major crypto-native
     "cointelegraph":    0.85,
     "decrypt":          0.82,
+    "cryptoslate":      0.78,
     "bitcoin magazine": 0.80,
     "cryptonews":       0.75,
     "cryptobriefing":   0.72,
@@ -465,25 +474,27 @@ def _get_source_quality(source_name: str) -> float:
 
 def fetch_crypto_articles() -> list[dict]:
     """
-    Hybrid news fetch: Cointelegraph RSS (primary, HIGH weight) + NewsAPI (secondary).
-    Deduplicates then removes clearly non-crypto articles.
+    Hybrid news fetch from 4 sources: Cointelegraph + Decrypt + CryptoSlate (RSS)
+    + NewsAPI. Deduplicates then removes clearly non-crypto articles.
     Tags every article with a source_quality float (0.0–1.0) used by sentiment_analyzer.
-
-    This replaces bare fetch_news_from_newsapi() calls in main.py.
     """
     ct_articles   = fetch_cointelegraph_rss()
+    dc_articles   = fetch_decrypt_rss()
+    cs_articles   = fetch_cryptoslate_rss()
     na_articles   = fetch_news_from_newsapi()
 
-    # Tag NewsAPI articles with source weight metadata
     for art in na_articles:
         art.setdefault("source_weight", "MEDIUM")
 
     log.info(
-        "[FETCH-SOURCES] Cointelegraph=%d | NewsAPI=%d",
-        len(ct_articles), len(na_articles),
+        "[FETCH-SOURCES] Cointelegraph=%d | Decrypt=%d | CryptoSlate=%d | NewsAPI=%d",
+        len(ct_articles), len(dc_articles), len(cs_articles), len(na_articles),
     )
 
-    merged = _deduplicate_articles(ct_articles, na_articles)
+    # Merge: Cointelegraph primary, then Decrypt, CryptoSlate, then NewsAPI
+    merged = _deduplicate_articles(ct_articles, dc_articles)
+    merged = _deduplicate_articles(merged, cs_articles)
+    merged = _deduplicate_articles(merged, na_articles)
 
     # Tag every article with a source_quality score for downstream confidence scaling
     for art in merged:
@@ -591,8 +602,8 @@ def _detect_polymarket_category(title: str, description: str = "") -> str:
     text = (title + " " + description).lower()
 
     crypto_kw = ("bitcoin", "ethereum", "crypto", "btc", "eth", "blockchain",
-                 "defi", "altcoin", "xrp", "solana", "doge", "dogecoin", "nft",
-                 "coinbase", "binance", "stablecoin")
+                 "defi", "altcoin", "xrp", "solana", "sol ", "doge", "dogecoin", "nft",
+                 "coinbase", "binance", "stablecoin", "up or down", "updown")
     if any(kw in text for kw in crypto_kw):
         return "CRYPTO"
 
@@ -624,29 +635,125 @@ def fetch_polymarket_events(search_term: str) -> list[dict]:
     cfg = _get_config()
     base_url = cfg["POLYMARKET_GAMMA_API_URL"].rstrip("/")
 
-    # Use multiple search terms for broad coverage; deduplicate by event id.
-    # Crypto-specific terms ensure we always have relevant markets to match.
+    # Broader query set: standard macro + Up/Down short-duration markets (PBot pattern).
     base_queries = [
-        # Core crypto (always fetch)
-        "bitcoin", "ethereum", "crypto", "btc", "solana", "cryptocurrency",
-        # Altcoins & DeFi (broader coverage)
-        "xrp", "dogecoin", "defi", "ripple",
-        # Macro markets that crypto signals map to
-        "inflation", "federal reserve", "interest rate", "recession",
-        "stock market", "nasdaq", "election",
+        "bitcoin", "ethereum", "crypto", "solana", "btc",
+        "will bitcoin", "will ethereum", "bitcoin price",
+        "xrp", "dogecoin", "chainlink",
+        # Up/Down short-duration markets — PBot's primary trading arena
+        "bitcoin up or down", "ethereum up or down", "solana up or down",
+        "btc up", "eth up",
+        # Macro/regulatory crypto events
+        "sec crypto", "crypto regulation", "bitcoin etf", "stablecoin",
     ]
     queries = list(dict.fromkeys([search_term] + base_queries))
     all_events: list[dict] = []
     seen_ids: set = set()
+
+    # ── Slug-based Up/Down window fetch ───────────────────────────────────────
+    # Polymarket Up/Down markets have predictable slugs: {coin}-updown-{dur}m-{expiry_unix_ts}
+    # Text search buries these short-duration markets under high-volume sports events.
+    # Instead, compute the current + next active window expiry timestamps and fetch by slug.
+    _now_ts = int(time.time())
+    _now_utc_direct = datetime.now(timezone.utc)
+    _ud_fetched = 0
+
+    def _try_slug_fetch(slug: str) -> None:
+        nonlocal _ud_fetched
+        try:
+            _r = _retry_request("GET", f"{base_url}/events", params={"slug": slug})
+            if _r is None:
+                return
+            _raw = _r.json()
+            evs = _raw if isinstance(_raw, list) else _raw.get("data", _raw.get("events", []))
+            if isinstance(_raw, dict) and "id" in _raw:
+                evs = [_raw]
+            for _ev in (evs if isinstance(evs, list) else []):
+                _eid = _ev.get("id", "")
+                if not _eid or _eid in seen_ids:
+                    return
+                _end = _ev.get("endDate", _ev.get("resolutionDate", ""))
+                if _end:
+                    try:
+                        from datetime import timedelta as _tdx
+                        _edt = datetime.fromisoformat(_end.replace("Z", "+00:00"))
+                        if _edt.tzinfo is None:
+                            _edt = _edt.replace(tzinfo=timezone.utc)
+                        if _edt < (_now_utc_direct + _tdx(seconds=90)):
+                            return
+                    except Exception:
+                        pass
+                if float(_ev.get("liquidity", 0) or 0) < 50:
+                    return
+                seen_ids.add(_eid)
+                _ev["_updown_direct"] = True
+                all_events.append(_ev)
+                _ud_fetched += 1
+                log.info("[POLYMARKET-UPDOWN] Slug fetch found: %s", _ev.get("title", "")[:60])
+        except Exception as _e:
+            log.debug("[POLYMARKET-UPDOWN] Slug fetch error %s: %s", slug, _e)
+
+    # Generate candidate slugs for current and next 3 windows for each coin+duration
+    for _dur_min in (5, 15):
+        _interval = _dur_min * 60
+        _boundary = ((_now_ts + _interval) // _interval) * _interval  # next boundary
+        for _offset in range(4):  # next 4 windows
+            _expiry_ts = _boundary + _offset * _interval
+            if _expiry_ts < _now_ts + 90:
+                continue
+            for _coin in ("btc", "eth", "sol"):
+                _try_slug_fetch(f"{_coin}-updown-{_dur_min}m-{_expiry_ts}")
+
+    if _ud_fetched > 0:
+        log.info("[POLYMARKET-UPDOWN] Slug fetch added %d active Up/Down markets", _ud_fetched)
+    else:
+        # Fallback: fetch all active events sorted by soonest endDate, filter client-side
+        log.debug("[POLYMARKET-UPDOWN] Slug fetch returned 0 — trying broad active fetch")
+        try:
+            _broad = _retry_request(
+                "GET", f"{base_url}/events",
+                params={"active": "true", "limit": 100, "order": "endDate", "ascending": "true"},
+            )
+            if _broad:
+                _broad_raw = _broad.json()
+                _broad_evs = _broad_raw if isinstance(_broad_raw, list) else _broad_raw.get("data", [])
+                for _ev in _broad_evs:
+                    _eid = _ev.get("id", "")
+                    if not _eid or _eid in seen_ids:
+                        continue
+                    _title = _ev.get("title", "").lower()
+                    if "up or down" not in _title and "updown" not in _title:
+                        continue
+                    _end = _ev.get("endDate", _ev.get("resolutionDate", ""))
+                    if _end:
+                        try:
+                            from datetime import timedelta as _tdx
+                            _edt = datetime.fromisoformat(_end.replace("Z", "+00:00"))
+                            if _edt.tzinfo is None:
+                                _edt = _edt.replace(tzinfo=timezone.utc)
+                            if _edt < (_now_utc_direct + _tdx(seconds=90)):
+                                continue
+                        except Exception:
+                            pass
+                    if float(_ev.get("liquidity", 0) or 0) < 50:
+                        continue
+                    seen_ids.add(_eid)
+                    _ev["_updown_direct"] = True
+                    all_events.append(_ev)
+                    _ud_fetched += 1
+            if _ud_fetched > 0:
+                log.info("[POLYMARKET-UPDOWN] Broad fallback fetch added %d Up/Down markets", _ud_fetched)
+        except Exception as _be:
+            log.debug("[POLYMARKET-UPDOWN] Broad fetch error: %s", _be)
 
     _now_utc = datetime.now(timezone.utc)
 
     for query in queries:
         params = {
             "search": query,
-            "limit": 50,
-            "order": "volume24hr",    # newest/most active first
-            "ascending": "false",     # descending — highest volume at top
+            "limit": 25,
+            "order": "volume24hr",
+            "ascending": "false",
             "active": "true",
         }
 
@@ -666,22 +773,40 @@ def fetch_polymarket_events(search_term: str) -> list[dict]:
                 continue
 
             # ── Stale-market guard ─────────────────────────────────────────
-            # Skip events whose end/resolution date is in the past
+            # Up/Down (5/15-min) markets expire within minutes — never filter them.
+            # Standard macro events: skip if expiring within 24 hours.
+            ev_title_lower = ev.get("title", "").lower()
+            _is_updown = "up or down" in ev_title_lower or "updown" in ev_title_lower
             end_date_str = ev.get("endDate", ev.get("resolutionDate", ""))
-            if end_date_str:
+            if end_date_str and not _is_updown:
                 try:
-                    # Strip trailing Z / timezone info for fromisoformat compat
+                    from datetime import timedelta as _td
                     _clean = end_date_str.replace("Z", "+00:00")
                     _end_dt = datetime.fromisoformat(_clean)
                     if _end_dt.tzinfo is None:
                         from datetime import timezone as _tz
                         _end_dt = _end_dt.replace(tzinfo=_tz.utc)
-                    if _end_dt < _now_utc:
-                        log.debug("[POLYMARKET] Skipping expired event '%s' (ended %s)",
+                    if _end_dt < (_now_utc + _td(hours=24)):
+                        log.debug("[POLYMARKET] Skipping near-expiry event '%s' (ends %s)",
                                   ev.get("title", "")[:50], end_date_str[:10])
                         continue
                 except Exception:
                     pass  # unparseable date — keep the event
+            elif end_date_str and _is_updown:
+                # For Up/Down: skip only if already expired (< 90s remaining)
+                try:
+                    from datetime import timedelta as _td
+                    _clean = end_date_str.replace("Z", "+00:00")
+                    _end_dt = datetime.fromisoformat(_clean)
+                    if _end_dt.tzinfo is None:
+                        from datetime import timezone as _tz
+                        _end_dt = _end_dt.replace(tzinfo=_tz.utc)
+                    if _end_dt < (_now_utc + _td(seconds=90)):
+                        log.debug("[POLYMARKET] Skipping expired Up/Down '%s'",
+                                  ev.get("title", "")[:50])
+                        continue
+                except Exception:
+                    pass
 
             # Skip zero-liquidity or dead markets
             ev_liquidity = float(ev.get("liquidity", 0) or 0)
@@ -813,8 +938,9 @@ def fetch_polymarket_events(search_term: str) -> list[dict]:
             desc = (ev.get("description") or "")[:80]
             log.info(
                 "  [%d] Type=%-12s | Cat=%-8s | Liq=$%-10.0f | Vol=$%-10.0f | Mkt#=%d",
-                idx, ev["market_type"], ev["market_category"], ev["liquidity"], ev["volume24h"],
-                len(ev["markets"]),
+                idx, ev.get("market_type", "N/A"), ev.get("market_category", "OTHER"),
+                ev.get("liquidity", 0), ev.get("volume24h", 0),
+                len(ev.get("markets", [])),
             )
             log.info("      Title: %s", ev["title"][:90])
             if desc:

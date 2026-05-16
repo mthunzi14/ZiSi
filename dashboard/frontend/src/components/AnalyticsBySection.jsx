@@ -19,7 +19,7 @@ export default function AnalyticsBySection() {
     };
 
     fetchAnalytics();
-    const interval = setInterval(fetchAnalytics, 30000);
+    const interval = setInterval(fetchAnalytics, 15000);
     return () => clearInterval(interval);
   }, []);
 

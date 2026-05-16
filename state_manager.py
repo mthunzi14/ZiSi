@@ -90,7 +90,7 @@ def update_heartbeat(trades_executed: int = 0, paused: bool = False, reason: str
 
 
 def get_progress_toward_phase2() -> dict:
-    """Return progress toward the 20-trade Phase 1 goal."""
+    """Return trade collection progress (20 trades = logistic regression upgrade threshold)."""
     if _STATE_FILE.exists():
         try:
             data = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
@@ -110,15 +110,20 @@ def get_progress_toward_phase2() -> dict:
 
 
 def _write_state(reason: str = "") -> None:
-    data = {
-        "balance": _balance,
-        "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "last_change_reason": reason,
-    }
-    _STATE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    # Merge with existing file so we never lose fields written by other functions
+    existing: dict = {}
+    if _STATE_FILE.exists():
+        try:
+            existing = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    existing["balance"] = _balance
+    existing["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    existing["last_change_reason"] = reason
+    _STATE_FILE.write_text(json.dumps(existing, indent=2), encoding="utf-8")
 
 
-# ── Runtime tracking (Phase 1 uptime) ────────────────────────────────────────
+# ── Runtime tracking ─────────────────────────────────────────────────────────
 
 _RUNTIME_FILE = Path(__file__).parent / "runtime_tracking.json"
 _PHASE1_GOAL_HOURS = 336  # 14 days × 24 hours
@@ -130,7 +135,7 @@ def initialize_runtime_tracking() -> bool:
     Returns True if a new file was created, False if it already existed.
     """
     if _RUNTIME_FILE.exists():
-        log.info("[RUNTIME] Tracking file found — resuming Phase 1 timer")
+        log.info("[RUNTIME] Tracking file found — resuming runtime timer")
         return False
 
     now = datetime.now(timezone.utc)
@@ -144,7 +149,7 @@ def initialize_runtime_tracking() -> bool:
         "status": "tracking",
     }
     _RUNTIME_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    log.info("[RUNTIME] Tracking initialized: %d hour Phase 1 goal", _PHASE1_GOAL_HOURS)
+    log.info("[RUNTIME] Runtime tracking initialized (%d hour window)", _PHASE1_GOAL_HOURS)
     return True
 
 

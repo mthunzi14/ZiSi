@@ -38,7 +38,7 @@ def _read_current_balance() -> float:
     return 100.0
 
 
-def clean_slate(force: bool = False, starting_balance: float = None) -> None:
+def clean_slate(force: bool = False, starting_balance: float = None, nuke: bool = False) -> None:
     print("=" * 70)
     print("ZiSi CLEAN SLATE")
     print("=" * 70)
@@ -56,12 +56,19 @@ def clean_slate(force: bool = False, starting_balance: float = None) -> None:
     print("    account_state.json    → clean slate")
     print("    system_alerts.json    → no alerts")
     print()
-    print("  Files that will NOT be touched:")
-    print("    zisi_local_trades.jsonl        (trade history for ML + PnL)")
-    print("    ml_labelled_outcomes.jsonl     (ML training data)")
-    print("    balance_history.jsonl          (equity curve)")
-    print("    category_win_rates.json        (Kalshi performance data)")
-    print()
+    if nuke:
+        print("  Files that will also be DELETED (--nuke):")
+        print("    zisi_local_trades.jsonl        ← ALL trade history GONE")
+        print("    ml_labelled_outcomes.jsonl     ← ALL ML data GONE")
+        print("    balance_history.jsonl          ← equity curve GONE")
+        print()
+    else:
+        print("  Files that will NOT be touched:")
+        print("    zisi_local_trades.jsonl        (trade history for ML + PnL)")
+        print("    ml_labelled_outcomes.jsonl     (ML training data)")
+        print("    balance_history.jsonl          (equity curve)")
+        print("    category_win_rates.json        (Kalshi performance data)")
+        print()
 
     if not force:
         confirm = input("Type 'yes' to proceed: ").strip().lower()
@@ -127,7 +134,17 @@ def clean_slate(force: bool = False, starting_balance: float = None) -> None:
         sq.write_text(json.dumps({"signals": [], "last_updated": now_iso}, indent=2), encoding="utf-8")
         print("[RESET] signal_queue.json → empty")
 
-    # ── 5. Remove old .bak files from previous resets ─────────────────────────
+    # ── 5. Nuke JSONL history files if requested ──────────────────────────────
+    if nuke:
+        for jsonl_name in ("zisi_local_trades.jsonl", "ml_labelled_outcomes.jsonl", "balance_history.jsonl"):
+            f = BASE_DIR / jsonl_name
+            if f.exists():
+                f.unlink()
+                print(f"[NUKE] Deleted {jsonl_name}")
+            else:
+                print(f"[NUKE] {jsonl_name} not found (already clean)")
+
+    # ── 6. Remove old .bak files from previous resets ─────────────────────────
     for bak in BASE_DIR.glob("*.bak"):
         try:
             bak.unlink()
@@ -144,7 +161,10 @@ def clean_slate(force: bool = False, starting_balance: float = None) -> None:
 
 
 if __name__ == "__main__":
-    force = "--force" in sys.argv
+    force  = "--force"  in sys.argv
+    nuke   = "--nuke"   in sys.argv
+    if nuke:
+        force = True  # --nuke implies --force
     balance = None
     for i, arg in enumerate(sys.argv):
         if arg == "--balance" and i + 1 < len(sys.argv):
@@ -154,4 +174,4 @@ if __name__ == "__main__":
                 print(f"Invalid balance: {sys.argv[i + 1]}")
                 sys.exit(1)
 
-    clean_slate(force=force, starting_balance=balance)
+    clean_slate(force=force, starting_balance=balance, nuke=nuke)

@@ -1,3 +1,19 @@
+/* Inline toast — same style as Positions.jsx .pos-toast */
+.header-toast {
+  position: fixed;
+  top: 16px;
+  right: 24px;
+  z-index: 9000;
+  background: rgba(34, 197, 94, 0.92);
+  color: #fff;
+  padding: 11px 20px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
 .page-header {
   display: flex;
   justify-content: space-between;

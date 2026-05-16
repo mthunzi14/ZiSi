@@ -13,7 +13,7 @@ export default function MLStatus() {
 
   useEffect(() => {
     load();
-    const id = setInterval(load, 30_000);
+    const id = setInterval(load, 15_000);
     return () => clearInterval(id);
   }, [load]);
 

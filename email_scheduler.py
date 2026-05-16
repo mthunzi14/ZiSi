@@ -34,12 +34,11 @@ class EmailScheduler:
         interval_hours = float(os.getenv("EMAIL_INTERVAL_HOURS", "8"))
         self.email_interval: float = interval_hours * 3600
         self._last_email_time: Optional[float] = None
-        self._enabled: bool = bool(self.sender_email and self.sender_password)
+        gmail_enabled = os.getenv("GMAIL_ENABLED", "false").strip().lower() not in ("false", "0", "no", "off")
+        self._enabled: bool = bool(gmail_enabled and self.sender_email and self.sender_password)
 
         if not self._enabled:
-            log.warning(
-                "EmailScheduler disabled: GMAIL_SENDER_EMAIL or GMAIL_APP_PASSWORD not set"
-            )
+            log.info("EmailScheduler disabled (GMAIL_ENABLED=false) — Telegram is the sole notification channel")
 
     # ── Scheduling logic ─────────────────────────────────────────────────────
 

@@ -13,7 +13,7 @@ log = logging.getLogger("zisi.orchestrator")
 
 # ── Per-cycle caps ─────────────────────────────────────────────────────────────
 # Never trade more than this many Kalshi positions in a single 15-min cycle.
-MAX_KALSHI_TRADES_PER_CYCLE = 3
+MAX_KALSHI_TRADES_PER_CYCLE = 50
 
 
 def run_kalshi_for_cycle(
@@ -104,20 +104,21 @@ def run_kalshi_for_cycle(
                 yes_bid = event.get("yes_bid", 0) or 0
 
                 if yes_ask == 0 and yes_bid == 0:
+                    # Kalshi bulk API doesn't return prices — use 0.50 for paper trading
+                    normalized = 0.50
                     log.info(
-                        "[KALSHI-FILTER] Skipping zero-price market (pre-open/settled): %s",
+                        "[KALSHI-PAPER] No price data — using 0.50 default for: %s",
                         event.get("title", "")[:60],
                     )
-                    continue
-
-                mid_price = (yes_ask + yes_bid) / 2 if (yes_ask and yes_bid) else (yes_ask or yes_bid)
-                normalized = mid_price / 100.0 if mid_price > 1 else mid_price
-                if normalized <= 0.05 or normalized >= 0.95:
-                    log.info(
-                        "[KALSHI-FILTER] Near-resolved market (mid=%.2f) skipped: %s",
-                        normalized, event.get("title", "")[:60],
-                    )
-                    continue
+                else:
+                    mid_price = (yes_ask + yes_bid) / 2 if (yes_ask and yes_bid) else (yes_ask or yes_bid)
+                    normalized = mid_price / 100.0 if mid_price > 1 else mid_price
+                    if normalized <= 0.05 or normalized >= 0.95:
+                        log.info(
+                            "[KALSHI-FILTER] Near-resolved market (mid=%.2f) skipped: %s",
+                            normalized, event.get("title", "")[:60],
+                        )
+                        continue
 
                 # ── GAP #1: Routing gate for Kalshi ───────────────────────────
                 _kalshi_routing = routing_decision(

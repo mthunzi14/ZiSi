@@ -496,7 +496,7 @@ def load_model() -> bool:
     global _model, _scaler, _model_meta
 
     if not _MODEL_FILE.exists() or not _SCALER_FILE.exists():
-        log.info("[ML] No persisted model found — Phase 1 (Gemini deflation active)")
+        log.info("[ML] No persisted model yet — Gemini deflation active (self-learning, upgrades at 50 examples)")
         return False
 
     try:
@@ -514,7 +514,7 @@ def load_model() -> bool:
         )
         return True
     except Exception as exc:
-        log.warning("[ML] Model load failed: %s — reverting to Phase 1", exc)
+        log.warning("[ML] Model load failed: %s — reverting to Gemini deflation", exc)
         _model = None
         _scaler = None
         return False

@@ -49,6 +49,11 @@ def _resolution_window_multiplier(event: dict) -> float:
       >30 days   → 0.60x  (too far out — market has time to self-correct)
       No date    → 1.00x  (unknown, no penalty)
     """
+    # Up/Down markets resolve within minutes — always maximum edge
+    if "up or down" in (event.get("title", "") + event.get("market_type", "")).lower() or \
+       event.get("market_type") == "UP_DOWN":
+        return 1.25
+
     res_str = event.get("resolutionDate") or event.get("endDate") or ""
     if not res_str:
         return 1.0
@@ -178,6 +183,9 @@ def find_matching_events(
     affected = sentiment_data.get("affected_cryptos", [])
     sentiment_dir = sentiment_data.get("sentiment", "neutral")
 
+    # Determine if this is a genuine crypto signal (not the generic fallback)
+    _is_crypto_signal = bool(affected)
+
     # Fallback: if no coins specified, match any crypto/finance event
     if not affected:
         affected = ["bitcoin", "ethereum", "crypto", "btc", "eth"]
@@ -188,10 +196,23 @@ def find_matching_events(
         sentiment_dir, affected, len(all_polymarket_events),
     )
 
+    # Categories incompatible with crypto signals — skip entirely when signal is crypto-specific
+    _CRYPTO_INCOMPATIBLE = frozenset({"POLITICS", "SPORTS"})
+
     scored: list[dict] = []
     for event in all_polymarket_events:
         # Skip inactive events
         if not event.get("active", True):
+            continue
+
+        # Crypto signals should not match politics or sports markets.
+        # Use pre-tagged market_category when available; fall back to title scan.
+        ev_cat = event.get("market_category") or _classify_event_market(event)
+        if _is_crypto_signal and ev_cat in _CRYPTO_INCOMPATIBLE:
+            log.debug(
+                "[POLY-MATCH-SKIP] Crypto signal skipping %s market | %s",
+                ev_cat, event.get("title", "")[:60],
+            )
             continue
 
         # Skip completely illiquid events (hard floor = 100 USD for paper trading)
@@ -212,7 +233,7 @@ def find_matching_events(
 
         # Threshold by category — crypto/other markets get lenient matching,
         # politics/sports need stronger relevance to avoid noise trades
-        cat = event.get("market_category", "OTHER")
+        cat = ev_cat
         if cat in ("CRYPTO", "OTHER", "FINANCE"):
             min_relevance = 0.1
         elif cat == "POLITICS":
@@ -364,6 +385,33 @@ def find_matching_event_smart(
 
     keywords = _expand_keywords(affected)
 
+    # TIER 0: Up/Down market — always match to any BTC/ETH/SOL crypto signal
+    # These are PBot's primary markets; they mention the coin in their title
+    _updown_kw = ["up or down", "updown"]
+    for event in polymarket_events:
+        if not event.get("active", True):
+            continue
+        title_lower = event.get("title", "").lower()
+        if not any(ud in title_lower for ud in _updown_kw):
+            continue
+        # Check coin relevance: signal must be for the coin mentioned in the title
+        coin_match = any(kw in title_lower for kw in keywords)
+        if not coin_match:
+            continue
+        liq = check_liquidity(event)
+        # Up/Down markets may have lower liquidity per individual window — lower bar
+        if liq < 0.0:
+            continue
+        # For Up/Down: give full resolution weight (they resolve very soon = max edge)
+        confidence = round(0.85 * signal_strength, 4)
+        enriched = dict(event)
+        enriched["market_category"] = "CRYPTO"
+        enriched["resolution_multiplier"] = 1.25  # resolves within minutes = prime edge
+        enriched["market_type"] = "UP_DOWN"
+        log.info("[SMART-MATCH T0-UD] %s | UP_DOWN | conf=%.2f",
+                 event.get("title", "")[:60], confidence)
+        return enriched, confidence
+
     # TIER 1: Exact symbol / word match with adequate liquidity
     for event in polymarket_events:
         if not event.get("active", True):
@@ -372,11 +420,11 @@ def find_matching_event_smart(
         exact = sum(1 for kw in keywords if re.search(r"\b" + re.escape(kw) + r"\b", title_lower))
         if exact >= 1:
             liq = check_liquidity(event)
-            if liq > 0.3:
+            if liq > 0.1:
                 res_mult = _resolution_window_multiplier(event)
                 if res_mult == 0.0:
                     continue  # expired
-                confidence = round(1.0 * liq * signal_strength * res_mult, 4)
+                confidence = round(1.0 * max(liq, 0.3) * signal_strength * res_mult, 4)
                 enriched = dict(event)
                 enriched["market_category"] = _classify_event_market(event)
                 enriched["resolution_multiplier"] = res_mult
@@ -392,11 +440,11 @@ def find_matching_event_smart(
         partial = sum(1 for kw in keywords if kw in title_lower)
         if partial >= 1:
             liq = check_liquidity(event)
-            if liq > 0.25:
+            if liq > 0.1:
                 res_mult = _resolution_window_multiplier(event)
                 if res_mult == 0.0:
                     continue  # expired
-                confidence = round(0.8 * liq * signal_strength * res_mult, 4)
+                confidence = round(0.8 * max(liq, 0.3) * signal_strength * res_mult, 4)
                 enriched = dict(event)
                 enriched["market_category"] = _classify_event_market(event)
                 enriched["resolution_multiplier"] = res_mult
@@ -404,17 +452,21 @@ def find_matching_event_smart(
                          event.get("title", "")[:60], enriched["market_category"], confidence, res_mult)
                 return enriched, confidence
 
-    # TIER 3: Category match — only if signal very strong
-    if signal_strength >= 0.75:
-        crypto_keywords = ["crypto", "bitcoin", "ethereum", "blockchain", "digital asset"]
-        for event in polymarket_events:
-            if not event.get("active", True):
-                continue
-            title_lower = event.get("title", "").lower()
-            if any(kw in title_lower for kw in crypto_keywords):
-                liq = check_liquidity(event)
-                if liq > 0.2:
-                    confidence = 0.6 * liq * signal_strength
+    # TIER 3: Category match — crypto events regardless of exact coin
+    crypto_keywords = ["crypto", "bitcoin", "ethereum", "blockchain", "digital asset",
+                       "btc", "eth", "solana", "xrp", "up or down", "updown"]
+    for event in polymarket_events:
+        if not event.get("active", True):
+            continue
+        title_lower = event.get("title", "").lower()
+        if any(kw in title_lower for kw in crypto_keywords):
+            liq = check_liquidity(event)
+            if liq > 0.1:
+                res_mult = _resolution_window_multiplier(event)
+                if res_mult == 0.0:
+                    continue
+                confidence = round(0.6 * max(liq, 0.2) * signal_strength * res_mult, 4)
+                if confidence >= 0.30:
                     enriched = dict(event)
                     enriched["market_category"] = _classify_event_market(event)
                     log.info("[SMART-MATCH T3] %s | market=%s | conf=%.2f",
@@ -447,14 +499,14 @@ def pick_trading_direction(sentiment: str, event_markets: list[dict]) -> str:
         log.warning("Event has no markets — cannot pick direction")
         return "SKIP"
 
-    # Identify YES/NO markets by label or position
+    # Identify YES/NO or UP/DOWN markets by label or position
     yes_market = None
     no_market = None
     for mkt in event_markets:
         label = str(mkt.get("outcomeLabel", mkt.get("outcome", ""))).upper()
-        if "YES" in label or label == "0":
+        if "YES" in label or label == "0" or "UP" in label:
             yes_market = mkt
-        elif "NO" in label or label == "1":
+        elif "NO" in label or label == "1" or "DOWN" in label:
             no_market = mkt
 
     # Fallback: first market = YES, second = NO
@@ -466,7 +518,7 @@ def pick_trading_direction(sentiment: str, event_markets: list[dict]) -> str:
     if sentiment == "bullish":
         direction = "YES" if yes_market else "NO"
     else:  # bearish
-        direction = "NO" if no_market else "YES"
+        direction = "NO"  # binary markets always support NO side; never fall back to YES
 
     log.info("Trading direction: %s (sentiment=%s)", direction, sentiment)
     return direction

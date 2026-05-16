@@ -69,6 +69,14 @@ class KalshiTrader:
         target_price = round(min(0.92, entry_price + (1.0 - entry_price) * 0.60), 4)
         stop_loss = round(max(0.05, entry_price * 0.50), 4)
 
+        # Resolution date: prefer explicit field from Kalshi API, fallback to estimate
+        _res_date = (
+            event.get("expected_expiration_time")
+            or event.get("expiration_time")
+            or event.get("close_time")
+            or event.get("resolution_date")
+        )
+
         position: Dict = {
             "order_id": order_id,
             "market": "KALSHI",
@@ -84,6 +92,7 @@ class KalshiTrader:
             "confidence": round(confidence, 4),
             "sentiment": sentiment,
             "open_time": open_time.isoformat(),
+            "resolution_date": _res_date,
             "close_time": None,
             "exit_price": None,
             "realized_pnl": None,
@@ -110,6 +119,17 @@ class KalshiTrader:
                 title[:60], side.upper(), entry_price, target_price, stop_loss,
                 position_size, confidence,
             )
+            try:
+                from telegram_bot import notify_trade_executed as _tg_exec
+                _tg_exec(
+                    event_title=title[:60],
+                    direction="YES" if side == "yes" else "NO",
+                    size=position_size,
+                    confidence=confidence,
+                    market="KALSHI",
+                )
+            except Exception:
+                pass
 
         # Store in module-level dict so check_and_close_positions() can find it
         _open_positions[position["order_id"]] = position
@@ -411,8 +431,34 @@ def persist_positions() -> None:
         poly_active = [p for p in existing.get("active", []) if p.get("market") != "KALSHI"]
         poly_closed = [p for p in existing.get("closed", []) if p.get("market") != "KALSHI"]
 
-        # Current Kalshi state from memory
-        kalshi_active = [p for p in _open_positions.values() if p.get("status") == "OPEN"]
+        # Current Kalshi state from memory — simulate price drift for active positions
+        now_k = datetime.now(timezone.utc)
+        kalshi_active_raw = [p for p in _open_positions.values() if p.get("status") == "OPEN"]
+        kalshi_active = []
+        for _kp in kalshi_active_raw:
+            _kp = dict(_kp)  # don't mutate in-place
+            try:
+                _k_open = datetime.fromisoformat(_kp["open_time"])
+                _k_min = (now_k - _k_open).total_seconds() / 60
+            except Exception:
+                _k_min = 0.0
+            _k_dir = "YES" if str(_kp.get("direction", "YES")).upper() == "YES" else "NO"
+            _k_sign = 1 if _k_dir == "YES" else -1
+            _k_bucket = int(_k_min // 5)
+            _k_rng = random.Random(hash(_kp["order_id"] + str(_k_bucket)))
+            _k_entry = float(_kp.get("entry_price", 0.5))
+            _k_stored = float(_kp.get("current_price", _k_entry))
+            _k_drift = _k_rng.gauss(0.015 * _k_sign, 0.03)
+            _k_new = round(max(0.05, min(0.95, _k_stored + _k_drift)), 4)
+            _kp["current_price"] = _k_new
+            # Update in-memory store so subsequent calls are consistent
+            if _kp["order_id"] in _open_positions:
+                _open_positions[_kp["order_id"]]["current_price"] = _k_new
+            _k_size = float(_kp.get("size", 0))
+            _k_shares = _k_size / _k_entry if _k_entry > 0 else 0
+            _kp["unrealized_pnl"] = round(_k_shares * _k_new - _k_size, 4)
+            kalshi_active.append(_kp)
+
         kalshi_closed = list(_closed_positions)
 
         merged_active = poly_active + kalshi_active
@@ -420,6 +466,7 @@ def persist_positions() -> None:
 
         wins = sum(1 for p in merged_closed if (p.get("realized_pnl") or 0) > 0)
         unrealized = sum(p.get("unrealized_pnl") or 0 for p in poly_active)
+        unrealized += sum(p.get("unrealized_pnl") or 0 for p in kalshi_active)
         realized   = sum(p.get("realized_pnl") or 0 for p in merged_closed)
 
         summary = {

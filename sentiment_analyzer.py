@@ -28,7 +28,9 @@ _client = None
 
 # Lazy-initialised Gemini client (free tier: 1,500 calls/day, 15 req/min)
 _gemini_client = None
-_GEMINI_MODEL = "gemini-2.5-flash-lite"
+# gemini-2.0-flash: available on v1 API (gemini-1.5-flash is v1beta only → 404)
+_GEMINI_MODEL = "gemini-2.0-flash"
+_GEMINI_MODEL_FALLBACK = "gemini-2.0-flash-lite"
 
 # Lazy-initialised Groq client (free tier: 14,400 req/day)
 _groq_client = None
@@ -41,6 +43,30 @@ _groq_auth_failed: bool = False
 # DistilBERT was trained on movie reviews (SST-2) → wrong domain, wrong labels.
 _local_classifier = None
 _LOCAL_MODEL_NAME = "ProsusAI/finbert"
+
+# ── Extended free-tier API providers (OpenAI-compatible endpoints) ─────────────
+# All use requests (no extra SDK needed).  Set the relevant env var + call
+# `pip install vaderSentiment` for VADER.
+
+_CEREBRAS_MODEL   = "llama-3.3-70b"
+_MISTRAL_MODEL    = "mistral-small-latest"
+_OPENROUTER_MODEL = "meta-llama/llama-3.1-8b-instruct:free"
+_OPENROUTER_FALLBACKS = [
+    "qwen/qwen-2-7b-instruct:free",
+    "microsoft/phi-3-mini-128k-instruct:free",
+]
+_TOGETHER_MODEL   = "meta-llama/Llama-3-70b-chat-hf"
+
+# Per-provider auth-failure flags — set True after 401 to skip for this session
+_provider_auth_failed: dict[str, bool] = {
+    "cerebras":   False,
+    "mistral":    False,
+    "openrouter": False,
+    "together":   False,
+}
+
+# Lazy-loaded VADER sentiment analyzer (vaderSentiment — no API key needed)
+_vader_analyzer = None
 
 # ── Keyword lists ─────────────────────────────────────────────────────────────
 
@@ -217,6 +243,253 @@ def _get_groq_client():
         return None
 
 
+def _is_cerebras_available() -> bool:
+    return not _provider_auth_failed["cerebras"] and bool(os.getenv("CEREBRAS_API_KEY", "").strip())
+
+def _is_mistral_available() -> bool:
+    return not _provider_auth_failed["mistral"] and bool(os.getenv("MISTRAL_API_KEY", "").strip())
+
+def _is_openrouter_available() -> bool:
+    return not _provider_auth_failed["openrouter"] and bool(os.getenv("OPENROUTER_API_KEY", "").strip())
+
+def _is_together_available() -> bool:
+    return not _provider_auth_failed["together"] and bool(os.getenv("TOGETHER_API_KEY", "").strip())
+
+def _is_vader_available() -> bool:
+    try:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _get_vader_analyzer():
+    """Lazy-load VADER. Returns None if vaderSentiment not installed."""
+    global _vader_analyzer
+    if _vader_analyzer is not None:
+        return _vader_analyzer
+    try:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+        _vader_analyzer = SentimentIntensityAnalyzer()
+        log.info("VADER sentiment analyzer loaded (local, no API key needed)")
+        return _vader_analyzer
+    except ImportError:
+        log.warning("[VADER] vaderSentiment not installed — run: pip install vaderSentiment")
+        return None
+
+
+def _analyze_with_openai_compat(
+    articles: list[dict],
+    api_url: str,
+    api_key: str,
+    model: str,
+    provider_name: str,
+    extra_headers: dict | None = None,
+) -> list[dict]:
+    """
+    Generic batch analyzer for any OpenAI-compatible chat/completions endpoint.
+    Sends articles in chunks of 20.  Returns same dict shape as all other analyzers.
+    Sets _provider_auth_failed[provider_name] = True on 401 / invalid key.
+    """
+    try:
+        import requests as _req
+    except ImportError:
+        log.warning("[%s] requests library not installed — pip install requests", provider_name)
+        return []
+
+    _CHUNK = 20
+    all_results: list[dict] = []
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+
+    for chunk_start in range(0, len(articles), _CHUNK):
+        chunk = articles[chunk_start: chunk_start + _CHUNK]
+        articles_text = "\n\n".join(
+            f"Article {i+1}: {art.get('title', '')}. {(art.get('description') or '')[:200]}"
+            for i, art in enumerate(chunk)
+        )
+        prompt = _BATCH_PROMPT.format(articles_text=articles_text)
+
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 2048,
+            "temperature": 0.1,
+        }
+
+        try:
+            resp = _req.post(api_url, json=payload, headers=headers, timeout=30)
+            if resp.status_code in (401, 403):
+                _provider_auth_failed[provider_name] = True
+                log.error(
+                    "[%s] %d — API key invalid/expired. Set %s_API_KEY in .env. "
+                    "Skipping for this session.",
+                    provider_name.upper(), resp.status_code, provider_name.upper(),
+                )
+                break
+            if resp.status_code == 429:
+                log.warning("[%s] Rate limited (429) — skipping remaining chunks", provider_name.upper())
+                break
+            resp.raise_for_status()
+
+            raw_text = resp.json()["choices"][0]["message"]["content"].strip()
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("```")[1]
+                if raw_text.startswith("json"):
+                    raw_text = raw_text[4:]
+                raw_text = raw_text.strip()
+
+            batch_results = json.loads(raw_text)
+            if not isinstance(batch_results, list):
+                raise ValueError("Expected JSON array")
+
+            for art, res in zip(chunk, batch_results):
+                affected = [c.lower() for c in res.get("affected_cryptos", [])]
+                if not affected:
+                    affected = _detect_cryptos(
+                        f"{art.get('title', '')} {art.get('description', '')}"
+                    )
+                conf = int(res.get("confidence", 5))
+                all_results.append({
+                    "headline": art.get("title", ""),
+                    "sentiment": str(res.get("sentiment", "neutral")).lower(),
+                    "confidence": conf,
+                    "reasoning": res.get("reasoning", ""),
+                    "affected_cryptos": affected,
+                    "market_impact": _impact_from_confidence(conf),
+                    "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
+                    "model_used": f"{provider_name}/{model}",
+                    "source": art.get("source", ""),
+                })
+
+        except json.JSONDecodeError as exc:
+            log.warning("[%s] chunk %d-%d non-JSON — skipping: %s",
+                        provider_name.upper(), chunk_start + 1, chunk_start + len(chunk), exc)
+        except Exception as exc:
+            log.warning("[%s] chunk %d-%d failed: %s",
+                        provider_name.upper(), chunk_start + 1, chunk_start + len(chunk), exc)
+
+    log.info("[SENTIMENT-BATCH] %s analyzed %d/%d articles | Cost: $0",
+             provider_name.upper(), len(all_results), len(articles))
+    return all_results
+
+
+def analyze_articles_with_cerebras(articles: list[dict]) -> list[dict]:
+    """Cerebras Cloud API — llama-3.3-70b, very fast inference, free tier."""
+    return _analyze_with_openai_compat(
+        articles,
+        api_url="https://api.cerebras.ai/v1/chat/completions",
+        api_key=os.getenv("CEREBRAS_API_KEY", ""),
+        model=_CEREBRAS_MODEL,
+        provider_name="cerebras",
+    )
+
+
+def analyze_articles_with_mistral(articles: list[dict]) -> list[dict]:
+    """Mistral API — mistral-small, free tier available."""
+    return _analyze_with_openai_compat(
+        articles,
+        api_url="https://api.mistral.ai/v1/chat/completions",
+        api_key=os.getenv("MISTRAL_API_KEY", ""),
+        model=_MISTRAL_MODEL,
+        provider_name="mistral",
+    )
+
+
+def analyze_articles_with_openrouter(articles: list[dict]) -> list[dict]:
+    """OpenRouter — routes to free LLM models (Llama, Phi, Qwen)."""
+    results = _analyze_with_openai_compat(
+        articles,
+        api_url="https://openrouter.ai/api/v1/chat/completions",
+        api_key=os.getenv("OPENROUTER_API_KEY", ""),
+        model=_OPENROUTER_MODEL,
+        provider_name="openrouter",
+        extra_headers={
+            "HTTP-Referer": "https://zisi-bot.local",
+            "X-Title": "ZiSi Trading Bot",
+        },
+    )
+    # If primary free model returned nothing, try fallbacks
+    if not results and not _provider_auth_failed["openrouter"]:
+        for fallback_model in _OPENROUTER_FALLBACKS:
+            log.info("[OPENROUTER] Trying fallback model: %s", fallback_model)
+            results = _analyze_with_openai_compat(
+                articles,
+                api_url="https://openrouter.ai/api/v1/chat/completions",
+                api_key=os.getenv("OPENROUTER_API_KEY", ""),
+                model=fallback_model,
+                provider_name="openrouter",
+                extra_headers={
+                    "HTTP-Referer": "https://zisi-bot.local",
+                    "X-Title": "ZiSi Trading Bot",
+                },
+            )
+            if results:
+                break
+    return results
+
+
+def analyze_articles_with_together(articles: list[dict]) -> list[dict]:
+    """Together AI — Llama 3 70B, free credits for new accounts."""
+    return _analyze_with_openai_compat(
+        articles,
+        api_url="https://api.together.xyz/v1/chat/completions",
+        api_key=os.getenv("TOGETHER_API_KEY", ""),
+        model=_TOGETHER_MODEL,
+        provider_name="together",
+    )
+
+
+def analyze_with_vader(articles: list[dict]) -> list[dict]:
+    """
+    VADER (Valence Aware Dictionary and sEntiment Reasoner) — local, no API key.
+    Tuned for short texts; provides a useful baseline when all APIs are exhausted.
+    """
+    analyzer = _get_vader_analyzer()
+    if analyzer is None:
+        return []
+
+    log.info("[SENTIMENT] VADER: analyzing %d articles | Cost: $0", len(articles))
+    results = []
+    for art in articles:
+        title = art.get("title", "")
+        description = art.get("description", "") or ""
+        text = f"{title}. {description}"[:512]
+
+        scores = analyzer.polarity_scores(text)
+        compound = scores["compound"]  # -1 (most negative) to +1 (most positive)
+
+        if compound >= 0.05:
+            sentiment = "bullish"
+            confidence = max(1, min(10, int(compound * 10) + 5))
+        elif compound <= -0.05:
+            sentiment = "bearish"
+            confidence = max(1, min(10, int(abs(compound) * 10) + 5))
+        else:
+            sentiment = "neutral"
+            confidence = 3
+
+        affected = _detect_cryptos(f"{title} {description}")
+        results.append({
+            "headline": title,
+            "sentiment": sentiment,
+            "confidence": confidence,
+            "reasoning": f"VADER compound={compound:.3f} (pos={scores['pos']:.2f}, neg={scores['neg']:.2f})",
+            "affected_cryptos": affected,
+            "market_impact": _impact_from_confidence(confidence),
+            "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
+            "model_used": "vader_local",
+            "source": art.get("source", ""),
+        })
+
+    log.info("[SENTIMENT] VADER analyzed %d/%d articles | Cost: $0", len(results), len(articles))
+    return results
+
+
 def _is_finbert_cached() -> bool:
     """
     Return True only if FinBERT weights are already in the local HuggingFace cache.
@@ -292,21 +565,26 @@ def _get_local_classifier():
 
 
 def _log_mode_once() -> None:
-    """Emit the active mode once so it shows up clearly in startup logs."""
+    """Emit the active mode and full provider inventory once at startup."""
     global _mode_logged
     if _mode_logged:
         return
     _mode_logged = True
-    if _is_claude_available():
-        log.info("Sentiment mode: Claude API (%s) [PRIORITY 1]", _MODEL)
-    elif _is_gemini_available():
-        log.info("Sentiment mode: Gemini Flash (%s) free tier [PRIORITY 2]", _GEMINI_MODEL)
-    elif _is_groq_available():
-        log.info("Sentiment mode: Groq Llama 3.3 70B (%s) free tier [PRIORITY 3]", _GROQ_MODEL)
-    elif _local_model_available():
-        log.info("Sentiment mode: FinBERT LOCAL (%s) | Cost: $0 [PRIORITY 4]", _LOCAL_MODEL_NAME)
-    else:
-        log.info("Sentiment mode: KEYWORD FALLBACK — set GEMINI_API_KEY or GROQ_API_KEY for AI analysis")
+
+    available = []
+    if _is_claude_available():     available.append("Claude(P1)")
+    if _is_gemini_available():     available.append("Gemini(P2)")
+    if _is_groq_available():       available.append("Groq(P3)")
+    if _is_cerebras_available():   available.append("Cerebras(P4)")
+    if _is_mistral_available():    available.append("Mistral(P5)")
+    if _is_openrouter_available(): available.append("OpenRouter(P6)")
+    if _is_together_available():   available.append("Together(P7)")
+    if _local_model_available() and _is_finbert_cached():
+        available.append("FinBERT(P8)")
+    if _is_vader_available():      available.append("VADER(P9)")
+    available.append("Keywords(P10)")
+
+    log.info("Sentiment providers active: %s", " → ".join(available))
 
 
 def _get_client():
@@ -748,11 +1026,16 @@ def analyze_articles_batch(articles: list[dict]) -> list[dict]:
     Analyze up to 20 articles in a single call.
 
     Priority chain (automatic fallthrough on any failure):
-      1. Claude API     — best quality, requires ANTHROPIC_API_KEY credits
-      2. Gemini Flash   — frontier quality, FREE (1,500 calls/day), requires GEMINI_API_KEY
-      3. Groq Llama 3.3 — very fast + accurate, FREE (14,400/day),  requires GROQ_API_KEY
-      4. FinBERT local  — financial-domain BERT, FREE, requires transformers+torch
-      5. Keyword        — pure rule-based, always available
+      1.  Claude API      — best quality,  requires ANTHROPIC_API_KEY credits
+      2.  Gemini Flash    — frontier,      FREE (1,500 calls/day),   GEMINI_API_KEY
+      3.  Groq Llama 3.3  — very fast,     FREE (14,400 req/day),    GROQ_API_KEY
+      4.  Cerebras        — ultra-fast,    FREE tier,                CEREBRAS_API_KEY
+      5.  Mistral Small   — balanced,      FREE tier,                MISTRAL_API_KEY
+      6.  OpenRouter      — free models,   FREE (Llama/Phi/Qwen),    OPENROUTER_API_KEY
+      7.  Together AI     — Llama 3 70B,   free credits,             TOGETHER_API_KEY
+      8.  FinBERT local   — financial BERT, FREE, requires transformers+torch
+      9.  VADER local     — rule-based NLP, FREE, pip install vaderSentiment
+      10. Keyword         — pure fallback, always available
 
     All modes return the same dict shape — downstream code is unaffected.
     """
@@ -858,17 +1141,57 @@ def analyze_articles_batch(articles: list[dict]) -> list[dict]:
         results = analyze_articles_with_groq(articles)
         if results:
             return _apply_source_quality(results, articles[:len(results)])
-        log.warning("[SENTIMENT-BATCH] Groq returned empty → trying FinBERT")
+        log.warning("[SENTIMENT-BATCH] Groq returned empty → trying Cerebras")
 
-    # ── Priority 4: FinBERT local (financial-domain, free) ───────────────
+    # ── Priority 4: Cerebras (llama-3.3-70b, ultra-fast, free) ───────────
+    if _is_cerebras_available():
+        log.info("[SENTIMENT-BATCH] Priority 4: Cerebras %s | %d articles", _CEREBRAS_MODEL, len(articles))
+        results = analyze_articles_with_cerebras(articles)
+        if results:
+            return _apply_source_quality(results, articles[:len(results)])
+        log.warning("[SENTIMENT-BATCH] Cerebras returned empty → trying Mistral")
+
+    # ── Priority 5: Mistral Small (free tier) ─────────────────────────────
+    if _is_mistral_available():
+        log.info("[SENTIMENT-BATCH] Priority 5: Mistral %s | %d articles", _MISTRAL_MODEL, len(articles))
+        results = analyze_articles_with_mistral(articles)
+        if results:
+            return _apply_source_quality(results, articles[:len(results)])
+        log.warning("[SENTIMENT-BATCH] Mistral returned empty → trying OpenRouter")
+
+    # ── Priority 6: OpenRouter free models (Llama/Phi/Qwen) ──────────────
+    if _is_openrouter_available():
+        log.info("[SENTIMENT-BATCH] Priority 6: OpenRouter %s | %d articles", _OPENROUTER_MODEL, len(articles))
+        results = analyze_articles_with_openrouter(articles)
+        if results:
+            return _apply_source_quality(results, articles[:len(results)])
+        log.warning("[SENTIMENT-BATCH] OpenRouter returned empty → trying Together AI")
+
+    # ── Priority 7: Together AI (Llama 3 70B, free credits) ──────────────
+    if _is_together_available():
+        log.info("[SENTIMENT-BATCH] Priority 7: Together AI %s | %d articles", _TOGETHER_MODEL, len(articles))
+        results = analyze_articles_with_together(articles)
+        if results:
+            return _apply_source_quality(results, articles[:len(results)])
+        log.warning("[SENTIMENT-BATCH] Together AI returned empty → trying FinBERT")
+
+    # ── Priority 8: FinBERT local (financial-domain, free) ───────────────
     if _local_model_available():
-        log.info("[SENTIMENT-BATCH] Priority 4: FinBERT local | %d articles", len(articles))
+        log.info("[SENTIMENT-BATCH] Priority 8: FinBERT local | %d articles", len(articles))
         results = analyze_with_local_model(articles)
         return _apply_source_quality(results, articles[:len(results)])
 
-    # ── Priority 5: Keyword fallback ──────────────────────────────────────
+    # ── Priority 9: VADER local (no API key, no download) ────────────────
+    if _is_vader_available():
+        log.info("[SENTIMENT-BATCH] Priority 9: VADER local | %d articles", len(articles))
+        results = analyze_with_vader(articles)
+        if results:
+            return _apply_source_quality(results, articles[:len(results)])
+
+    # ── Priority 10: Keyword fallback ─────────────────────────────────────
     return _keyword_fallback(
-        "set GEMINI_API_KEY (free) or GROQ_API_KEY (free) or install transformers+torch"
+        "add any free API key: CEREBRAS_API_KEY / MISTRAL_API_KEY / OPENROUTER_API_KEY / "
+        "TOGETHER_API_KEY / GROQ_API_KEY / GEMINI_API_KEY — or install vaderSentiment"
     )
 
 
@@ -879,11 +1202,8 @@ def analyze_sentiment(headline: str, description: str, content: str) -> dict:
     Analyze a single news article for crypto sentiment.
 
     Priority chain (same as analyze_articles_batch):
-      1. Claude API     — requires ANTHROPIC_API_KEY
-      2. Gemini Flash   — free, requires GEMINI_API_KEY
-      3. Groq Llama 3.3 — free, requires GROQ_API_KEY
-      4. FinBERT local  — free, requires transformers+torch
-      5. Keyword        — always available
+      1-10. Claude → Gemini → Groq → Cerebras → Mistral → OpenRouter →
+            Together → FinBERT → VADER → Keyword
 
     All modes return the same dict shape — downstream code is unaffected.
     """

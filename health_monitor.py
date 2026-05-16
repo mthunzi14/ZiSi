@@ -92,12 +92,17 @@ def get_active_alerts() -> list:
 # ---------------------------------------------------------------------------
 
 def _check_api_connectivity() -> bool:
-    """Verify Polymarket + Kalshi APIs are reachable."""
+    """Verify Polymarket + Kalshi APIs are reachable.
+
+    Any HTTP response (including 4xx auth/not-found) means the server is up.
+    Only 5xx or network failure counts as degraded.
+    """
     ok = True
     for name, url in (("POLYMARKET", POLYMARKET_HEALTH_URL), ("KALSHI", KALSHI_HEALTH_URL)):
         try:
             resp = requests.get(url, timeout=5)
-            if not resp.ok:
+            # 5xx = server error → alert. 4xx = server up but wrong endpoint/no auth → fine.
+            if resp.status_code >= 500:
                 _add_alert("WARNING", f"API_DEGRADED_{name}", f"{name} returned HTTP {resp.status_code}")
                 ok = False
         except requests.exceptions.Timeout:
@@ -197,10 +202,10 @@ _ML_MIN_EXAMPLES = 10  # need at least this many total before staleness matters
 
 def _check_ml_pipeline_active() -> bool:
     """Warn only if ML examples exist AND none have been added in 24h (genuine stall).
-    Suppresses the alert during Phase 1 (<10 total examples) when trades are sparse."""
+    Suppresses the alert when fewer than 10 total examples exist (trades are sparse)."""
     labelled_file = _BASE_DIR / "ml_labelled_outcomes.jsonl"
     if not labelled_file.exists():
-        return True  # Phase 1 — no data yet, not a failure
+        return True  # no data yet — not a failure
 
     try:
         now = datetime.now(timezone.utc)
@@ -226,7 +231,7 @@ def _check_ml_pipeline_active() -> bool:
 
         # Not enough data to establish a baseline — suppress the warning
         if total < _ML_MIN_EXAMPLES:
-            log.debug("[HEALTH] ML pipeline: %d/%d examples (Phase 1, no stale check)", total, _ML_MIN_EXAMPLES)
+            log.debug("[HEALTH] ML pipeline: %d/%d examples (sparse data, no stale check)", total, _ML_MIN_EXAMPLES)
             return True
 
         if recent == 0 and now.hour not in (1, 2, 3, 4):

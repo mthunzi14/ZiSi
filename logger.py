@@ -308,52 +308,8 @@ def log_error(error_message: str, error_type: str, module: str, action_taken: st
 # ---------------------------------------------------------------------------
 
 def send_alert_email(subject: str, body: str) -> None:
-    """
-    Send a Gmail alert to the configured address.
-
-    Uses SMTP with an App Password (no OAuth required).
-    Silently skips if GMAIL_ENABLED is false or credentials are missing.
-    """
-    cfg = load_config()
-
-    if not cfg["GMAIL_ENABLED"]:
-        log.debug("Gmail disabled — skipping alert: %s", subject)
-        return
-
-    sender = cfg.get("GMAIL_SENDER_EMAIL", "")
-    password = cfg.get("GMAIL_APP_PASSWORD", "")
-
-    if not sender or not password:
-        log.warning("Gmail credentials missing — cannot send alert")
-        return
-
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
-        try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = subject
-            msg["From"] = sender
-            msg["To"] = sender
-
-            # Plain-text part
-            msg.attach(MIMEText(body, "plain", "utf-8"))
-
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as server:
-                server.login(sender, password)
-                server.sendmail(sender, sender, msg.as_string())
-
-            log.info("Email sent: %s", subject)
-            return
-        except Exception as exc:
-            if attempt < max_retries:
-                wait_time = 2 * (2 ** (attempt - 1))  # 2s, 4s, 8s
-                log.warning(
-                    "Email attempt %d/%d failed: %s. Retrying in %ds...",
-                    attempt, max_retries, exc, wait_time,
-                )
-                time.sleep(wait_time)
-            else:
-                log.error("Email failed after %d attempts: %s", max_retries, subject)
+    """Email alerts disabled — Telegram is the sole notification channel."""
+    log.debug("[EMAIL-DISABLED] Telegram is active: %s", subject)
 
 
 def log_liquidity_skip(event_id: str, liquidity: float, min_liquidity: float) -> None:
@@ -512,7 +468,7 @@ def log_patience_check() -> str:
     """Return a random patience reminder. Intended to be called every 6 hours."""
     import random
     reminders = [
-        "Phase 1 is validation, not profitability. Patience wins.",
+        "Validation over profitability — every signal evaluated builds the edge.",
         "Bot is working correctly. Every signal evaluated = good progress.",
         "Trade placement every 5-50 cycles is NORMAL. You're on track.",
         "Every cycle = data. Every signal = validation. Let it run.",
@@ -549,7 +505,7 @@ def format_signal_log(signal_data: dict, event_match, confidence: float) -> str:
         )
     return (
         f"[SIGNAL-MISS] {coin} {sentiment} ({score_display:.2f}) "
-        f"→ No Polymarket event found (hypothetical logged)"
+        f"→ No Polymarket trade placed"
     )
 
 

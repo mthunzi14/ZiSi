@@ -1,14 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import ToastPortal from './ToastPortal';
 import './Header.css';
 
 export default function Header({ metrics, onRefresh, autoRefresh = true }) {
-  const [isRefreshing, setIsRefreshing]   = useState(false);
-  const [toastMessage, setToastMessage]   = useState('');
-  const [toastType, setToastType]         = useState('');
-  const prevMetricsRef    = useRef(metrics);
-  const toastTimeoutRef   = useRef(null);
-  const lastRefreshRef    = useRef(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [toast, setToast]               = useState(null);
+  const prevMetricsRef  = useRef(metrics);
+  const toastTimerRef   = useRef(null);
+  const lastRefreshRef  = useRef(0);
 
   // ── Auto-refresh: fires every 30 s but respects manual refreshes ────────
   useEffect(() => {
@@ -23,18 +21,13 @@ export default function Header({ metrics, onRefresh, autoRefresh = true }) {
   }, [autoRefresh]);
 
   // ── Cleanup ──────────────────────────────────────────────────────────────
-  useEffect(() => () => { if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current); }, []);
+  useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
 
-  // ── Toast helper ─────────────────────────────────────────────────────────
-  const showToast = (msg, type) => {
-    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
-    setToastMessage(msg);
-    setToastType(type);
-    console.debug('[ZiSi Toast]', type, '→', msg);
-    toastTimeoutRef.current = setTimeout(() => {
-      setToastMessage('');
-      setToastType('');
-    }, 4000);
+  // ── Toast helper — matches Positions.jsx simple style ───────────────────
+  const showToast = (msg) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(msg);
+    toastTimerRef.current = setTimeout(() => setToast(null), 2500);
   };
 
   // ── Refresh handler ──────────────────────────────────────────────────────
@@ -65,13 +58,13 @@ export default function Header({ metrics, onRefresh, autoRefresh = true }) {
         if (dPoly   > 0) parts.push(`+${dPoly} Poly`);
         if (dKalshi > 0) parts.push(`+${dKalshi} Kalshi`);
         if (Math.abs(dPnl) > 0.001) parts.push(`${dPnl > 0 ? '+' : ''}$${dPnl.toFixed(2)}`);
-        showToast(`✓ Refreshed: ${parts.join(' | ')}`, 'success');
+        showToast(`✓ ${parts.join(' | ')}`);
       } else {
-        showToast('No new signals since last refresh', 'neutral');
+        showToast('✓ Refreshed');
       }
     } catch (err) {
       console.error('[ZiSi Refresh] error:', err);
-      showToast('✗ Refresh failed — backend offline', 'error');
+      showToast('✗ Refresh failed');
     } finally {
       setTimeout(() => setIsRefreshing(false), 400);
     }
@@ -85,8 +78,7 @@ export default function Header({ metrics, onRefresh, autoRefresh = true }) {
 
   return (
     <>
-      {/* Portal renders outside all stacking contexts — guaranteed visible */}
-      <ToastPortal message={toastMessage} type={toastType} isVisible={!!toastMessage} />
+      {toast && <div className="pos-toast header-toast">{toast}</div>}
 
       <header className="page-header">
         <div className="header-logo">

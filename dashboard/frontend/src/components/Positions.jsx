@@ -5,14 +5,14 @@ import './Positions.css';
 function fmt$(n) {
   if (n == null) return '—';
   const v = parseFloat(n);
-  const sign = v >= 0 ? '+' : '';
+  const sign = v >= 0 ? '+' : '-';
   return `${sign}$${Math.abs(v).toFixed(2)}`;
 }
 
 function fmtPct(n) {
   if (n == null) return '—';
   const v = parseFloat(n);
-  const sign = v >= 0 ? '+' : '';
+  const sign = v >= 0 ? '+' : '-';
   return `${sign}${Math.abs(v).toFixed(1)}%`;
 }
 
@@ -86,6 +86,7 @@ function ActiveTable({ rows }) {
             <th>Size</th>
             <th>Unrealized P&amp;L</th>
             <th>Held</th>
+            <th>Resolves</th>
             <th>Target / Stop</th>
           </tr>
         </thead>
@@ -115,16 +116,21 @@ function ActiveTable({ rows }) {
                   {isKalshi ? '—' : fmtPrice(pos.current_price)}
                 </td>
                 <td className="pos-mono">${parseFloat(pos.size || 0).toFixed(2)}</td>
-                <td className={`pos-mono ${isKalshi ? 'pnl-pending' : pnlClass(unrealized)}`}>
-                  {isKalshi ? (
-                    <span className="pos-awaiting">Awaiting resolution</span>
-                  ) : (
-                    fmt$(unrealized)
-                  )}
+                <td className={`pos-mono ${pnlClass(unrealized)}`}>
+                  {unrealized != null && parseFloat(unrealized) !== 0
+                    ? fmt$(unrealized)
+                    : isKalshi
+                      ? <span className="pos-awaiting">Pending</span>
+                      : fmt$(unrealized)}
                 </td>
                 {/* Dynamic hold time — recalculates from real open_time each render */}
                 <td className="pos-mono pos-held-live">
                   {dynamicHoldStr(openTimeStr)}
+                </td>
+                <td className="pos-mono pos-resolves">
+                  {pos.resolution_date
+                    ? new Date(pos.resolution_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+                    : '—'}
                 </td>
                 <td className="pos-mono pos-targets">
                   {isKalshi ? '—' : (
@@ -230,11 +236,11 @@ export default function Positions() {
   const [lastRefresh, setLastRefresh] = useState(null);
   const [toast, setToast]         = useState(null);
 
-  // Tick every 60 s — forces ActiveTable to re-render so dynamicHoldStr
+  // Tick every 15 s — forces ActiveTable to re-render so dynamicHoldStr
   // recalculates from real open_time without waiting for an API refresh.
   const [, setTick] = useState(0);
   useEffect(() => {
-    const iv = setInterval(() => setTick(t => t + 1), 60_000);
+    const iv = setInterval(() => setTick(t => t + 1), 15_000);
     return () => clearInterval(iv);
   }, []);
 
@@ -253,10 +259,10 @@ export default function Positions() {
     }
   }, []);
 
-  // Auto-refresh every 30 s
+  // Auto-refresh every 10 s
   useEffect(() => {
     load();
-    const iv = setInterval(load, 30_000);
+    const iv = setInterval(load, 10_000);
     return () => clearInterval(iv);
   }, [load]);
 
@@ -276,6 +282,25 @@ export default function Positions() {
     : null;
 
   const unrealizedPnl = parseFloat(summary.unrealized_pnl || 0);
+
+  // Initial load skeleton — show spinner instead of all-zero cards
+  if (loading && data === null) {
+    return (
+      <div className="positions-root">
+        <div className="pos-header">
+          <h2 className="pos-title-h2">Positions</h2>
+          <div className="pos-header-right">
+            <button className="pos-refresh-btn" disabled>⟳ Loading…</button>
+          </div>
+        </div>
+        <div className="pos-loading-skeleton">
+          <div className="pos-skeleton-bar" />
+          <div className="pos-skeleton-bar pos-skeleton-bar--short" />
+          <div className="pos-skeleton-bar" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="positions-root">

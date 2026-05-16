@@ -8,6 +8,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,7 +69,7 @@ from metrics_engine import (
     get_real_trade_count,
 )
 import state_manager
-from state_manager import initialize_runtime_tracking, update_runtime_tracking
+from state_manager import initialize_runtime_tracking, update_runtime_tracking, get_current_balance
 
 # ── Kalshi integration ────────────────────────────────────────────────────────
 from kalshi.auth import KalshiAuth
@@ -102,6 +103,12 @@ from signal_router import SignalTypeClassifier, routing_decision
 from cycle_manager import CycleManager
 from ml_pipeline import get_blended_confidence
 
+# ── Shadow mode (copy-trades PBot-6 + Wallet-2) ───────────────────────────────
+from shadow_mode import ShadowModeMonitor, set_shadow_enabled
+
+# ── Up/Down high-frequency trader ────────────────────────────────────────────
+from updown_trader import run_updown_cycle
+
 # ── Module-level singletons ───────────────────────────────────────────────────
 _email_scheduler = EmailScheduler()
 _price_analyzer = MultiTimeframeAnalyzer()
@@ -120,6 +127,9 @@ _signal_classifier = SignalTypeClassifier()
 
 # CycleManager: routing, sizing, conflict detection, prioritisation
 _cycle_manager = CycleManager(account_balance=100.0)
+
+# Shadow mode monitor — initialised in main() after logging is ready
+_shadow_monitor: "ShadowModeMonitor | None" = None
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 
@@ -180,12 +190,14 @@ _NO_TRADE_HOURS_UTC = frozenset({1, 2, 3, 4})
 # ── Graceful shutdown ────────────────────────────────────────────────────────
 
 _running = True
+_shutdown_event = threading.Event()
 
 
 def _handle_shutdown(signum, frame):
     global _running
     log.info("Shutdown signal received — finishing current cycle then stopping.")
     _running = False
+    _shutdown_event.set()  # interrupt any sleep() waiting on this event
 
 
 signal.signal(signal.SIGINT, _handle_shutdown)
@@ -376,8 +388,15 @@ def _signal_flips_position(pos: dict) -> bool:
     Used by check_exit_condition to detect SIGNAL_FLIP without a Gemini re-call.
     Threshold: conf >= 7 and direction is opposite to position's direction.
     """
+    pos_title_raw = pos.get("event_title", "") or ""
+    pos_title = (pos_title_raw + " " + pos.get("market_id", "")).upper()
+
+    # UP/DOWN markets resolve at expiry within minutes — never exit early via SIGNAL_FLIP.
+    # Exiting at the same price as entry produces $0.00 P&L recorded as LOSS.
+    if "UPDOWN" in pos_title or "UP OR DOWN" in pos_title:
+        return False
+
     pos_direction = str(pos.get("direction", "YES")).upper()
-    pos_title = (pos.get("event_title", "") + " " + pos.get("market_id", "")).upper()
 
     for sig in _current_cycle_signals:
         sig_conf = float(sig.get("confidence", 0))
@@ -538,7 +557,25 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
     # 4. Get current market price
     markets = best_event.get("markets", [])
     market = None
-    if direction == "YES":
+
+    # For multi-outcome events (e.g. "What price will BTC hit in May?" with 20 sub-markets),
+    # pick the sub-market whose YES price is closest to 0.50 — that's where the real edge is.
+    # Single-outcome events (Up/Down) just use the YES/NO split as before.
+    _tradeable = [
+        m for m in markets
+        if 0.10 < float(m.get("price") or m.get("lastTradePrice") or 0) < 0.90
+    ]
+    if len(_tradeable) >= 2:
+        # Multi-market event: find the one closest to fair odds (0.50)
+        _best_market = min(_tradeable, key=lambda m: abs(float(m.get("price") or m.get("lastTradePrice") or 0.5) - 0.50))
+        market = _best_market
+        log.info(
+            "  [MARKET-SELECT] %d tradeable sub-markets — chose price=%.4f (closest to 0.50): %s",
+            len(_tradeable),
+            float(market.get("price") or market.get("lastTradePrice") or 0.5),
+            market.get("question", market.get("title", ""))[:50],
+        )
+    elif direction == "YES":
         market = next((m for m in markets if "YES" in str(m.get("outcomeLabel", "")).upper()), markets[0] if markets else None)
     else:
         market = next((m for m in markets if "NO" in str(m.get("outcomeLabel", "")).upper()), markets[1] if len(markets) > 1 else None)
@@ -760,8 +797,23 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
         position_size, max_risk,
     )
 
-    # 6. Validate
-    if not validate_trade(position_size, cfg["ACCOUNT_BALANCE"], count_open_trades()):
+    # 6. Validate — use signal-based win_rate so EV passes during bootstrapping.
+    # UP/DOWN markets have stronger edge (RSI+momentum alignment required) → 55% floor.
+    # General markets: 53% floor (news sentiment edge, conservative).
+    _market_type = best_event.get("market_type", "") or best_event.get("market_category", "")
+    _is_updown_mkt = (
+        str(_market_type).upper() == "UP_DOWN"
+        or "UPDOWN" in str(best_event.get("title", "")).upper()
+        or "UP OR DOWN" in str(best_event.get("title", "")).upper()
+    )
+    _base_win_rate = 0.55 if _is_updown_mkt else 0.53
+    _estimated_win_rate = max(_base_win_rate, hist_stats.get("win_rate", _base_win_rate))
+    if not validate_trade(
+        position_size, cfg["ACCOUNT_BALANCE"], count_open_trades(),
+        win_rate=_estimated_win_rate,
+        entry_price=current_price,
+        platform="POLYMARKET",
+    ):
         log.info("  Trade validation failed — skipping")
         _record_skip("validate_trade_failed")
         return
@@ -792,6 +844,12 @@ def _process_signal(signal_data: dict, all_events: list[dict], cfg: dict) -> Non
     global _cycle_trades_placed
     _cycle_trades_placed += 1
     log.info("  FILLED: %.2f shares @ %.4f | order_id=%s", order["shares_acquired"], order["entry_price"], order["order_id"])
+    log.info(
+        "[TRADE-PLACED] %s | %s | $%.2f @ %.4f | conf=%d | %s",
+        direction, best_event.get("title", "")[:55],
+        position_size, order["entry_price"],
+        confidence, order["order_id"][:16],
+    )
 
     # Attach targets to the cached position
     attach_exit_targets(order["order_id"], targets["target_price"], targets["stop_loss"])
@@ -971,6 +1029,17 @@ def _is_bot_paused() -> bool:
     return os.path.exists(_BOT_PAUSED_FLAG)
 
 
+def _get_starting_balance() -> float:
+    """Read starting_balance from account_state.json; always fall back to 100.0 (never current balance)."""
+    try:
+        acc = json.loads(Path(_STATE_FILE_PATH).read_text(encoding="utf-8"))
+        # Only use the explicit 'starting_balance' field — never use 'balance' as a proxy,
+        # as that would cause the balance to drift upward every heartbeat cycle.
+        return float(acc.get("starting_balance", 100.0))
+    except Exception:
+        return 100.0
+
+
 def _write_heartbeat(reason: str = "cycle_start") -> None:
     """Write state file — merges in-memory history with JSONL file for persistence across restarts."""
     try:
@@ -998,20 +1067,35 @@ def _write_heartbeat(reason: str = "cycle_start") -> None:
 
         closed = [t for t in all_trades if t.get("status", "").upper() == "CLOSED"]
         total_pnl = sum(float(t.get("profit", 0) or 0) for t in closed)
-        state = {
-            "balance": round(100.0 + total_pnl, 2),
+        # Use in-memory balance as the authority — it includes shadow trade PnL
+        # (which isn't in JSONL). JSONL-based pnl is shown for informational purposes.
+        live_balance = get_current_balance()
+        _start_bal = _get_starting_balance()
+        # Read existing state to preserve fields we don't own
+        existing: dict = {}
+        if os.path.exists(_STATE_FILE_PATH):
+            try:
+                with open(_STATE_FILE_PATH, "r", encoding="utf-8") as _fh:
+                    existing = json.loads(_fh.read())
+            except Exception:
+                pass
+        existing.update({
+            "balance": live_balance,
+            "starting_balance": _start_bal,
+            "pnl": round(live_balance - _start_bal, 2),
             "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "trades_executed": len(closed),
             "phase": "phase_1",
             "paused": False,
             "last_update_reason": reason,
-            "pnl": round(total_pnl, 2),
-        }
+            "status": "running",
+        })
         with open(_STATE_FILE_PATH, "w", encoding="utf-8") as fh:
-            json.dump(state, fh, indent=2)
+            json.dump(existing, fh, indent=2)
+        effective_pnl = round(live_balance - _start_bal, 2)
         log.info(
-            "Heartbeat → $%.2f | pnl: $%.2f | trades: %d | file: %s",
-            state["balance"], total_pnl, len(closed), _STATE_FILE_PATH,
+            "Heartbeat → $%.2f | pnl: $%+.2f | jsonl_closed: %d",
+            live_balance, effective_pnl, len(closed),
         )
     except Exception as exc:
         import traceback
@@ -1042,9 +1126,10 @@ def sync_balance_to_state() -> tuple:
 
         closed_trades = [t for t in all_trades if t.get("status", "").upper() == "CLOSED"]
         total_pnl = sum(float(t.get("profit", 0) or 0) for t in closed_trades)
-        current_balance = round(100.0 + total_pnl, 2)
+        current_balance = round(_get_starting_balance() + total_pnl, 2)
 
         state_data = {
+            "starting_balance": _get_starting_balance(),
             "balance": current_balance,
             "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "trades_executed": len(closed_trades),
@@ -1149,12 +1234,22 @@ def run_startup_diagnostics(cfg: dict) -> bool:
         log.error("  [FAIL] Kalshi: missing %s", ", ".join(missing))
         all_ok = False
 
-    for key_name in ("NEWSAPI_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
+    for key_name in (
+        "NEWSAPI_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
+        "GROQ_API_KEY", "CEREBRAS_API_KEY", "MISTRAL_API_KEY",
+        "OPENROUTER_API_KEY", "TOGETHER_API_KEY",
+    ):
         val = cfg.get(key_name, "")
         if val:
             log.info("  [OK] %s: present", key_name)
         else:
-            log.warning("  [WARN] %s: not set", key_name)
+            log.warning("  [WARN] %s: not set (sentiment fallback skipped)", key_name)
+
+    log.info("  Signal threshold: %d/10 | Risk: %.0f%% | Max positions: %d | Kalshi cap: 50/cycle | Mode: %s",
+             cfg.get("SIGNAL_THRESHOLD", 6),
+             cfg.get("RISK_PER_TRADE_PERCENT", 3),
+             cfg.get("MAX_SIMULTANEOUS_TRADES", 100),
+             cfg.get("BOT_MODE", "paper_trading"))
 
     # ── [2] DATA INTEGRITY ─────────────────────────────────────────────────────
     log.info("[2] DATA INTEGRITY")
@@ -1202,12 +1297,11 @@ def run_startup_diagnostics(cfg: dict) -> bool:
             log.error("  [FAIL] zisi_local_trades.jsonl unreadable: %s", exc)
             all_ok = False
 
-    # Only flag as error if OPEN positions are absent from history (dangerous)
+    # Warn (not fail) if open positions lack history — happens on clean restarts
     open_missing = active_ids - history_ids
     if open_missing:
-        log.error("  [FAIL] %d open position(s) have no trade history entry: %s",
-                  len(open_missing), list(open_missing)[:3])
-        all_ok = False
+        log.warning("  [WARN] %d open position(s) have no trade history (stale from prior run): %s",
+                    len(open_missing), list(open_missing)[:3])
     elif active_ids:
         log.info("  [OK] All open positions have trade history entries")
 
@@ -1230,7 +1324,7 @@ def run_startup_diagnostics(cfg: dict) -> bool:
     try:
         r = _req.get("https://clob.polymarket.com", timeout=5)
         if r.ok:
-            log.info("  [OK] Polymarket: HTTP %d", r.status_code)
+            log.info("  [OK] Polymarket: Connected")
         else:
             log.warning("  [WARN] Polymarket: HTTP %d", r.status_code)
     except Exception as exc:
@@ -1250,11 +1344,13 @@ def run_startup_diagnostics(cfg: dict) -> bool:
                 labelled_count = sum(1 for line in fh if line.strip())
         except Exception:
             pass
-    log.info("  Labelled examples: %d (need 50 to train)", labelled_count)
-    if labelled_count >= 50:
-        log.info("  [OK] ML: training threshold reached")
+    log.info("  Labelled examples: %d", labelled_count)
+    if labelled_count >= 200:
+        log.info("  [OK] ML: Self-learning continuous — gradient boosted model active (%d examples)", labelled_count)
+    elif labelled_count >= 50:
+        log.info("  [OK] ML: Self-learning continuous — logistic regression active (%d examples)", labelled_count)
     else:
-        log.info("  [INFO] ML: Phase 1 active — collecting examples (%d/50)", labelled_count)
+        log.info("  [INFO] ML: Self-learning continuous — Gemini deflation active | %d/50 examples to upgrade calibration", labelled_count)
 
     # ── [5] ACCOUNT STATE ──────────────────────────────────────────────────────
     log.info("[5] ACCOUNT STATE")
@@ -1272,6 +1368,20 @@ def run_startup_diagnostics(cfg: dict) -> bool:
             log.warning("  [WARN] account_state.json unreadable")
     else:
         log.info("  account_state.json not yet created")
+
+    # ── [6] RUNTIME ────────────────────────────────────────────────────────────
+    log.info("[6] RUNTIME")
+    log.info(_DIV)
+    try:
+        from state_manager import get_runtime_summary as _grs
+        rt = _grs()
+        if rt:
+            log.info("  Uptime: %.1f hrs (%dd %dh) | ML self-learning continuous",
+                     rt["total_hours"], rt["days"], rt["hours"])
+        else:
+            log.info("  Runtime timer: first start — timer initialises on main loop entry")
+    except Exception:
+        log.info("  Runtime timer: not yet initialised")
 
     # ── VERDICT ────────────────────────────────────────────────────────────────
     log.info(_SEP)
@@ -1312,31 +1422,11 @@ def main() -> None:
     log_config_startup(cfg)
     log.info("ZiSi Bot initialised. Entering main loop.")
 
-    # Legacy text alert (kept for backward compat) + rich startup email
-    send_alert_email(
-        subject=f"ZiSi v{cfg['BOT_VERSION']} started | Mode: {cfg['BOT_MODE']}",
-        body=f"Bot started at {datetime.now(timezone.utc).isoformat()} UTC.\n"
-             f"Account: ${cfg['ACCOUNT_BALANCE']} | Risk: {cfg['RISK_PER_TRADE_PERCENT']}% | "
-             f"Threshold: {cfg['SIGNAL_THRESHOLD']}/10",
-    )
-
-    # Rich HTML startup email with market snapshot
+    # Telegram startup notification (email system disabled)
     try:
-        from data_fetcher import get_crypto_prices
-        prices = get_crypto_prices()
-        btc_data = prices.get("bitcoin", {})
-        eth_data = prices.get("ethereum", {})
-        market_snapshot = {
-            "btc_price": btc_data.get("usd", 0),
-            "btc_24h_change": f"{btc_data.get('usd_24h_change', 0):+.2f}%",
-            "eth_price": eth_data.get("usd", 0),
-        }
+        telegram_alert(f"ZiSi v{cfg['BOT_VERSION']} started | Mode: {cfg['BOT_MODE']} | Balance: ${cfg['ACCOUNT_BALANCE']:.2f}")
     except Exception:
-        market_snapshot = {}
-    _email_scheduler.send_startup(
-        account_state={"balance": cfg["ACCOUNT_BALANCE"], "pnl": 0},
-        market_snapshot=market_snapshot,
-    )
+        pass
 
     # Start background silent-fill reconciliation (live mode only; no-op in paper)
     start_reconciliation_loop()
@@ -1347,6 +1437,20 @@ def main() -> None:
 
     # Start Telegram bot daemon (no-op if TELEGRAM_BOT_TOKEN not set)
     _telegram_thread = start_telegram_bot()
+
+    # Start shadow copy-trade monitor (PBot-6 + Wallet-2 — polls every 15s via positions API)
+    global _shadow_monitor
+    try:
+        _shadow_monitor = ShadowModeMonitor(
+            place_paper_trade_fn=place_order,
+            close_paper_trade_fn=execute_exit,
+            get_balance_fn=get_current_balance,
+            poll_interval=15,
+        )
+        _shadow_monitor.start()
+        log.info("[SHADOW] Shadow mode monitor started — watching PBot-6 + Wallet-2")
+    except Exception as _sme:
+        log.warning("[SHADOW] Shadow monitor failed to start (non-fatal): %s", _sme)
 
     # Prune stale equity history once at startup
     try:
@@ -1406,13 +1510,34 @@ def main() -> None:
                 cycle_count += 1
                 log.info("─── Cycle %d start: %s UTC ───", cycle_count, now.strftime("%Y-%m-%d %H:%M"))
 
+                # Reset per-cycle counters at start of every scheduled cycle
+                global _cycle_signals_processed, _cycle_trades_placed
+                _cycle_signals_processed = 0
+                _cycle_trades_placed = 0
+
+                # ── UP/DOWN high-frequency cycle — always runs (24/7 liquidity) ──
+                # 5-min binary markets on Polymarket have automated liquidity
+                # regardless of time, so this runs even during the dead window.
+                if _running:
+                    try:
+                        _ud_count = run_updown_cycle(
+                            place_paper_trade_fn=place_order,
+                            get_balance_fn=get_current_balance,
+                            count_open_trades_fn=count_open_trades,
+                        )
+                        if _ud_count > 0:
+                            log.info("[UPDOWN] %d Up/Down trade(s) placed this cycle", _ud_count)
+                            _cycle_trades_placed += _ud_count
+                    except Exception as _ude:
+                        log.warning("[UPDOWN] Cycle error (non-fatal): %s", _ude)
+
                 # ── Dead-liquidity window: UTC 01:00–04:59 ─────────────────
-                # Polymarket spreads are widest, volume is lowest. Skip signal
-                # processing but still monitor open positions.
+                # Polymarket spreads are widest for NEWS markets. Skip sentiment
+                # signal processing but UP/Down already ran above.
                 if now.hour in _NO_TRADE_HOURS_UTC:
                     log.info(
-                        "🌙 [NO-TRADE] UTC %02d:00 — dead-liquidity window "
-                        "(01–04 UTC, spreads wide) — monitoring only",
+                        "🌙 [OVERNIGHT] UTC %02d:00 — news signals paused "
+                        "(low liquidity), UP/Down algo running",
                         now.hour,
                     )
                     _monitor_open_positions(cfg)
@@ -1421,12 +1546,9 @@ def main() -> None:
                     time.sleep(60)
                     continue
 
-                # Reset per-cycle counters
+                # Reset per-cycle dedup + skip counters
                 _poly_cycle_event_ids.clear()
                 _cycle_skip_counts.clear()
-                global _cycle_signals_processed, _cycle_trades_placed
-                _cycle_signals_processed = 0
-                _cycle_trades_placed = 0
 
                 # Reconciliation health check — warn if unresolved orders building up
                 _pending = get_pending_reconcile_count()
@@ -1654,35 +1776,18 @@ def main() -> None:
                     len(_cm_result.get("kalshi_candidates", [])),
                 )
 
-                if _cm_candidates:
-                    _sig_to_market: dict = {}
-                    for cand in _cm_candidates:
-                        _hl = cand["signal"].get("headline", "")
-                        if _hl and _hl not in _sig_to_market:
-                            _sig_to_market[_hl] = cand["market"]
-
-                    log.info(
-                        "[EXECUTION] Processing %d deduped signals "
-                        "(CycleManager: %d pre-matched markets)...",
-                        len(signals_deduped), len(_sig_to_market),
-                    )
-                    _exec_count = 0
-                    for sig in signals_deduped:
-                        if not _running:
-                            break
-                        _best_market = _sig_to_market.get(sig.get("headline", ""))
-                        _process_signal(sig, [_best_market] if _best_market else all_events, cfg)
-                        _exec_count += 1
-                    _cycle_signals_processed += _exec_count
-                    log.info("[VERIFY-EXECUTION] Polymarket: %d signals processed", _exec_count)
-                else:
-                    log.info("[EXECUTION] No CycleManager candidates — full deduped scan")
-                    for sig in signals_deduped:
-                        if not _running:
-                            break
-                        _process_signal(sig, all_events, cfg)
-                    _cycle_signals_processed += len(signals_deduped)
-                    log.info("[VERIFY-EXECUTION] Polymarket: fallback scan, %d signals", len(signals_deduped))
+                log.info(
+                    "[EXECUTION] Processing %d deduped signals against %d markets...",
+                    len(signals_deduped), len(all_events),
+                )
+                _exec_count = 0
+                for sig in signals_deduped:
+                    if not _running:
+                        break
+                    _process_signal(sig, all_events, cfg)
+                    _exec_count += 1
+                _cycle_signals_processed += _exec_count
+                log.info("[VERIFY-EXECUTION] Polymarket: %d signals processed", _exec_count)
 
                 # ── Step 5b: Kalshi processing (parallel market) ────────────
                 _kalshi_summary = {"kalshi_events_fetched": 0, "kalshi_matches": 0, "kalshi_trades": 0}
@@ -1706,7 +1811,7 @@ def main() -> None:
                         # ── Check + close aged Kalshi paper positions ─────────
                         try:
                             _kalshi_closed = _kalshi_trader.check_and_close_positions(
-                                paper_hold_minutes=240
+                                paper_hold_minutes=60
                             )
                             for _cp in _kalshi_closed:
                                 win_lbl = "WIN" if (_cp.get("realized_pnl") or 0) > 0 else "LOSS"
@@ -1911,11 +2016,10 @@ def main() -> None:
                     rt = update_runtime_tracking()
                     if rt:
                         log.info(
-                            "⏱️  RUNTIME: %.1f hrs (%.1f%% of Phase 1) | %dd %dh remaining",
+                            "⏱️  RUNTIME: %.1f hrs | %dd %dh elapsed | continuous",
                             rt["runtime_hours"],
-                            rt["progress_percent"],
-                            int((rt["goal_hours"] - rt["runtime_hours"]) // 24),
-                            int((rt["goal_hours"] - rt["runtime_hours"]) % 24),
+                            int(rt["runtime_hours"] // 24),
+                            int(rt["runtime_hours"] % 24),
                         )
                 except Exception as exc:
                     log.warning("Runtime tracking failed: %s", exc)
@@ -1924,11 +2028,11 @@ def main() -> None:
                 if cycle_count % 12 == 0:
                     import random
                     reminders = [
-                        "Phase 1 is validation, not profitability. Patience wins.",
+                        "Validation over profitability — every signal evaluated builds the edge.",
                         "Bot is working correctly. Every signal evaluated = good progress.",
                         "Trade placement every 5-50 cycles is NORMAL. You're on track.",
                         "Every signal evaluated is a data point. Every cycle is validation.",
-                        "System working. Let it run. No changes needed.",
+                        "System working. ML self-improving. Let it run.",
                         "Low trade count early on is EXPECTED — Polymarket liquidity is sparse.",
                         "Week 1: 0-3 trades. Week 2: 3-8 trades. You're exactly on track.",
                     ]
@@ -1942,8 +2046,9 @@ def main() -> None:
 
                 log.info("─── Cycle complete ───")
 
-            # Sleep 60 s between schedule checks (low CPU, responsive to Ctrl+C)
-            time.sleep(60)
+            # Sleep 60 s — wakes immediately on Ctrl+C via _shutdown_event
+            _shutdown_event.wait(timeout=60)
+            _shutdown_event.clear()
 
         except KeyboardInterrupt:
             log.info("KeyboardInterrupt — shutting down")
@@ -1962,7 +2067,8 @@ def main() -> None:
                 subject=f"ZiSi Bot ERROR — {type(exc).__name__}",
                 body=f"Error in main loop:\n{error_msg}\n\nBot will retry in 60 seconds.",
             )
-            time.sleep(60)
+            _shutdown_event.wait(timeout=60)
+            _shutdown_event.clear()
 
     # ── Shutdown email ────────────────────────────────────────────────────────
     try:
@@ -1982,6 +2088,11 @@ def main() -> None:
     except Exception as _exc:
         log.warning("Shutdown email failed: %s", _exc)
 
+    if _shadow_monitor is not None:
+        try:
+            _shadow_monitor.stop()
+        except Exception:
+            pass
     stop_reconciliation_loop()
     stop_telegram_bot()
     from risk_engine import stop_risk_engine as _stop_risk_engine

@@ -54,12 +54,13 @@ _SPORTS_BLOCKLIST: frozenset = frozenset({
 #           "oil", "energy" (too short/generic)
 _MACRO_WHITELIST: frozenset = frozenset({
     "economic", "economy", "gdp", "inflation", "interest rate",
-    "fed ", "federal reserve", "rate cut", "rate hike", "recession",
-    "unemployment", "cpi", "fomc", "nasdaq", "dow jones", "s&p 500",
-    "s&p", "bond yield", "treasury",
+    "fed ", "federal reserve", "federal funds", "funds rate",
+    "rate cut", "rate hike", "rate above", "rate below", "rate stay",
+    "recession", "unemployment", "cpi", "fomc", "pce",
+    "nasdaq", "dow jones", "s&p 500", "s&p", "bond yield", "treasury",
     "crypto", "bitcoin", "ethereum", "btc", "eth", "blockchain", "defi",
     "regulation", "sec ", "congress", "senate", "election", "president",
-    "geopoliti", "tariff", "sanction",
+    "geopoliti", "tariff", "sanction", "trade war", "federal",
 })
 
 # Final hard-gate: a matched Kalshi event title MUST contain one of these
@@ -67,10 +68,12 @@ _MACRO_WHITELIST: frozenset = frozenset({
 # This is the last line of defence against false-positive keyword matches.
 _EXPLICIT_FINANCE_TERMS: frozenset = frozenset({
     "bitcoin", "btc", "ethereum", "eth", "crypto", "blockchain", "defi",
-    "inflation", "gdp", "fed ", "fomc", "cpi", "interest rate",
+    "inflation", "gdp", "fed", "fomc", "cpi", "interest rate",
     "recession", "nasdaq", "s&p", "dow jones", "treasury", "bond yield",
-    "rate cut", "rate hike", "economy", "economic", "tariff", "sanction",
-    "federal reserve", "unemployment",
+    "rate cut", "rate hike", "rate above", "rate below",
+    "economy", "economic", "tariff", "sanction",
+    "federal reserve", "federal funds", "funds rate",
+    "unemployment", "pce", "federal",
 })
 
 
@@ -118,34 +121,69 @@ def _is_macro_eligible(event: Dict) -> bool:
 # Use realistic vocabulary that appears in actual Kalshi market titles.
 # Single-word implications are fine (score = 1.0 if word appears).
 CRYPTO_TO_MACRO = {
-    # Bitcoin: include both "bitcoin" (full word in most Kalshi titles) and "btc"
-    "BTC_BULLISH":    ["economic growth", "rate cut", "gdp growth",
-                       "inflation", "nasdaq", "recession",
-                       "bitcoin", "btc"],
-    "BTC_BEARISH":    ["inflation", "rate hike", "recession",
-                       "gdp decline", "interest rate",
-                       "bitcoin", "btc"],
-    # Ethereum: "eth" matches as substring of "ethereum"; include full word too
-    "ETH_BULLISH":    ["economic growth", "rate cut", "nasdaq",
-                       "defi", "inflation",
-                       "ethereum", "eth"],
-    "ETH_BEARISH":    ["interest rate", "recession", "regulation",
-                       "inflation", "rate hike",
-                       "ethereum", "eth"],
-    # Generic crypto: match markets mentioning "crypto", "cryptocurrency", "digital asset"
-    "CRYPTO_BULLISH": ["economic growth", "rate cut", "inflation",
-                       "recession", "nasdaq",
-                       "crypto", "bitcoin", "ethereum"],
-    "CRYPTO_BEARISH": ["recession", "rate hike", "inflation",
-                       "interest rate", "gdp decline",
-                       "crypto", "bitcoin", "ethereum"],
-    # SOL, DOGE, XRP fallback → treat like CRYPTO
-    "SOL_BULLISH":    ["crypto", "bitcoin", "inflation", "rate cut"],
-    "SOL_BEARISH":    ["crypto", "recession", "rate hike", "inflation"],
-    "DOGE_BULLISH":   ["crypto", "bitcoin", "inflation", "nasdaq"],
-    "DOGE_BEARISH":   ["crypto", "recession", "rate hike", "inflation"],
-    "XRP_BULLISH":    ["crypto", "regulation", "bitcoin", "inflation"],
-    "XRP_BEARISH":    ["crypto", "regulation", "recession", "inflation"],
+    # Bitcoin / BTC — Kalshi's FOMC/rate markets use these exact words
+    "BTC_BULLISH":    [
+        "fomc", "federal funds", "funds rate", "rate cut", "rate cuts",
+        "inflation", "cpi", "unemployment", "nasdaq", "economic",
+        "gdp", "recession", "tariff", "federal reserve",
+        "bitcoin", "btc",
+    ],
+    "BTC_BEARISH":    [
+        "fomc", "federal funds", "funds rate", "rate hike", "rate above",
+        "inflation", "cpi", "unemployment", "recession", "tariff",
+        "gdp", "federal reserve", "economic",
+        "bitcoin", "btc",
+    ],
+    "BTC_NEUTRAL":    [
+        "fomc", "federal funds", "funds rate", "rate above", "rate below",
+        "inflation", "cpi", "economic", "gdp", "federal reserve",
+        "bitcoin", "btc",
+    ],
+    # Ethereum / ETH
+    "ETH_BULLISH":    [
+        "fomc", "federal funds", "funds rate", "rate cut",
+        "defi", "inflation", "cpi", "nasdaq", "economic", "gdp",
+        "ethereum", "eth",
+    ],
+    "ETH_BEARISH":    [
+        "fomc", "federal funds", "funds rate", "rate hike", "rate above",
+        "inflation", "cpi", "recession", "regulation", "sec",
+        "ethereum", "eth",
+    ],
+    "ETH_NEUTRAL":    [
+        "fomc", "federal funds", "funds rate", "rate above", "rate below",
+        "inflation", "cpi", "economic", "gdp", "federal reserve",
+        "ethereum", "eth",
+    ],
+    # Generic crypto signals
+    "CRYPTO_BULLISH": [
+        "fomc", "federal funds", "funds rate", "rate cut",
+        "inflation", "cpi", "nasdaq", "economic", "gdp",
+        "crypto", "bitcoin", "ethereum",
+    ],
+    "CRYPTO_BEARISH": [
+        "fomc", "federal funds", "funds rate", "rate hike", "rate above",
+        "inflation", "cpi", "recession", "unemployment",
+        "crypto", "bitcoin", "ethereum",
+    ],
+    "CRYPTO_NEUTRAL": [
+        "fomc", "federal funds", "funds rate", "rate above", "rate below",
+        "inflation", "cpi", "economic", "gdp",
+        "crypto", "bitcoin", "ethereum",
+    ],
+    # SOL, DOGE, XRP — use same macro correlation as CRYPTO
+    "SOL_BULLISH":    ["fomc", "federal funds", "funds rate", "crypto", "bitcoin", "inflation", "cpi", "nasdaq"],
+    "SOL_BEARISH":    ["fomc", "federal funds", "funds rate", "crypto", "recession", "inflation", "cpi"],
+    "SOL_NEUTRAL":    ["fomc", "federal funds", "funds rate", "crypto", "bitcoin", "inflation", "cpi"],
+    "DOGE_BULLISH":   ["fomc", "crypto", "bitcoin", "inflation", "nasdaq"],
+    "DOGE_BEARISH":   ["fomc", "crypto", "recession", "inflation", "cpi"],
+    "DOGE_NEUTRAL":   ["fomc", "crypto", "bitcoin", "inflation"],
+    "XRP_BULLISH":    ["fomc", "crypto", "regulation", "bitcoin", "inflation"],
+    "XRP_BEARISH":    ["fomc", "crypto", "regulation", "recession", "inflation"],
+    "XRP_NEUTRAL":    ["fomc", "crypto", "regulation", "bitcoin", "inflation"],
+    "OTHER_BULLISH":  ["fomc", "federal funds", "funds rate", "rate cut", "inflation", "cpi", "nasdaq", "economic"],
+    "OTHER_BEARISH":  ["fomc", "federal funds", "funds rate", "rate hike", "rate above", "inflation", "recession"],
+    "OTHER_NEUTRAL":  ["fomc", "federal funds", "funds rate", "inflation", "cpi", "economic", "gdp"],
 }
 
 
@@ -203,21 +241,18 @@ class KalshiEventMatcher:
             best_impl = None
 
             for impl in implications:
-                keywords = impl.lower().split()
-                if not keywords:
-                    continue
-                # Require ALL keywords in the implication phrase to appear in
-                # the event title.  Partial matches (e.g. "tech" alone from
-                # "tech innovation") produced too many false positives against
-                # sports/entertainment markets.
-                all_hit = all(kw in title for kw in keywords)
-                score = 1.0 if all_hit else 0.0
-                if score > best_score:
-                    best_score = score
-                    best_impl = impl
+                impl_lower = impl.lower()
+                # Treat each implication as an independent term:
+                # - Single word: match if it appears in the title
+                # - Multi-word phrase: match if ENTIRE phrase appears as substring
+                if impl_lower in title:
+                    score = 1.0
+                    if score > best_score:
+                        best_score = score
+                        best_impl = impl
 
             if best_score < 1.0:
-                continue  # implication not fully matched — skip
+                continue  # no implication matched — skip
 
             # Final hard gate: matched event title must contain an explicit
             # financial/crypto term.  Guards against any remaining edge-cases
@@ -261,7 +296,7 @@ class KalshiEventMatcher:
             if family not in seen_families:
                 seen_families.add(family)
                 diverse.append(m)
-            if len(diverse) >= 3:
+            if len(diverse) >= 8:
                 break
 
         return diverse

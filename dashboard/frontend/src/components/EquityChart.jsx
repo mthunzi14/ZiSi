@@ -112,7 +112,7 @@ export default function EquityChart() {
       setLoading(false);
     };
     load();
-    const iv = setInterval(load, 30_000);
+    const iv = setInterval(load, 15_000);
     return () => clearInterval(iv);
   }, []);
 

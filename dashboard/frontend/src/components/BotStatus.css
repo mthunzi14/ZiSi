@@ -1,3 +1,10 @@
+/* ── Wrapper: strip + mule row stacked ──────────────────────────────────── */
+.bot-strip-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 /* ── Compact horizontal command strip ─────────────────────────────────────── */
 .bot-strip {
   display: flex;
@@ -104,6 +111,67 @@
 
 .strip-toggle.paused:hover {
   background: rgba(245, 158, 11, 0.22);
+}
+
+/* ── Mule controls row ──────────────────────────────────────────────────── */
+.mule-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: 6px var(--spacing-xl);
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(229, 229, 229, 0.06);
+  border-radius: var(--radius-md);
+}
+
+.mule-row-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--color-slate-text);
+  white-space: nowrap;
+  margin-right: 4px;
+}
+
+.mule-row-hint {
+  font-size: 0.65rem;
+  color: rgba(229, 229, 229, 0.3);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* Mule toggle buttons */
+.strip-mule-btn {
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 180ms ease;
+  white-space: nowrap;
+  font-family: var(--font-dm-sans);
+  border: 1px solid;
+}
+
+.strip-mule-btn.mule-on {
+  background: rgba(89, 212, 153, 0.1);
+  color: #59d499;
+  border-color: rgba(89, 212, 153, 0.3);
+}
+
+.strip-mule-btn.mule-on:hover {
+  background: rgba(89, 212, 153, 0.2);
+}
+
+.strip-mule-btn.mule-off {
+  background: rgba(255, 99, 99, 0.08);
+  color: #ff6363;
+  border-color: rgba(255, 99, 99, 0.25);
+}
+
+.strip-mule-btn.mule-off:hover {
+  background: rgba(255, 99, 99, 0.16);
 }
 
 @media (max-width: 768px) {
