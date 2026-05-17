@@ -67,11 +67,12 @@ def run_kalshi_for_cycle(
     _traded_tickers: set = set()
     _cycle_trade_count = 0
 
-    # Cross-cycle dedup: build set of tickers already held as open positions.
-    # Prevents re-entering the same Kalshi market every cycle while it's still open.
+    # Cross-cycle dedup: build set of tickers already held as open positions,
+    # plus tickers closed within the past 2 hours (post-close cooldown).
     try:
-        from kalshi.trader import _open_positions as _kalshi_positions
+        from kalshi.trader import _open_positions as _kalshi_positions, get_recently_closed_tickers as _get_cooldown
         _open_tickers: set = {p.get("ticker", "") for p in _kalshi_positions.values() if p.get("ticker")}
+        _open_tickers |= _get_cooldown()  # adds recently-closed tickers to the block set
     except Exception:
         _open_tickers = set()
 
@@ -101,7 +102,7 @@ def run_kalshi_for_cycle(
                     or str(hash(event.get("title", "")))
                 )
                 if ticker in _traded_tickers:
-                    log.info(
+                    log.debug(
                         "[KALSHI-DEDUP] Ticker already traded this cycle: %s",
                         event.get("title", "")[:60],
                     )
@@ -109,7 +110,7 @@ def run_kalshi_for_cycle(
 
                 # Cross-cycle check: skip if this ticker already has an open position
                 if ticker in _open_tickers:
-                    log.info(
+                    log.debug(
                         "[KALSHI-DEDUP] Open position already held for ticker %s — skipping re-entry",
                         ticker,
                     )

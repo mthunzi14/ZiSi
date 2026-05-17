@@ -282,6 +282,15 @@ router.get('/', (req, res) => {
           ? parseFloat((confSum / signals_evaluated).toFixed(4))
           : 0;
 
+        // Daily count (today's non-Kalshi signal evaluations only)
+        dailySignals = nonKalshiEvals.filter(e => {
+          try {
+            const ts = e.timestamp;
+            const d = ts > 1e10 ? new Date(ts * 1000) : new Date(ts);
+            return d.toISOString().startsWith(today);
+          } catch { return false; }
+        }).length;
+
         // Missed trades (confidence > 0.55 means signal had potential)
         const missed = nonKalshiEvals.filter(e => {
           const rawConf = e.sentiment_score || (e.confidence > 1 ? e.confidence / 10 : e.confidence) || 0;
@@ -403,6 +412,7 @@ router.get('/', (req, res) => {
       runtime,
       // ── Signal metrics from signal_evaluations.jsonl ─────────────────
       signals_evaluated,
+      daily_signals_evaluated: dailySignals,
       avg_confidence,
       signals_by_sentiment,
       signals_by_market,

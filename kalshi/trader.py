@@ -26,6 +26,11 @@ log = logging.getLogger("zisi.kalshi.trader")
 _open_positions: Dict[str, Dict] = {}
 _closed_positions: List[Dict] = []
 
+# Post-close cooldown: maps ticker → unix timestamp of close.
+# Prevents re-entering the same market for 2 hours after it resolves.
+_recently_closed_tickers: Dict[str, float] = {}
+_POST_CLOSE_COOLDOWN_SECS = 7200  # 2 hours
+
 # Prevents simultaneous writes from main loop + any future background work
 _kalshi_write_lock = threading.Lock()
 
@@ -270,9 +275,11 @@ class KalshiTrader:
             pos["hold_minutes"] = round(hold_min, 1)
             pos["hold_hours"] = round(hold_min / 60, 3)
 
-            # Move to closed list
+            # Move to closed list; record ticker for post-close cooldown
             _closed_positions.append(dict(pos))
             del _open_positions[order_id]
+            if pos.get("ticker"):
+                _recently_closed_tickers[pos["ticker"]] = now.timestamp()
 
             # Write closed trade to zisi_local_trades.jsonl
             self._write_closed_to_trades(pos)
@@ -460,6 +467,16 @@ class KalshiTrader:
 
 
 # ── Module-level helpers (importable from main.py) ────────────────────────────
+
+def get_recently_closed_tickers(cooldown_secs: int = _POST_CLOSE_COOLDOWN_SECS) -> set:
+    """Return set of tickers closed within the cooldown window. Prunes stale entries."""
+    import time as _time
+    now_ts = _time.time()
+    stale = [t for t, ts in _recently_closed_tickers.items() if now_ts - ts > cooldown_secs]
+    for t in stale:
+        del _recently_closed_tickers[t]
+    return set(_recently_closed_tickers.keys())
+
 
 def get_kalshi_open_positions() -> List[Dict]:
     return list(_open_positions.values())

@@ -14,9 +14,8 @@ export default function BotStatus() {
   } = useSSE();
 
   // ── Polling: uptime, dailySignals (change infrequently) ─────────────────
-  const [uptime,       setUptime]       = useState('—');
-  const [dailySignals, setDailySignals] = useState(0);
-  const [isPaused,     setIsPaused]     = useState(false);
+  const [uptime,   setUptime]   = useState('—');
+  const [isPaused, setIsPaused] = useState(false);
 
   useEffect(() => {
     const fetchSlow = async () => {
@@ -31,7 +30,6 @@ export default function BotStatus() {
         const h = Math.floor(health.runtime?.hours || 0);
         const m = Math.floor(((health.runtime?.hours || 0) % 1) * 60);
         setUptime(h > 0 || m > 0 ? `${h}h ${m}m` : '< 1m');
-        setDailySignals(health.dailySignals || 0);
         setIsPaused(control.status === 'paused');
       } catch {
         // health failures show in botStatus via SSE
@@ -110,11 +108,6 @@ export default function BotStatus() {
         <div className="strip-metric">
           <span className="strip-label">W / L</span>
           <span className="strip-value">{winCount} / {lossCount}</span>
-        </div>
-
-        <div className="strip-metric">
-          <span className="strip-label">Signals Today</span>
-          <span className="strip-value">{dailySignals}</span>
         </div>
 
         <div className="strip-metric">

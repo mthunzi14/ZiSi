@@ -521,25 +521,23 @@ def format_cycle_log(cycle_data: dict) -> str:
     kalshi_matches  = cycle_data.get("kalshi_matches", 0)
     total_executed  = cycle_data.get("executed_trades", 0) + kalshi_trades
 
+    pnl = cycle_data.get('pnl', 0)
+    pnl_sign = '+' if pnl >= 0 else ''
     return (
         f"\n[CYCLE-SUMMARY] {cycle_data.get('timestamp', 'unknown')} | UTC {utc_hour:02d}:00 | {mode}\n"
         f"  Signals evaluated:       {cycle_data.get('total_signals', 0)}\n"
-        f"  Strong signals (≥7/10):  {cycle_data.get('strong_signals', 0)}\n"
+        f"  Strong signals (≥8/10):  {cycle_data.get('strong_signals', 0)}\n"
         f"  ── Polymarket ──────────────────────────\n"
         f"  Polymarket matches:      {cycle_data.get('matched_events', 0)}\n"
         f"  Polymarket trades:       {cycle_data.get('executed_trades', 0)}\n"
-        f"  Hypothetical trades:     {cycle_data.get('hypothetical_trades', 0)}\n"
         f"  ── Kalshi ──────────────────────────────\n"
         f"  Kalshi matches:          {kalshi_matches}\n"
         f"  Kalshi trades:           {kalshi_trades}\n"
-        f"  ── Totals ──────────────────────────────\n"
-        f"  Total trades executed:   {total_executed}\n"
+        f"  ── Account ─────────────────────────────\n"
         f"  Balance:                 ${cycle_data.get('balance', 0):.2f}\n"
-        f"  P&L:                     ${cycle_data.get('pnl', 0):.2f}\n"
+        f"  P&L:                     {pnl_sign}${pnl:.2f}\n"
         f"  Kelly Scaling:           {kelly_pct}\n"
         f"  Fear & Greed:            {cycle_data.get('fng_value', '?')} ({cycle_data.get('fng_label', '?')}) → ×{cycle_data.get('fng_kelly', 1.0):.2f}\n"
-        f"  Runtime:                 {cycle_data.get('runtime', 'N/A')}\n"
-        f"  Status:                  {cycle_data.get('status', 'running')}\n"
     )
 
 

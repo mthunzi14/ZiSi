@@ -56,7 +56,7 @@ class SignalTypeClassifier:
         signal["is_high_confidence"] = is_high
         signal["confidence_norm"] = round(conf_norm, 4)
 
-        log.info(
+        log.debug(
             "[SIGNAL-CLASSIFY] %s | conf=%.2f | kelly=%.1fx | route=%s | coins=%s",
             signal_type, conf_norm, kelly_mult, route_to,
             affected[:1] if affected else ["(none)"],

@@ -1344,8 +1344,8 @@ def _write_heartbeat(reason: str = "cycle_start") -> None:
         with open(_STATE_FILE_PATH, "w", encoding="utf-8") as fh:
             json.dump(existing, fh, indent=2)
         log.info(
-            "Heartbeat → $%.2f | pnl: $%+.2f | closed: %d (zisi=%d)",
-            live_balance, effective_pnl, total_closed, len(closed),
+            "Heartbeat → $%.2f | pnl: $%+.2f | closed: %d",
+            live_balance, effective_pnl, total_closed,
         )
     except Exception as exc:
         import traceback
@@ -2207,7 +2207,8 @@ def main() -> None:
                         log.warning("[ALERT] High drawdown: %.1f%%", max_dd)
 
                 # ── Cycle summary log ───────────────────────────────────────
-                runtime_elapsed = str(datetime.now(timezone.utc) - _session_start).split(".")[0]
+                _true_balance = get_current_balance()
+                _true_pnl = round(_true_balance - _get_starting_balance(), 2)
                 cycle_summary = format_cycle_log({
                     "timestamp": now.strftime("%Y-%m-%d %H:%M UTC"),
                     "utc_hour": now.hour,
@@ -2219,9 +2220,8 @@ def main() -> None:
                     "hypothetical_trades": snap.get("liquidity_skips", 0) + snap.get("price_skips", 0),
                     "kalshi_matches": snap.get("kalshi_matches", 0),
                     "kalshi_trades": snap.get("kalshi_trades", 0),
-                    "balance": cfg["ACCOUNT_BALANCE"] + snap.get("total_pnl", 0),
-                    "pnl": snap.get("total_pnl", 0),
-                    "runtime": runtime_elapsed,
+                    "balance": _true_balance,
+                    "pnl": _true_pnl,
                     "status": "running",
                     "fng_value": _fng.get("value", 50),
                     "fng_label": _fng.get("label", "Neutral"),
@@ -2231,23 +2231,11 @@ def main() -> None:
 
                 # ── Position tracking ───────────────────────────────────────
                 try:
-                    pos_summary = get_position_summary()
                     persist_positions()
-                    active_c  = pos_summary["active"]
-                    closed_c  = pos_summary["closed"]
-                    unreal    = pos_summary["unrealized_pnl"]
-                    real      = pos_summary["realized_pnl"]
-                    wins      = pos_summary["wins"]
-                    losses    = pos_summary["losses"]
-
-                    if active_c > 0 or closed_c > 0:
-                        log.info(
-                            "📊 POSITIONS  Active: %d (unrealized $%+.2f)  |  "
-                            "Closed: %d  W:%d / L:%d  (realized $%+.2f)",
-                            active_c, unreal, closed_c, wins, losses, real,
-                        )
-                        # Log individual active positions
-                        for pos in get_all_open_trades():
+                    # Log individual active Polymarket positions
+                    open_trades = get_all_open_trades()
+                    if open_trades:
+                        for pos in open_trades:
                             title    = pos.get("event_title", pos.get("event_id", "?"))[:55]
                             entry    = pos.get("entry_price", 0)
                             curr     = pos.get("current_price", entry)
@@ -2260,36 +2248,30 @@ def main() -> None:
                                 "  ↳ [ACTIVE] %s | %s @ %.4f → %.4f | $%.2f | held %.0fm",
                                 pos.get("direction", "?"), title, entry, curr, size, hold_min,
                             )
-                    else:
-                        log.info("📊 POSITIONS  No positions this session yet")
                 except Exception as _pe:
-                    log.warning("Position summary failed: %s", _pe)
+                    log.warning("Position persist failed: %s", _pe)
 
                 # Update heartbeat again at cycle end with final balance
                 _write_heartbeat("cycle_complete")
 
                 # Sync balance from JSONL file — authoritative source across restarts
                 bal, pnl, cnt = sync_balance_to_state()
-                if bal is not None:
-                    log.info(
-                        "✅ STATE SYNCED: Balance $%.2f | Closed: %d | P&L: $%+.2f",
-                        bal, cnt, pnl,
-                    )
-                else:
-                    log.warning("⚠️ State sync failed (logs are still updating locally)")
 
                 # ── Runtime tracking ───────────────────────────────────────
                 try:
                     rt = update_runtime_tracking()
-                    if rt:
-                        log.info(
-                            "⏱️  RUNTIME: %.1f hrs | %dd %dh elapsed | continuous",
-                            rt["runtime_hours"],
-                            int(rt["runtime_hours"] // 24),
-                            int(rt["runtime_hours"] % 24),
-                        )
+                    runtime_hrs = rt["runtime_hours"] if rt else 0.0
                 except Exception as exc:
                     log.warning("Runtime tracking failed: %s", exc)
+                    runtime_hrs = 0.0
+
+                if bal is not None:
+                    log.info(
+                        "✅ Balance $%.2f | P&L: $%+.2f | Closed: %d | Uptime: %.1fh",
+                        bal, pnl, cnt, runtime_hrs,
+                    )
+                else:
+                    log.warning("⚠️ State sync failed (logs are still updating locally)")
 
                 # ── Patience reminder (every 12 cycles = 6 hours) ──────────
                 if cycle_count % 12 == 0:

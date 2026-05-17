@@ -47,8 +47,8 @@ export default function SignalPipeline({ data }) {
 
   if (!data) return null;
 
-  const articles      = data.totalSignals || data.signals_evaluated || 0;
-  const signals       = data.signals_evaluated || articles;
+  const articles      = data.daily_signals_evaluated || 0;
+  const signals       = data.daily_signals_evaluated || 0;
   const polyMatches   = data.polymarket_matches || data.cm_poly_candidates || 0;
   const kalshiMatches = data.kalshi_matches || 0;
   const totalMatches  = polyMatches + kalshiMatches;
@@ -68,8 +68,8 @@ export default function SignalPipeline({ data }) {
 
       {/* Funnel */}
       <div className="pipeline-funnel">
-        <PipelineStep icon="📰" label="Articles" count={articles}     color="rgba(148,163,184,0.9)" />
-        <PipelineStep icon="🧠" label="Signals"  count={signals}      color="rgba(167,139,250,0.9)" />
+        <PipelineStep icon="📰" label="Articles Today" count={articles}     color="rgba(148,163,184,0.9)" />
+        <PipelineStep icon="🧠" label="Signals Today"  count={signals}      color="rgba(167,139,250,0.9)" />
         <PipelineStep icon="🎯" label="Matched"  count={totalMatches} color="rgba(251,191,36,0.9)"  sub={`${polyMatches}P + ${kalshiMatches}K`} />
         <PipelineStep icon="💰" label="Traded"   count={tradesExec}   color="rgba(89,212,153,0.9)"  />
         <PipelineStep icon="📈" label="P&L"      count={pnlStr}       color={pnlColor} isLast />
