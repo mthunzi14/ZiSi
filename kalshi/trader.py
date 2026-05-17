@@ -27,9 +27,9 @@ _open_positions: Dict[str, Dict] = {}
 _closed_positions: List[Dict] = []
 
 # Post-close cooldown: maps ticker → unix timestamp of close.
-# Prevents re-entering the same market for 2 hours after it resolves.
+# 30 minutes — same-day markets cycle quickly; 2 hours was blocking too aggressively.
 _recently_closed_tickers: Dict[str, float] = {}
-_POST_CLOSE_COOLDOWN_SECS = 7200  # 2 hours
+_POST_CLOSE_COOLDOWN_SECS = 1800  # 30 minutes
 
 # Prevents simultaneous writes from main loop + any future background work
 _kalshi_write_lock = threading.Lock()
@@ -115,6 +115,10 @@ class KalshiTrader:
         side = "yes" if sentiment == "BULLISH" else "no"
 
         entry_price = self._estimate_price(event, side)
+        if entry_price is None:
+            log.info("[KALSHI-SKIP] No real price available for %s — skipping (no 0.50 fallback)", title[:50])
+            return None
+
         open_time = datetime.now(timezone.utc)
         order_id = f"KALSHI_{ticker.replace('/', '_')}_{int(open_time.timestamp())}"
 
@@ -224,8 +228,25 @@ class KalshiTrader:
             hold_min = (now - open_time).total_seconds() / 60
             pos["hold_minutes"] = round(hold_min, 1)
 
-            if self.paper_trading and hold_min < paper_hold_minutes:
-                continue  # Not time yet
+            if self.paper_trading:
+                # Check if the market's own resolution time has been reached
+                res_date = pos.get("resolution_date")
+                market_expired = False
+                if res_date:
+                    try:
+                        res_dt = datetime.fromisoformat(res_date.replace("Z", "+00:00"))
+                        if now >= res_dt:
+                            market_expired = True
+                            log.info(
+                                "[KALSHI-CLOSE] Market expired at resolution_date for %s",
+                                pos.get("ticker", "?"),
+                            )
+                    except Exception:
+                        pass
+
+                # Also close if held past the max hold time (paper_hold_minutes)
+                if not market_expired and hold_min < paper_hold_minutes:
+                    continue  # Neither expired nor max-hold reached
 
             # ── Determine exit price ──────────────────────────────────────────
             # Priority 1: real current Kalshi market price (reflects what the
@@ -318,6 +339,116 @@ class KalshiTrader:
 
         return newly_closed
 
+    # ── Trailing stop / early exit ────────────────────────────────────────────
+
+    def check_trailing_stops(self) -> List[Dict]:
+        """
+        ATR-based trailing stop for Kalshi positions.
+        Rule: when a position's current_price reaches 0.75+ (75% of face value),
+        lock in a floor at 0.55. If price subsequently falls below 0.55 → close.
+        This prevents watching $0.75 positions crash back to $0.05.
+        Also: positions at 0.88+ → early exit (lock in the gain).
+        Returns list of positions closed by trailing stop.
+        """
+        closed_by_stop: List[Dict] = []
+        now = datetime.now(timezone.utc)
+
+        for order_id, pos in list(_open_positions.items()):
+            if pos.get("status") not in ("OPEN", "LIVE_OPEN"):
+                continue
+
+            current_price = float(pos.get("current_price", pos.get("entry_price", 0.5)))
+            entry_price   = float(pos.get("entry_price", 0.5))
+
+            # Early exit: position reached 88%+ of face value → lock in gain
+            if current_price >= 0.88:
+                log.info(
+                    "[KALSHI-STOP] EARLY EXIT %s | current=%.4f ≥ 0.88 → locking in gain",
+                    pos.get("ticker", "?"), current_price,
+                )
+                exit_price  = current_price
+                exit_reason = "TRAILING_EARLY_EXIT"
+                self._close_position(order_id, pos, exit_price, exit_reason, now, closed_by_stop)
+                continue
+
+            # Trailing floor: if ever reached 0.75+, floor activates at 0.55
+            high_watermark = float(pos.get("_high_watermark", entry_price))
+            if current_price > high_watermark:
+                pos["_high_watermark"] = current_price
+                high_watermark = current_price
+                if order_id in _open_positions:
+                    _open_positions[order_id]["_high_watermark"] = current_price
+
+            if high_watermark >= 0.75 and current_price < 0.55:
+                log.info(
+                    "[KALSHI-STOP] TRAILING STOP %s | high=%.4f floor=0.55 current=%.4f → closing",
+                    pos.get("ticker", "?"), high_watermark, current_price,
+                )
+                exit_price  = current_price
+                exit_reason = "TRAILING_STOP_0.55_FLOOR"
+                self._close_position(order_id, pos, exit_price, exit_reason, now, closed_by_stop)
+
+        if closed_by_stop:
+            persist_positions()
+
+        return closed_by_stop
+
+    def _close_position(
+        self,
+        order_id: str,
+        pos: Dict,
+        exit_price: float,
+        exit_reason: str,
+        now,
+        result_list: List[Dict],
+    ) -> None:
+        """Shared close logic used by check_and_close_positions and check_trailing_stops."""
+        open_time = pos.get("open_time", now.isoformat())
+        try:
+            from datetime import datetime, timezone
+            ot = datetime.fromisoformat(open_time)
+            hold_min = (now - ot).total_seconds() / 60
+        except Exception:
+            hold_min = 0.0
+
+        pnl_dollars = round((exit_price - pos["entry_price"]) / pos["entry_price"] * pos["size"], 4)
+        pnl_pct     = round((exit_price - pos["entry_price"]) / pos["entry_price"] * 100, 2)
+
+        pos.update({
+            "status":           "CLOSED",
+            "close_time":       now.isoformat(),
+            "exit_price":       exit_price,
+            "realized_pnl":     pnl_dollars,
+            "realized_pnl_pct": pnl_pct,
+            "exit_reason":      exit_reason,
+            "hold_minutes":     round(hold_min, 1),
+            "hold_hours":       round(hold_min / 60, 3),
+        })
+
+        _closed_positions.append(dict(pos))
+        del _open_positions[order_id]
+        if pos.get("ticker"):
+            _recently_closed_tickers[pos["ticker"]] = now.timestamp()
+
+        self._write_closed_to_trades(pos)
+
+        try:
+            from state_manager import get_current_balance as _gcb, update_balance as _ub
+            _ub(_gcb() + pnl_dollars, reason=f"Kalshi {exit_reason}: ${pnl_dollars:+.4f}")
+        except Exception:
+            pass
+
+        try:
+            from telegram_bot import notify_trade_closed as _tg_close
+            _tg_close(
+                event_title=pos.get("event_title", "")[:50],
+                pnl=pnl_dollars, pnl_pct=pnl_pct, hold_min=hold_min, market="KALSHI",
+            )
+        except Exception:
+            pass
+
+        result_list.append(pos)
+
     # ── Persistence helpers ───────────────────────────────────────────────────
 
     def _write_closed_to_trades(self, pos: Dict) -> None:
@@ -397,17 +528,36 @@ class KalshiTrader:
 
     # ── Price estimation ──────────────────────────────────────────────────────
 
-    def _estimate_price(self, event: Dict, side: str) -> float:
-        """Return the current market price, or 0.50 as fallback."""
+    def _estimate_price(self, event: Dict, side: str) -> Optional[float]:
+        """
+        Return the real current market price from Kalshi API data, or None.
+        NEVER returns a default 0.50 — if no price is available, the caller
+        must skip this market entirely. Trading at 0.50 when real price is
+        unknown produces fabricated PnL and defeats the whole system.
+        """
         if side == "yes":
             price = event.get("yes_ask") or event.get("yes_bid")
         else:
             price = event.get("no_ask") or event.get("no_bid")
-        if price is not None:
-            # Kalshi prices are in cents (0–100), convert to 0–1
-            raw = float(price)
-            return round(raw / 100.0 if raw > 1 else raw, 4)
-        return 0.50
+
+        if price is None:
+            # Try fetching live price directly from the API
+            ticker = event.get("ticker") or event.get("market_ticker", "")
+            if ticker:
+                live = self._fetch_current_price(ticker, "YES" if side == "yes" else "NO")
+                if live is not None:
+                    return live
+            log.debug("[KALSHI-PRICE] No price data for %s %s — market skipped", event.get("title", "?")[:40], side)
+            return None
+
+        # Kalshi prices are in cents (0–100), convert to 0–1
+        raw = float(price)
+        converted = round(raw / 100.0 if raw > 1 else raw, 4)
+        # Sanity check: skip markets that are near-resolved (price already baked in)
+        if converted <= 0.05 or converted >= 0.95:
+            log.debug("[KALSHI-PRICE] Near-resolved price %.3f for %s — market skipped", converted, event.get("title", "?")[:40])
+            return None
+        return converted
 
     def _fetch_current_price(self, ticker: str, direction: str) -> Optional[float]:
         """
@@ -441,7 +591,8 @@ class KalshiTrader:
     # ── Live order ────────────────────────────────────────────────────────────
 
     def _place_order(self, ticker: str, side: str, size_usd: float) -> Optional[Dict]:
-        """Submit a live order to Kalshi REST API v2."""
+        """Submit a live order to Kalshi REST API v2 with confirmation polling.
+        Polls order status at 5s, 15s, 30s to confirm fill. Cancels if not filled in 60s."""
         try:
             payload = {
                 "ticker": ticker,
@@ -457,13 +608,67 @@ class KalshiTrader:
                 headers=self.auth.get_headers("POST", order_path),
                 timeout=10,
             )
-            if resp.status_code in (200, 201):
-                return resp.json()
-            log.warning("[KALSHI-TRADE] Order rejected: HTTP %s — %s", resp.status_code, resp.text[:200])
+            if resp.status_code not in (200, 201):
+                log.warning("[KALSHI-TRADE] Order rejected: HTTP %s — %s", resp.status_code, resp.text[:200])
+                return None
+
+            order_data = resp.json()
+            order_id   = (order_data.get("order") or {}).get("order_id") or order_data.get("order_id")
+            if not order_id:
+                return order_data  # paper/immediate fill — return as-is
+
+            # Confirmation polling loop: 5s → 15s → 30s
+            for wait_sec in (5, 10, 15):
+                import time as _t
+                _t.sleep(wait_sec)
+                status = self._get_order_status(order_id)
+                if status in ("filled", "executed", "matched"):
+                    log.info("[KALSHI-CONFIRM] Order %s filled after %ds", order_id[:20], wait_sec)
+                    return order_data
+                if status in ("cancelled", "canceled", "rejected"):
+                    log.warning("[KALSHI-CONFIRM] Order %s %s — aborting", order_id[:20], status)
+                    return None
+                log.debug("[KALSHI-CONFIRM] Order %s status=%s — waiting more", order_id[:20], status)
+
+            # 60s total: still not filled — cancel
+            self._cancel_order(order_id)
+            log.warning("[KALSHI-CONFIRM] Order %s not filled in 60s — cancelled", order_id[:20])
             return None
+
         except Exception as e:
             log.error("[KALSHI-TRADE] Order error: %s", e)
             return None
+
+    def _get_order_status(self, order_id: str) -> str:
+        """Fetch order status from Kalshi API. Returns status string or 'unknown'."""
+        try:
+            path = f"/portfolio/orders/{order_id}"
+            resp = requests.get(
+                f"{self.base_url}{path}",
+                headers=self.auth.get_headers("GET", path),
+                timeout=6,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                order = data.get("order", data)
+                return str(order.get("status", "unknown")).lower()
+        except Exception as exc:
+            log.debug("[KALSHI-STATUS] Order status fetch failed: %s", exc)
+        return "unknown"
+
+    def _cancel_order(self, order_id: str) -> bool:
+        """Cancel an open Kalshi order."""
+        try:
+            path = f"/portfolio/orders/{order_id}"
+            resp = requests.delete(
+                f"{self.base_url}{path}",
+                headers=self.auth.get_headers("DELETE", path),
+                timeout=6,
+            )
+            return resp.status_code in (200, 204)
+        except Exception as exc:
+            log.debug("[KALSHI-CANCEL] Cancel failed: %s", exc)
+        return False
 
 
 # ── Module-level helpers (importable from main.py) ────────────────────────────

@@ -3,17 +3,111 @@ Markets orchestrator.
 Coordinates Kalshi execution alongside Polymarket for a given signal cycle.
 Polymarket signals are processed by the existing _process_signal pipeline (unchanged).
 This module handles the Kalshi side only.
+
+Session 2 upgrades:
+  - Cross-platform mispricing detection (Poly vs Kalshi same event)
+  - Anti-correlation portfolio cap (max 2 correlated crypto-directional bets)
+  - Kalshi Up/Down crypto scanner integration
+  - Economic calendar event boost
+  - Sports/politics blackout with news-based override
 """
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from signal_router import routing_decision
 
 log = logging.getLogger("zisi.orchestrator")
 
 # ── Per-cycle caps ─────────────────────────────────────────────────────────────
-# Never trade more than this many Kalshi positions in a single 15-min cycle.
-MAX_KALSHI_TRADES_PER_CYCLE = 50
+MAX_KALSHI_TRADES_PER_CYCLE = 30  # was 50 — reduced for quality over quantity
+
+# Anti-correlation cap: max 2 crypto-directional bets across BOTH platforms
+MAX_CORRELATED_CRYPTO_POSITIONS = 2
+
+# Sports/politics: only trade if matching news found within last 45 minutes
+POLITICS_NEWS_WINDOW_SECS = 45 * 60
+
+# Categories always blocked (zero edge for ZiSi)
+_HARD_BLOCKED_CATEGORIES = {"SPORTS"}
+
+
+def _count_open_crypto_directional(kalshi_trader=None) -> int:
+    """Count open BTC/ETH directional positions across Kalshi (+ proxy Poly check)."""
+    count = 0
+    try:
+        import json, os
+        pf = os.path.join(os.path.dirname(__file__), "positions_state.json")
+        if not os.path.exists(pf):
+            return 0
+        data = json.loads(open(pf, encoding="utf-8").read())
+        for pos in data.get("active", []):
+            title = str(pos.get("event_title", "")).upper()
+            cat   = str(pos.get("_category", "")).upper()
+            if cat == "CRYPTO" or any(t in title for t in ("BITCOIN", "ETHEREUM", "BTC", "ETH", "CRYPTO")):
+                count += 1
+    except Exception:
+        pass
+    return count
+
+
+def _check_cross_platform_mispricing(signal: Dict, kalshi_events: List[Dict]) -> List[Dict]:
+    """
+    Detect mispricing between Polymarket and Kalshi for the same event.
+    If Poly prices an event at 65% but Kalshi at 55%, trade the cheaper side.
+    Returns list of enriched matches with arbitrage boost applied.
+    """
+    poly_conf = float(signal.get("confidence", 5) or 5)
+    if poly_conf > 1:
+        poly_conf_normalized = poly_conf / 10.0
+    else:
+        poly_conf_normalized = poly_conf
+
+    enriched = []
+    for ev in kalshi_events:
+        yes_price_raw = ev.get("yes_ask") or ev.get("yes_bid") or 0
+        kalshi_price  = float(yes_price_raw) / 100.0 if float(yes_price_raw) > 1 else float(yes_price_raw)
+        if kalshi_price <= 0:
+            continue
+
+        # Compare Poly's implied probability vs Kalshi's price
+        poly_implied = poly_conf_normalized
+        gap = abs(poly_implied - kalshi_price)
+
+        if gap >= 0.10 and kalshi_price < poly_implied:
+            # Kalshi is underpricing — arbitrage opportunity
+            boost = 1.0 + min(0.30, gap)   # up to 30% boost for 30-point mispricing
+            enriched_ev = dict(ev)
+            enriched_ev["_mispricing_boost"] = round(boost, 3)
+            enriched_ev["_mispricing_gap"]   = round(gap, 3)
+            log.info(
+                "[ARB] Mispricing detected: poly=%.2f kalshi=%.2f gap=%.2f → boost=%.2f× | %s",
+                poly_implied, kalshi_price, gap, boost, ev.get("title", "")[:50],
+            )
+            enriched.append(enriched_ev)
+        else:
+            ev_copy = dict(ev)
+            ev_copy["_mispricing_boost"] = 1.0
+            enriched.append(ev_copy)
+
+    return enriched
+
+
+def _is_news_backed_politics(signal: Dict, max_age_secs: int = POLITICS_NEWS_WINDOW_SECS) -> bool:
+    """Return True if signal has recent news backing (for POLITICS category gate)."""
+    news_ts = signal.get("_news_timestamp") or signal.get("fetched_at")
+    if not news_ts:
+        return False
+    try:
+        import time
+        from datetime import datetime, timezone
+        if isinstance(news_ts, str):
+            news_dt = datetime.fromisoformat(news_ts.replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - news_dt).total_seconds()
+        else:
+            age = time.time() - float(news_ts)
+        return age <= max_age_secs
+    except Exception:
+        return False
 
 
 def run_kalshi_for_cycle(
@@ -48,9 +142,23 @@ def run_kalshi_for_cycle(
     if not kalshi_fetcher.auth.is_configured:
         return summary
 
+    # Auth auto-refresh (proactive — prevents silent token expiry)
+    try:
+        kalshi_fetcher.auth.refresh_if_needed()
+    except Exception:
+        pass
+
+    # Anti-correlation check: don't pile onto crypto-directional bets
+    _crypto_positions = _count_open_crypto_directional(kalshi_trader)
+    if _crypto_positions >= MAX_CORRELATED_CRYPTO_POSITIONS:
+        log.info(
+            "[KALSHI-CORR] %d/%d correlated crypto positions already open — skipping crypto Kalshi trades this cycle",
+            _crypto_positions, MAX_CORRELATED_CRYPTO_POSITIONS,
+        )
+
     # Fetch macro events once per cycle
     try:
-        events = kalshi_fetcher.fetch_events(["politics", "economics", "sports", "financials", "crypto", "technology"])
+        events = kalshi_fetcher.fetch_events(["politics", "economics", "financials", "crypto", "technology"])
         summary["kalshi_events_fetched"] = len(events)
         if not events:
             log.info("[KALSHI] No events returned from API")
@@ -85,7 +193,10 @@ def run_kalshi_for_cycle(
             break
 
         try:
-            matches = kalshi_matcher.match_with_category_filter(signal, events)
+            # Cross-platform mispricing enrichment (adds _mispricing_boost to events)
+            enriched_events = _check_cross_platform_mispricing(signal, events)
+
+            matches = kalshi_matcher.match_with_category_filter(signal, enriched_events)
             summary["kalshi_matches"] += len(matches)
 
             for match in matches:
@@ -94,6 +205,40 @@ def run_kalshi_for_cycle(
 
                 event = match["event"]
                 confidence = match["confidence"]
+                event_cat  = event.get("_category", "OTHER")
+
+                # ── Hard category blocks ───────────────────────────────────────
+                if event_cat in _HARD_BLOCKED_CATEGORIES:
+                    log.debug("[KALSHI-BLOCK] %s category hard-blocked: %s",
+                              event_cat, event.get("title", "")[:50])
+                    continue
+
+                # ── Politics: only trade with recent news backing ─────────────
+                if event_cat == "POLITICS" and not _is_news_backed_politics(signal):
+                    log.debug("[KALSHI-BLOCK] POLITICS skipped — no recent news backing: %s",
+                              event.get("title", "")[:50])
+                    continue
+
+                # ── Crypto anti-correlation cap ────────────────────────────────
+                if event_cat == "CRYPTO" and _crypto_positions >= MAX_CORRELATED_CRYPTO_POSITIONS:
+                    log.debug("[KALSHI-CORR] Skipping CRYPTO event (corr cap): %s",
+                              event.get("title", "")[:50])
+                    continue
+
+                # ── Economic calendar boost ────────────────────────────────────
+                _econ_boost = 1.0
+                try:
+                    from data_sources.economic_calendar import get_kalshi_event_boost
+                    _econ_boost = get_kalshi_event_boost(event.get("title", ""))
+                    if _econ_boost > 1.0:
+                        confidence = min(0.99, confidence * _econ_boost)
+                except Exception:
+                    pass
+
+                # ── Mispricing boost from cross-platform arbitrage ─────────────
+                _mis_boost = float(event.get("_mispricing_boost", 1.0))
+                if _mis_boost > 1.0:
+                    confidence = min(0.99, confidence * _mis_boost)
 
                 # ── Ticker dedup check (before any processing) ─────────────────
                 ticker = (
@@ -116,21 +261,34 @@ def run_kalshi_for_cycle(
                     )
                     continue
 
-                # ── Spread/volume pre-filter ───────────────────────────────────
+                # ── Expiry gate: must be a same-day market ────────────────────
+                hours_to_close = event.get("_hours_to_close")
+                if hours_to_close is None:
+                    from kalshi.fetcher import _parse_close_time
+                    _, hours_to_close = _parse_close_time(event)
+                if hours_to_close is None or hours_to_close > 24 or hours_to_close < 0.25:
+                    log.debug(
+                        "[KALSHI-EXPIRY] Skipping non-same-day market (hours=%.1f): %s",
+                        hours_to_close or 999, event.get("title", "")[:50],
+                    )
+                    continue
+
+                # ── Price gate: REQUIRE real price data — no 0.50 fallback ────
                 yes_ask = event.get("yes_ask", 0) or 0
                 yes_bid = event.get("yes_bid", 0) or 0
 
                 if yes_ask == 0 and yes_bid == 0:
-                    # Kalshi bulk API doesn't return prices — use 0.50 for paper trading
-                    normalized = 0.50
-                    log.info(
-                        "[KALSHI-PAPER] No price data — using 0.50 default for: %s",
+                    # No price in bulk API response — try fetching live from /markets/{ticker}
+                    # This is expensive (one API call per market), so only for promising matches.
+                    log.debug(
+                        "[KALSHI-PRICE] No price in bulk response for %s — skipping (no fallback)",
                         event.get("title", "")[:60],
                     )
+                    continue  # Skip — we do NOT use 0.50 default price
                 else:
                     mid_price = (yes_ask + yes_bid) / 2 if (yes_ask and yes_bid) else (yes_ask or yes_bid)
                     normalized = mid_price / 100.0 if mid_price > 1 else mid_price
-                    if normalized <= 0.05 or normalized >= 0.95:
+                    if normalized <= 0.10 or normalized >= 0.90:
                         log.info(
                             "[KALSHI-FILTER] Near-resolved market (mid=%.2f) skipped: %s",
                             normalized, event.get("title", "")[:60],
@@ -213,3 +371,32 @@ def run_kalshi_for_cycle(
         MAX_KALSHI_TRADES_PER_CYCLE,
     )
     return summary
+
+
+def run_kalshi_updown_for_cycle(
+    kalshi_auth,
+    kalshi_fetcher,
+    kalshi_trader,
+    get_balance_fn,
+) -> int:
+    """
+    Run the Kalshi crypto Up/Down direction scanner as part of a trading cycle.
+    Integrated into the main cycle from main.py via this wrapper.
+    Returns number of trades placed.
+    """
+    if not kalshi_auth.is_configured:
+        return 0
+    try:
+        from kalshi.updown_scanner import run_kalshi_updown_cycle
+        trades = run_kalshi_updown_cycle(
+            auth=kalshi_auth,
+            fetcher_instance=kalshi_fetcher,
+            kalshi_trader_instance=kalshi_trader,
+            get_balance_fn=get_balance_fn,
+        )
+        if trades:
+            log.info("[KALSHI-UPDOWN] Cycle placed %d crypto direction trades", trades)
+        return trades
+    except Exception as exc:
+        log.warning("[KALSHI-UPDOWN] Cycle error: %s", exc)
+        return 0

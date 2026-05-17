@@ -21,6 +21,9 @@ log = logging.getLogger("zisi.kalshi.auth")
 
 _API_PREFIX = "/trade-api/v2"
 
+# Auto-refresh interval: proactively refresh every 25 minutes (Kalshi tokens expire ~30min)
+_AUTO_REFRESH_SECS = 25 * 60
+
 
 class KalshiAuth:
     def __init__(self):
@@ -50,6 +53,7 @@ class KalshiAuth:
                 password=None,
             )
             self.is_configured = True
+            self._last_refresh_ts = time.time()
             log.info(
                 "[KALSHI] RSA-PSS auth configured | key_id=%s... | key_bits=%s",
                 self.key_id[:12],
@@ -57,6 +61,7 @@ class KalshiAuth:
             )
         except Exception as exc:
             log.error("[KALSHI] Failed to load RSA private key: %s", exc)
+            self._last_refresh_ts = 0.0
 
     # ── Header generation ──────────────────────────────────────────────────────
 
@@ -99,6 +104,26 @@ class KalshiAuth:
             hashes.SHA256(),
         )
         return base64.b64encode(sig_bytes).decode("utf-8")
+
+    # ── Auto-refresh ──────────────────────────────────────────────────────────
+
+    def refresh_if_needed(self, force: bool = False) -> bool:
+        """Proactively validate the auth connection every 25 minutes.
+        Kalshi tokens can expire silently — this prevents invisible order failures.
+        Returns True if connection is healthy."""
+        if not self.is_configured:
+            return False
+        now = time.time()
+        age = now - getattr(self, "_last_refresh_ts", 0)
+        if not force and age < _AUTO_REFRESH_SECS:
+            return True
+        ok, msg = self.validate_connection()
+        self._last_refresh_ts = now
+        if ok:
+            log.info("[KALSHI-AUTH] Refresh OK (%.0f min since last) | %s", age / 60, msg)
+        else:
+            log.warning("[KALSHI-AUTH] Refresh FAILED (%.0f min since last): %s", age / 60, msg)
+        return ok
 
     # ── Connection test ────────────────────────────────────────────────────────
 

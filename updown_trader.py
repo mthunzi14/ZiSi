@@ -20,13 +20,48 @@ POLY_GAMMA_API  = "https://gamma-api.polymarket.com"
 POLY_CLOB_API   = "https://clob.polymarket.com"
 BINANCE_API     = "https://api.binance.com/api/v3"
 
-# Base Kelly fraction — scaled by confidence (0.5–0.9 → size 0.5×–1.4×)
-UPDOWN_KELLY_BASE   = 0.022   # 2.2% baseline (increased for higher throughput)
-UPDOWN_MIN_USD      = 1.00
-UPDOWN_MAX_USD      = 15.00   # raised cap
+# ── Tier-based Kelly sizing (composite score → size) ─────────────────────────
+# Score > 0.85 = high conviction: 4% of balance, 15% cap
+# Score 0.75–0.85 = good: 3% of balance, 10% cap
+# Score 0.62–0.75 = acceptable: 1.5% of balance, 5% cap
+# Score < 0.62 = skip
+UPDOWN_KELLY_HIGH  = 0.040   # 4% Kelly for high-conviction entries
+UPDOWN_KELLY_MED   = 0.030   # 3% Kelly for good entries
+UPDOWN_KELLY_LOW   = 0.015   # 1.5% Kelly for acceptable entries
+UPDOWN_CAP_HIGH    = 0.150   # 15% of balance max (prevents runaway at high balance)
+UPDOWN_CAP_MED     = 0.100   # 10% of balance max
+UPDOWN_CAP_LOW     = 0.050   # 5% of balance max
+UPDOWN_MIN_USD     = 1.00
+
+# Legacy: used as fallback only
+UPDOWN_KELLY_BASE  = 0.022
+UPDOWN_MAX_USD     = 10.00
 
 # Volume gate: current candle volume must be >= this fraction of 20-period avg
-VOLUME_GATE_RATIO = 0.65
+VOLUME_GATE_RATIO = 0.60
+
+# BTC/ETH last-minute momentum thresholds (percentage move, NOT dollar amount).
+# Based on empirical data: >0.05% is the 94.3% WR zone — our minimum for entries.
+BTC_MOMENTUM_THRESH_LOW  = 0.050   # >0.050% → 94.3% WR  (entry minimum)
+BTC_MOMENTUM_THRESH_MED  = 0.080   # >0.080% → strong edge
+BTC_MOMENTUM_THRESH_HIGH = 0.150   # >0.150% → near-certain (99%+ WR zone)
+
+# Composite score gates
+COMPOSITE_SCORE_MIN  = 0.62   # below this → skip
+COMPOSITE_SCORE_MED  = 0.75   # medium tier
+COMPOSITE_SCORE_HIGH = 0.85   # high tier
+
+# Rolling VWAP window (5m candles = 2 hours)
+ROLLING_VWAP_BARS = 24
+
+# ATR volatility gate: trade only when ATR > N-period median
+ATR_PERIOD     = 14
+ATR_MED_BARS   = 40   # fetch 40+ candles to compute ATR median over 20 periods
+
+# Blowoff guard: skip UP entries when these ALL hold simultaneously
+BLOWOFF_RSI_THRESHOLD = 60   # RSI ≥ 60 on UP = exhaustion
+BLOWOFF_BB_SIGMA      = 2.0  # Bollinger upper band = SMA + 2σ
+BLOWOFF_MIN_MOVE      = 0.08 # last-minute move > 0.08% = vertical exhaustion
 
 # Min liquidity for Up/Down market to be tradeable
 UPDOWN_MIN_LIQUIDITY = 500.0
@@ -35,19 +70,27 @@ UPDOWN_MIN_LIQUIDITY = 500.0
 UPDOWN_COINS = ["BTC", "ETH", "SOL", "XRP"]
 
 # Max windows to trade per coin per cycle (normal)
-MAX_WINDOWS_PER_COIN = 5
+MAX_WINDOWS_PER_COIN = 2
 # Smart cascade: extreme RSI or regime lock → up to this many windows per coin
-MAX_CASCADE_WINDOWS  = 8
+MAX_CASCADE_WINDOWS  = 3
+
+# Cross-window correlation cap: max 2 concurrent positions per coin per direction
+CORR_CAP_PER_COIN_DIRECTION = 2
 
 # Per-coin consecutive loss tracking (resets to 0 on win)
 _consecutive_losses: dict = {"BTC": 0, "ETH": 0, "SOL": 0, "XRP": 0}
 
 # Auto-cooldown: skip a coin for N cycles after MAX_CONSEC_LOSSES consecutive losses
-MAX_CONSEC_LOSSES = 5
+MAX_CONSEC_LOSSES = 4
 _coin_cooldown_until: dict = {"BTC": 0, "ETH": 0, "SOL": 0, "XRP": 0}
 
 # Session-wide win streak for compounding multiplier
 _session_win_streak: int = 0
+
+# Session loss circuit breaker for Up/Down
+_updown_session_loss: float = 0.0
+_updown_circuit_reset: float = 0.0
+UPDOWN_SESSION_LOSS_LIMIT = 6.0  # pause after $6 updown loss in a session
 
 
 def _fetch_binance_klines(symbol: str, interval: str = "1m", limit: int = 30) -> list:
@@ -89,10 +132,190 @@ def _compute_momentum(closes: list, lookback: int = 5) -> float:
     return (closes[-1] - closes[-lookback]) / closes[-lookback] * 100
 
 
-def _signal_for_timeframe(klines: list, tf_label: str) -> Optional[dict]:
+def _compute_rolling_vwap(klines_5m: list, window: int = ROLLING_VWAP_BARS) -> Optional[float]:
+    """24-bar rolling VWAP on 5m candles (2h). Standard intraday VWAP practice.
+    Old cumulative VWAP got anchored to past prices and went stale — this fixes it."""
+    if len(klines_5m) < window:
+        return None
+    recent = klines_5m[-window:]
+    total_vol = 0.0
+    total_pv  = 0.0
+    for k in recent:
+        high   = float(k[2])
+        low    = float(k[3])
+        close  = float(k[4])
+        vol    = float(k[5])
+        typical = (high + low + close) / 3.0
+        total_pv  += typical * vol
+        total_vol += vol
+    if total_vol <= 0:
+        return None
+    return round(total_pv / total_vol, 2)
+
+
+def _compute_atr(klines: list, period: int = ATR_PERIOD) -> Optional[float]:
+    """Compute ATR (Average True Range) from klines. Returns None if insufficient data."""
+    if len(klines) < period + 1:
+        return None
+    trs = []
+    for i in range(1, len(klines)):
+        high  = float(klines[i][2])
+        low   = float(klines[i][3])
+        prev_close = float(klines[i-1][4])
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        trs.append(tr)
+    return round(sum(trs[-period:]) / period, 6)
+
+
+def _check_volatility_gate(coin: str) -> bool:
+    """Only trade when BTC ATR > 20-period median. Flat BTC = noise not signal.
+    The +$20k trader only entered during genuine BTC volatility spikes — this replicates that."""
+    klines = _fetch_binance_klines(coin, interval="5m", limit=ATR_MED_BARS + 5)
+    if len(klines) < ATR_MED_BARS:
+        return True  # not enough data → allow trade (conservative miss better than false block)
+    # Compute ATR for each rolling 14-period window
+    atrs = []
+    for start in range(len(klines) - ATR_PERIOD - 1):
+        segment = klines[start : start + ATR_PERIOD + 1]
+        atr = _compute_atr(segment)
+        if atr is not None:
+            atrs.append(atr)
+    if len(atrs) < 5:
+        return True
+    current_atr = atrs[-1]
+    median_atr  = sorted(atrs[-20:])[ len(atrs[-20:]) // 2 ]
+    passes = current_atr > median_atr
+    if not passes:
+        log.info(
+            "[UPDOWN] VOLATILITY GATE %s | ATR=%.6f < median=%.6f → flat market, skipping",
+            coin, current_atr, median_atr,
+        )
+    return passes
+
+
+def _compute_bollinger_upper(closes: list, period: int = 20, sigma: float = 2.0) -> Optional[float]:
+    """Return BB upper band. Returns None if insufficient data."""
+    if len(closes) < period:
+        return None
+    recent = closes[-period:]
+    sma    = sum(recent) / period
+    std    = (sum((x - sma) ** 2 for x in recent) / period) ** 0.5
+    return round(sma + sigma * std, 2)
+
+
+def _check_blowoff_guard(coin: str, direction: str, klines_5m: list, last_min_move: float) -> bool:
+    """Return True if this is a blowoff pattern that should be skipped.
+    Blowoff UP: price at BB upper + RSI ≥ 60 + strong momentum = vertical exhaustion.
+    These are traps — the market is overbought and will reverse.
+    DOWN-blowoff kept open (panic selling is more sustained, different physics)."""
+    if direction != "UP":
+        return False  # only block UP blowoffs
+    if abs(last_min_move) < BLOWOFF_MIN_MOVE:
+        return False  # not strong enough to be a blowoff
+    closes = [float(k[4]) for k in klines_5m]
+    bb_upper = _compute_bollinger_upper(closes, period=20)
+    if bb_upper is None:
+        return False
+    current_price = closes[-1]
+    rsi = _compute_rsi(closes)
+    if rsi is None:
+        return False
+    is_blowoff = (current_price >= bb_upper * 0.998) and (rsi >= BLOWOFF_RSI_THRESHOLD)
+    if is_blowoff:
+        log.info(
+            "[UPDOWN] BLOWOFF GUARD %s UP | price=%.2f at BB_upper=%.2f | RSI=%.1f ≥ %d | move=%.3f%% → SKIP",
+            coin, current_price, bb_upper, rsi, BLOWOFF_RSI_THRESHOLD, last_min_move,
+        )
+    return is_blowoff
+
+
+def _compute_composite_score(
+    coin: str,
+    direction: str,
+    avg_rsi: float,
+    tf_agree: int,
+    last_min_move: float,
+    klines_5m: list,
+    fg_val: Optional[int],
+    volatility_gate_pass: bool,
+) -> float:
+    """Composite signal quality score 0.0 – 1.0.
+    Only scores above COMPOSITE_SCORE_MIN (0.62) result in a trade.
+    Components: RSI(0.25) + MTF(0.25) + Momentum(0.20) + Volatility(0.15) + VWAP(0.10) + F&G(0.05)"""
+    score = 0.0
+
+    # 1. RSI alignment (0–0.25): stronger RSI = higher score
+    rsi_dist = abs(avg_rsi - 50)
+    rsi_norm = min(1.0, rsi_dist / 35.0)   # RSI=85 → dist=35 → 1.0
+    score += rsi_norm * 0.25
+
+    # 2. MTF confluence (0–0.25): 3/3 full, 2/3 partial
+    score += 0.25 if tf_agree == 3 else 0.15
+
+    # 3. Momentum (0–0.20): last-minute % move aligned with direction
+    abs_move = abs(last_min_move)
+    if abs_move >= BTC_MOMENTUM_THRESH_HIGH:
+        score += 0.20
+    elif abs_move >= BTC_MOMENTUM_THRESH_MED:
+        score += 0.15
+    elif abs_move >= BTC_MOMENTUM_THRESH_LOW:
+        score += 0.10
+    # below minimum threshold → 0
+
+    # 4. Volatility gate (0–0.15): trading during genuine volatility
+    score += 0.15 if volatility_gate_pass else 0.0
+
+    # 5. VWAP position (0–0.10): price above/below rolling VWAP aligns with direction
+    if len(klines_5m) >= ROLLING_VWAP_BARS:
+        vwap = _compute_rolling_vwap(klines_5m)
+        current_price = float(klines_5m[-1][4])
+        if vwap is not None:
+            if direction == "UP" and current_price > vwap:
+                score += 0.10
+            elif direction == "DOWN" and current_price < vwap:
+                score += 0.10
+            else:
+                score += 0.03  # small partial credit (VWAP not aligned but not disqualifying)
+
+    # 6. Fear & Greed alignment (0–0.05): contrarian or trend-following bonus
+    if fg_val is not None:
+        if (fg_val < 25 and direction == "UP") or (fg_val > 75 and direction == "DOWN"):
+            score += 0.05   # contrarian — highest edge
+        elif (60 <= fg_val <= 75 and direction == "UP") or (25 <= fg_val <= 40 and direction == "DOWN"):
+            score += 0.03   # trend-following
+
+    return round(min(1.0, score), 4)
+
+
+def _count_correlated_positions(coin: str, direction: str) -> int:
+    """Count currently open Up/Down positions for coin+direction across all windows.
+    Prevents stacking correlated bets (max 2 per coin per direction)."""
+    try:
+        import json as _j, os as _o
+        pf = _o.path.join(_o.path.dirname(__file__), "positions_state.json")
+        if not _o.path.exists(pf):
+            return 0
+        data = _j.loads(open(pf, encoding="utf-8").read())
+        active = data.get("active", [])
+        coin_dir_count = 0
+        for pos in active:
+            title = str(pos.get("event_title", "")).upper()
+            pos_direction = str(pos.get("direction", "")).upper()
+            if coin.upper() in title and "[UPDOWN]" in title:
+                # direction stored as YES=UP, NO=DOWN
+                mapped = "UP" if pos_direction == "YES" else "DOWN"
+                if mapped == direction.upper():
+                    coin_dir_count += 1
+        return coin_dir_count
+    except Exception:
+        return 0
+
+
+def _signal_for_timeframe(klines: list, tf_label: str, coin: str = "") -> Optional[dict]:
     """
     Extract a directional signal from one timeframe's klines.
     Returns {direction, strength, rsi, momentum} or None if no edge.
+    XRP requires stricter RSI thresholds (>60/<40) due to its pump/dump volatility.
     """
     if len(klines) < 16:
         return None
@@ -102,16 +325,20 @@ def _signal_for_timeframe(klines: list, tf_label: str) -> Optional[dict]:
     if rsi is None:
         return None
 
-    if rsi > 55:
+    # XRP requires stronger RSI signal — it's more noisy/pump-driven
+    rsi_up   = 60 if coin == "XRP" else 65
+    rsi_down = 40 if coin == "XRP" else 35
+
+    if rsi > rsi_up:
         direction = "UP"
-        strength  = min(0.85, 0.50 + (rsi - 55) / 45 * 0.35)
-    elif rsi < 45:
+        strength  = min(0.85, 0.50 + (rsi - rsi_up) / 40 * 0.35)
+    elif rsi < rsi_down:
         direction = "DOWN"
-        strength  = min(0.85, 0.50 + (45 - rsi) / 45 * 0.35)
+        strength  = min(0.85, 0.50 + (rsi_down - rsi) / 40 * 0.35)
     else:
-        if abs(momentum) > 0.15:
+        if abs(momentum) > 0.25:
             direction = "UP" if momentum > 0 else "DOWN"
-            strength  = 0.52
+            strength  = 0.55
         else:
             return None  # no edge on this timeframe
 
@@ -157,7 +384,7 @@ def _generate_direction_signal(coin: str) -> Optional[dict]:
     # ── Per-timeframe signals ────────────────────────────────────────────────
     tf_signals = []
     for klines, label in [(klines_1m, "1m"), (klines_3m, "3m"), (klines_5m, "5m")]:
-        sig = _signal_for_timeframe(klines, label)
+        sig = _signal_for_timeframe(klines, label, coin=coin)
         if sig:
             tf_signals.append(sig)
 
@@ -284,6 +511,91 @@ def _compute_binance_5m_momentum(coin: str) -> float:
         return (closes[-1] - closes[-6]) / closes[-6] * 100
     except Exception:
         return 0.0
+
+
+def _compute_last_minute_pct_move(coin: str) -> float:
+    """
+    Compute the % move WITHIN the current 1-minute candle (open→current).
+    This is the high-edge signal: when a coin moves >0.02% in the current minute,
+    the market is directionally committed right now. Price-level invariant — uses
+    percentage NOT dollars, so it works at any BTC/ETH price level.
+
+    Empirical win rates from 12,234 BTC 5-minute markets:
+      >0.020%: 88.9% WR   |   >0.050%: 94.3% WR   |   >0.100%: 99.1% WR
+    """
+    try:
+        klines = _fetch_binance_klines(coin, interval="1m", limit=3)
+        if len(klines) < 1:
+            return 0.0
+        current = klines[-1]
+        candle_open  = float(current[1])  # open price of current minute candle
+        candle_close = float(current[4])  # most recent close (live)
+        if candle_open <= 0:
+            return 0.0
+        return (candle_close - candle_open) / candle_open * 100
+    except Exception:
+        return 0.0
+
+
+def _get_last_minute_confidence_boost(coin: str, direction: str) -> float:
+    """
+    Apply the last-minute momentum threshold as an additional confidence boost.
+    Returns a multiplier:
+      - >0.100% aligned move: 1.40× (near-certain directional edge)
+      - >0.050% aligned move: 1.25×
+      - >0.020% aligned move: 1.12×
+      - Conflicting move:     0.85× (momentum contradicts our signal — size down)
+      - Flat (<0.020%):       1.00× (no edge from last-minute data)
+    """
+    move = _compute_last_minute_pct_move(coin)
+    move_dir = "UP" if move > 0 else "DOWN"
+    abs_move = abs(move)
+
+    if abs_move < BTC_MOMENTUM_THRESH_LOW:
+        return 1.0  # flat — no adjustment
+
+    if move_dir != direction:
+        log.info(
+            "[UPDOWN] ⚡ LAST-MIN CONTRA %s | move=%.3f%% (%s) ≠ signal (%s) → 0.85×",
+            coin, move, move_dir, direction,
+        )
+        return 0.85  # momentum contradicts signal — reduce size
+
+    if abs_move >= BTC_MOMENTUM_THRESH_HIGH:
+        log.info("[UPDOWN] ⚡ LAST-MIN TURBO %s | move=%.3f%% → 1.40× boost (99.1%% WR zone)", coin, move)
+        return 1.40
+    elif abs_move >= BTC_MOMENTUM_THRESH_MED:
+        log.info("[UPDOWN] ⚡ LAST-MIN HIGH %s | move=%.3f%% → 1.25× boost (94.3%% WR zone)", coin, move)
+        return 1.25
+    else:
+        log.info("[UPDOWN] ⚡ LAST-MIN LOW %s | move=%.3f%% → 1.12× boost (88.9%% WR zone)", coin, move)
+        return 1.12
+
+
+def _get_15m_vs_5m_lag_boost(coin: str, markets: list, direction: str) -> float:
+    """
+    Detect lag between 15m and 5m contract prices.
+    If 15m market shows strong conviction (>0.65 for UP) but 5m is still neutral (<0.55),
+    the 5m hasn't repriced yet — this is arbitrage-like alpha.
+    Returns a 1.15× boost when lag exists, 1.0 otherwise.
+    """
+    five_m  = [m for m in markets if m.get("duration_min") == 5]
+    fifteen = [m for m in markets if m.get("duration_min") == 15]
+    if not five_m or not fifteen:
+        return 1.0
+    try:
+        price_5m  = five_m[0].get("up_price", 0.5) if direction == "UP" else five_m[0].get("dn_price", 0.5)
+        price_15m = fifteen[0].get("up_price", 0.5) if direction == "UP" else fifteen[0].get("dn_price", 0.5)
+        lag = abs(price_15m - price_5m)
+        if price_15m > 0.62 and price_5m < 0.55 and direction == "UP":
+            log.info("[UPDOWN] 🔀 5m/15m LAG %s | 15m=%.2f > 5m=%.2f → 1.15× (repricing opportunity)", coin, price_15m, price_5m)
+            return 1.15
+        if price_15m < 0.38 and price_5m > 0.45 and direction == "DOWN":
+            log.info("[UPDOWN] 🔀 5m/15m LAG %s | 15m=%.2f < 5m=%.2f → 1.15× (repricing opportunity)", coin, price_15m, price_5m)
+            return 1.15
+    except Exception:
+        pass
+    return 1.0
 
 
 # ── Advancement D: Fear & Greed Index (Alternative.me) ───────────────────────
@@ -537,6 +849,8 @@ def _fetch_active_updown_markets(coin: str) -> list:
             dn_price = float(dn_market.get("lastTradePrice") or 0.5)
         if up_price >= 0.90 or up_price <= 0.10:
             return None
+        if 0.42 <= up_price <= 0.58:
+            return None  # coin-flip zone — no edge
         return {
             "id":           ev.get("id", ""),
             "title":        ev.get("title", ""),
@@ -551,7 +865,7 @@ def _fetch_active_updown_markets(coin: str) -> list:
             "coin":         coin,
         }
 
-    for dur_min in (5, 15):
+    for dur_min in (5, 10, 15):
         interval = dur_min * 60
         boundary = ((now_ts + interval) // interval) * interval
         for offset in range(4):
@@ -594,6 +908,36 @@ def _fetch_active_updown_markets(coin: str) -> list:
     return found_events
 
 
+def check_updown_early_exits(get_all_trades_fn, execute_exit_fn) -> int:
+    """
+    Early exit at 88%+ of face value: lock in the gain rather than risk TIME_EXPIRED reversal.
+    The pattern of watching $0.93 positions crash to $0.05 is eliminated by this rule.
+    Returns number of early exits executed.
+    """
+    exits = 0
+    try:
+        all_trades = get_all_trades_fn()
+        for trade in all_trades:
+            title = str(trade.get("event_title", "")).upper()
+            if "[UPDOWN]" not in title:
+                continue  # only updown positions
+            current_price = float(trade.get("current_price", 0))
+            if current_price >= 0.88:
+                # Lock in the 74%+ gain instead of risking reversal
+                log.info(
+                    "[UPDOWN] EARLY EXIT trigger: %s | price=%.3f ≥ 0.88 — locking in gain",
+                    trade.get("order_id", "?")[:20], current_price,
+                )
+                try:
+                    execute_exit_fn(trade, reason="EARLY_EXIT_88PCT")
+                    exits += 1
+                except Exception as _ee:
+                    log.debug("[UPDOWN] Early exit failed: %s", _ee)
+    except Exception as exc:
+        log.debug("[UPDOWN] Early exit scan failed: %s", exc)
+    return exits
+
+
 def record_updown_result(coin: str, won: bool) -> None:
     """
     Call after each UP/DOWN trade resolves to track consecutive losses,
@@ -631,7 +975,15 @@ def run_updown_cycle(
     - Self-Hedging Conflict Skip: skips windows where Mule1↑ + Mule2↓
     Returns number of trades placed.
     """
+    global _updown_session_loss, _updown_circuit_reset
     trades_placed = 0
+
+    # ── Session loss circuit breaker ──────────────────────────────────────────
+    now_ts = int(time.time())
+    if _updown_circuit_reset > now_ts:
+        remaining = (_updown_circuit_reset - now_ts) // 60
+        log.info("[UPDOWN] Session loss circuit tripped — cooling down %dm", remaining)
+        return 0
 
     # ── Phase 1: generate all signals ────────────────────────────────────────
     coin_signals: dict = {}
@@ -691,6 +1043,12 @@ def run_updown_cycle(
         if signal is None:
             continue
 
+        # Cap: max 4 concurrent updown positions (correlation control)
+        open_updown = count_open_trades_fn()
+        if open_updown >= 4:
+            log.info("[UPDOWN] Max 4 concurrent updown positions — pausing cycle")
+            return trades_placed
+
         try:
             markets = _fetch_active_updown_markets(coin)
             if not markets:
@@ -701,6 +1059,11 @@ def run_updown_cycle(
             confidence = signal["confidence"]
             tf_agree   = signal["timeframes_agree"]
             avg_rsi    = signal["rsi"]
+
+            # Change I: require minimum confidence before trading
+            if confidence < 0.62:
+                log.info("[UPDOWN] %s confidence %.2f < 0.62 minimum — skipping", coin, confidence)
+                continue
 
             # Smart Window Cascade: extreme RSI + all-TF agree → more windows
             is_extreme = avg_rsi > 72 or avg_rsi < 28
@@ -743,34 +1106,113 @@ def run_updown_cycle(
                 _poly_lag_boost = 1.15
                 log.info("[UPDOWN] 🎯 POLY-LAG %s | Binance mom=%.2f%% → 15%% boost", coin, _binance_mom)
 
+            # ── Last-minute % move + composite score ───────────────────────────
+            _last_min_move = _compute_last_minute_pct_move(coin)
+
+            # Require minimum momentum: 0.050% = 94.3% WR zone
+            if abs(_last_min_move) < BTC_MOMENTUM_THRESH_LOW:
+                log.info(
+                    "[UPDOWN] %s | last-minute move %.4f%% < %.3f%% threshold — skipping (noise zone)",
+                    coin, _last_min_move, BTC_MOMENTUM_THRESH_LOW,
+                )
+                continue
+
+            # Momentum must ALIGN with signal direction (contradiction filter)
+            _mom_dir = "UP" if _last_min_move > 0 else "DOWN"
+            if _mom_dir != direction:
+                log.info(
+                    "[UPDOWN] CONTRADICTION %s | signal=%s but momentum=%s (%.4f%%) — skip",
+                    coin, direction, _mom_dir, _last_min_move,
+                )
+                continue
+
+            # ── Fetch 5m klines for VWAP/ATR/Blowoff ──────────────────────────
+            _klines_5m = _fetch_binance_klines(coin, interval="5m", limit=50)
+
+            # ── Volatility gate: only trade during genuine BTC volatility ─────
+            _vol_gate = _check_volatility_gate(coin)
+
+            # ── Blowoff guard (UP only) ─────────────────────────────────────
+            if _check_blowoff_guard(coin, direction, _klines_5m, _last_min_move):
+                continue
+
+            # ── Composite signal quality score ────────────────────────────────
+            _comp_score = _compute_composite_score(
+                coin, direction, avg_rsi, tf_agree,
+                _last_min_move, _klines_5m, _fear_greed_val, _vol_gate,
+            )
+            if _comp_score < COMPOSITE_SCORE_MIN:
+                log.info(
+                    "[UPDOWN] %s composite score=%.2f < %.2f minimum — skipping",
+                    coin, _comp_score, COMPOSITE_SCORE_MIN,
+                )
+                continue
+            log.info("[UPDOWN] %s | COMPOSITE SCORE = %.2f (%s tier)",
+                coin, _comp_score,
+                "HIGH" if _comp_score > COMPOSITE_SCORE_HIGH else ("MED" if _comp_score > COMPOSITE_SCORE_MED else "LOW"),
+            )
+
+            # ── Cross-window correlation cap ──────────────────────────────────
+            _corr_count = _count_correlated_positions(coin, direction)
+            if _corr_count >= CORR_CAP_PER_COIN_DIRECTION:
+                log.info(
+                    "[UPDOWN] CORR CAP %s %s | %d/%d positions already open — skip",
+                    coin, direction, _corr_count, CORR_CAP_PER_COIN_DIRECTION,
+                )
+                continue
+
+            _last_min_boost = _get_last_minute_confidence_boost(coin, direction)
+
+            # ── 5m/15m repricing lag detector ──────────────────────────────────
+            _lag_15m_boost = _get_15m_vs_5m_lag_boost(coin, markets, direction)
+
             # ── Advancement D: Fear & Greed per-direction multiplier ──────────
             _fg_mult = _get_fear_greed_multiplier(direction, _fear_greed_val)
             if abs(_fg_mult - 1.0) >= 0.05:
                 log.info(
-                    "[UPDOWN] 😨 F&G %s | fg=%s direction=%s → %.2f×",
+                    "[UPDOWN] F&G %s | fg=%s direction=%s → %.2f×",
                     coin, _fear_greed_val, direction, _fg_mult,
                 )
 
             # ── Advancement E: Asymmetric Directional Kelly ───────────────────
             _dir_kelly = _get_directional_kelly_multiplier(direction)
-            if abs(_dir_kelly - 1.0) >= 0.05:
-                log.info("[UPDOWN] 📐 Directional Kelly %s %s → %.2f×", coin, direction, _dir_kelly)
 
             # ── Advancement G: Rolling signal quality per coin ────────────────
             _quality_mult = _get_coin_quality_multiplier(coin)
 
-            # Combined size multiplier — all multipliers applied, capped at 2.8×
+            # ── Binance order flow (buyer vs seller initiated) ─────────────────
+            _flow_boost = 1.0
+            try:
+                from data_sources.binance_flow import get_flow_signal_boost
+                _flow_boost = get_flow_signal_boost(coin, direction)
+            except Exception:
+                pass
+
+            # ── DeFiLlama macro TVL trend ──────────────────────────────────────
+            _tvl_mult = 1.0
+            try:
+                from data_sources.defillama import get_tvl_macro_multiplier
+                _tvl_mult = get_tvl_macro_multiplier(direction)
+            except Exception:
+                pass
+
+            # MTF sizing: 2/3 = 50% size, 3/3 = full size (rewards strongest signals)
+            _mtf_size_mult = 1.0 if tf_agree == 3 else 0.50
+
+            # Combined size multiplier (non-tier components only)
             conf_mult = max(0.6, min(1.5, 0.5 + confidence * 1.1))
             size_multiplier = min(
                 conf_mult * streak_mult * _bayesian_mult * _poly_lag_boost
-                * _fg_mult * _dir_kelly * _quality_mult * _utc_mult,
-                2.8,
+                * _fg_mult * _dir_kelly * _quality_mult * _utc_mult
+                * _last_min_boost * _lag_15m_boost * _mtf_size_mult
+                * _flow_boost * _tvl_mult,
+                3.0,
             )
 
             windows_traded = 0
             for best in markets[:cascade_max]:
-                if count_open_trades_fn() >= 35:
-                    log.info("[UPDOWN] Max open trades (35) reached — stopping %s", coin)
+                if count_open_trades_fn() >= 20:
+                    log.info("[UPDOWN] Max open trades (20) reached — stopping %s", coin)
                     break
 
                 # Skip windows where mules are in conflict
@@ -811,13 +1253,36 @@ def run_updown_cycle(
                 _vol_mult = _get_volume_surge_multiplier(best)
 
                 balance  = get_balance_fn()
-                raw_size = balance * UPDOWN_KELLY_BASE * size_multiplier * _ob_boost * _vol_mult
-                size     = round(max(UPDOWN_MIN_USD, min(UPDOWN_MAX_USD, raw_size)), 2)
+                # Tier-based Kelly: composite score determines fraction + cap
+                if _comp_score > COMPOSITE_SCORE_HIGH:
+                    _kelly_frac = UPDOWN_KELLY_HIGH
+                    _max_size   = balance * UPDOWN_CAP_HIGH
+                elif _comp_score > COMPOSITE_SCORE_MED:
+                    _kelly_frac = UPDOWN_KELLY_MED
+                    _max_size   = balance * UPDOWN_CAP_MED
+                else:
+                    _kelly_frac = UPDOWN_KELLY_LOW
+                    _max_size   = balance * UPDOWN_CAP_LOW
+                raw_size = balance * _kelly_frac * size_multiplier * _ob_boost * _vol_mult
+                size     = round(max(UPDOWN_MIN_USD, min(_max_size, raw_size)), 2)
 
                 market_id = market_obj.get("conditionId") or market_obj.get("id", "")
                 event_id  = best["id"]
                 secs_left = best["expiry_ts"] - int(time.time())
                 dur_label = f"{secs_left // 60}m{secs_left % 60}s"
+
+                # Change C: minimum time-to-expiry check
+                if secs_left < 90:
+                    log.info("[UPDOWN] %s | <90s to expiry (%ds) — skipping", coin, secs_left)
+                    continue
+
+                # Change G: direction-aligned entry price check
+                if direction == "UP" and entry_price > 0.58:
+                    log.info("[UPDOWN] %s UP already expensive (%.3f) — no edge, skipping", coin, entry_price)
+                    continue
+                if direction == "DOWN" and entry_price < 0.42:
+                    log.info("[UPDOWN] %s DOWN already expensive (%.3f) — no edge, skipping", coin, entry_price)
+                    continue
 
                 order = place_paper_trade_fn(
                     event_id=event_id,
@@ -848,6 +1313,10 @@ def run_updown_cycle(
                         extras.append(f"UTC{_utc_mult:.2f}×")
                     if _vol_mult > 1.0:
                         extras.append("VOL✓")
+                    if _last_min_boost > 1.05:
+                        extras.append(f"⚡{_last_min_boost:.2f}×")
+                    if _lag_15m_boost > 1.0:
+                        extras.append("LAG15✓")
                     tag = f" | {', '.join(extras)}" if extras else ""
                     log.info(
                         "[UPDOWN] ✅ %s %s @ %.3f | $%.2f | RSI=%.1f | %d/3 TF | %s left | conf=%.0f%%%s",

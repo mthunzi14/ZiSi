@@ -137,6 +137,45 @@ def _detect_kalshi_category(title: str) -> str:
     return "OTHER"
 
 
+# Maximum hours to expiry — sweet spot is 2–24h for optimal edge.
+MAX_MARKET_HOURS = 24.0
+# Minimum hours to expiry — skip markets about to close.
+MIN_MARKET_HOURS = 0.5   # 30 minutes (was 15 min — more exit room)
+
+# Liquidity minimum raised for session 2
+MIN_MARKET_LIQUIDITY_USD = 2000  # was implicitly lower — thin markets eat edge via spread
+
+
+def _parse_close_time(market: dict):
+    """Return (close_dt, hours_remaining) or (None, None) if unparseable."""
+    from datetime import datetime, timezone
+    close_str = (
+        market.get("close_time")
+        or market.get("expiration_time")
+        or market.get("expected_expiration_time")
+    )
+    if not close_str:
+        return None, None
+    try:
+        close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
+        hours = (close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+        return close_dt, hours
+    except Exception:
+        return None, None
+
+
+def is_same_day_market(market: dict) -> bool:
+    """
+    Return True only if market closes within [MIN_MARKET_HOURS, MAX_MARKET_HOURS].
+    Rejects long-dated events (Fed meetings months away, political elections, etc.)
+    and already-closing markets with insufficient time to exit.
+    """
+    _, hours = _parse_close_time(market)
+    if hours is None:
+        return False  # no expiry info — skip (conservative)
+    return MIN_MARKET_HOURS <= hours <= MAX_MARKET_HOURS
+
+
 def market_freshness_score(market: dict) -> float:
     """
     Return a 0-1 freshness score for a Kalshi market.
@@ -319,41 +358,35 @@ class KalshiEventFetcher:
         # ── Priority 1: Targeted series across all 12 categories ─────────────
         # Each series_ticker corresponds to a real Kalshi event family.
         target_series = [
-            # 1. Crypto
-            "KXBTCM",   # Bitcoin end-of-month price
-            "KXETH",    # Ethereum end-of-month price
-            "KXBTC",    # Bitcoin spot price events
-            "KXCRYPTO", # General crypto events
-            "KXSOLANA", # Solana price
-            # 2. Economics
-            "KXFED",    # Fed funds rate decision
-            "KXCPI",    # CPI / inflation
-            "KXINFL",   # Inflation related
-            "KXGDP",    # GDP growth
-            "KXECON",   # Economics
-            "KXJOBS",   # Jobs report / unemployment
-            "KXPCE",    # PCE inflation
-            # 3. Politics
-            "KXPRES",   # Presidential approval / elections
-            "KXCONG",   # Congressional events
-            "KXELECT",  # Elections
-            # 4. Tech / AI
+            # ── PRIORITY 1: Crypto intraday (hourly resolution markets) ────────
+            # These resolve TODAY — perfect for our same-day filter.
+            "KXBTC",    # Bitcoin hourly/daily spot price range markets
+            "KXETH",    # Ethereum hourly/daily price markets
+            "KXBTCM",   # Bitcoin daily close price
+            "KXETHM",   # Ethereum daily close price
+            "KXSOLANA", # Solana daily price
+            "KXCRYPTO", # General same-day crypto markets
+            "KXBTCD",   # Bitcoin daily (if series exists)
+            "KXETHD",   # Ethereum daily
+            # ── PRIORITY 2: Intraday macro (same-day economic data) ─────────
+            "KXCPI",    # CPI release day markets (if they have hourly sub-markets)
+            "KXGOLD",   # Gold intraday price
+            "KXOIL",    # Oil intraday price
+            "KXENERGY", # Energy intraday
+            "KXECON",   # General econ intraday
+            "KXJOBS",   # Jobs data release (same-day only after filter)
+            # ── PRIORITY 3: Longer-dated (will be filtered by expiry) ─────────
+            "KXFED",    # Fed decision (filtered out — resolves in months)
+            "KXGDP",    # GDP (filtered out)
+            "KXINFL",   # Inflation (filtered out if monthly)
+            "KXPCE",    # PCE (filtered out if monthly)
             "KXAI",     # AI developments
             "KXTECH",   # Tech events
-            # 5. Energy
-            "KXOIL",    # Oil price
-            "KXENERGY", # Energy
-            # 6. Commodities
-            "KXGOLD",   # Gold price
-            # 7. Geopolitical
             "KXGEO",    # Geopolitical
-            # 8. Regulatory
             "KXREG",    # Regulatory decisions
-            # 9. Sports
-            "KXNFL",    # NFL outcomes
-            "KXNBA",    # NBA outcomes
-            # 10. Climate
-            "KXWEATHER", # Weather events
+            # Skip sports entirely — almost always long-dated with poor edge
+            # "KXNFL", "KXNBA" — excluded
+            "KXWEATHER", # Weather (some are same-day hurricane/storm tracks)
         ]
 
         for series in target_series:
@@ -436,6 +469,37 @@ class KalshiEventFetcher:
             log.warning("[KALSHI-DIAGNOSTIC] Zero markets returned from all queries")
             return []
 
+        # ── Same-day expiry filter: ONLY trade markets closing TODAY ──────────
+        # This is the most critical filter — eliminates KXFED, KXCPI monthly,
+        # political events, and anything that won't resolve within 24 hours.
+        same_day: list = []
+        long_dated_count = 0
+        for m in all_markets:
+            _, hours = _parse_close_time(m)
+            if hours is None:
+                long_dated_count += 1
+                log.debug("[KALSHI-EXPIRY] No close_time for: %s — skipped", m.get("title", "?")[:50])
+                continue
+            if hours < MIN_MARKET_HOURS:
+                log.debug("[KALSHI-EXPIRY] Too close to expiry (%.1fh): %s — skipped", hours, m.get("title", "?")[:50])
+                continue
+            if hours > MAX_MARKET_HOURS:
+                long_dated_count += 1
+                log.debug("[KALSHI-EXPIRY] Long-dated (%.1fh): %s — skipped", hours, m.get("title", "?")[:50])
+                continue
+            m["_hours_to_close"] = round(hours, 2)
+            same_day.append(m)
+
+        log.info(
+            "[KALSHI-EXPIRY] Same-day filter: %d kept / %d long-dated removed",
+            len(same_day), long_dated_count,
+        )
+        all_markets = same_day
+
+        if not all_markets:
+            log.warning("[KALSHI] No same-day markets found — nothing to trade today")
+            return []
+
         # ── Freshness filter: skip near-resolved stale markets ────────────────
         fresh_markets = []
         stale_count = 0
@@ -454,7 +518,36 @@ class KalshiEventFetcher:
             log.info("[KALSHI-FRESHNESS] Filtered %d stale markets (near-resolved)", stale_count)
 
         all_markets = fresh_markets
-        log.info("[KALSHI] %d fresh markets after staleness filter", len(all_markets))
+        log.info("[KALSHI] %d fresh same-day markets ready", len(all_markets))
+
+        # ── Category win-rate enforcement ────────────────────────────────────
+        # After 10 trades in a category: WR < 45% → reduce liquidity threshold (soft gate)
+        # After 20 trades: WR < 40% → suspend (will be caught by matcher's drift gate)
+        _cwr = get_category_win_rates()
+        _wl_filtered: list = []
+        _wl_removed = 0
+        for m in all_markets:
+            cat = m.get("_category", "OTHER")
+            cat_stats = _cwr.get(cat, {})
+            cat_total = cat_stats.get("total", 0)
+            cat_wr    = cat_stats.get("win_rate")
+            if cat_total >= 20 and cat_wr is not None and cat_wr < 0.40:
+                # Suspended category — drop from fetch output
+                _wl_removed += 1
+                log.debug("[KALSHI-CAT-GATE] Category %s WR=%.0f%% after %d trades → dropped",
+                          cat, cat_wr * 100, cat_total)
+                continue
+            # Liquidity check for min threshold
+            liq_raw = float(m.get("open_interest", 0) or 0)
+            if liq_raw > 0 and liq_raw < MIN_MARKET_LIQUIDITY_USD:
+                _wl_removed += 1
+                continue
+            _wl_filtered.append(m)
+
+        if _wl_removed:
+            log.info("[KALSHI-FILTER] Removed %d markets (low WR/liquidity) → %d remain",
+                     _wl_removed, len(_wl_filtered))
+        all_markets = _wl_filtered
 
         # Diagnostic: 12-category breakdown
         cats: dict = {}

@@ -264,6 +264,58 @@ def get_all_headlines(max_age_minutes: int = 30) -> List[Dict]:
     except Exception:
         pass
 
+    # CryptoCompare News (free API, high-quality aggregator)
+    try:
+        from data_sources.cryptocompare_news import get_latest_news as _cc_news
+        cc_articles = _cc_news(coins=["BTC", "ETH", "Crypto"], limit=20)
+        for art in cc_articles:
+            pub_ts = art.get("published", 0)
+            if pub_ts and now - pub_ts > max_age_minutes * 60:
+                continue
+            pub_dt = datetime.fromtimestamp(pub_ts, tz=timezone.utc).isoformat() if pub_ts else datetime.now(timezone.utc).isoformat()
+            all_results.append({
+                "title":        art.get("title", ""),
+                "url":          art.get("url", ""),
+                "published_at": pub_dt,
+                "source":       f"CryptoCompare/{art.get('source', '?')}",
+                "coin_hint":    _coin_hint(art.get("title", "")),
+                "_sentiment":   art.get("sentiment", "NEUTRAL"),
+                "_score":       art.get("score", 0.5),
+            })
+        if cc_articles:
+            log.debug("[RSS] CryptoCompare: %d items", len(cc_articles))
+    except Exception as _cc_err:
+        log.debug("[RSS] CryptoCompare fetch failed: %s", _cc_err)
+
+    # Messari research headlines (free endpoints)
+    try:
+        r = requests.get(
+            "https://data.messari.io/api/v1/news",
+            params={"limit": 10},
+            timeout=6,
+        )
+        if r.status_code == 200:
+            for item in r.json().get("data", []):
+                pub_str = item.get("published_at", "")
+                try:
+                    pub_dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
+                    if (datetime.now(timezone.utc) - pub_dt).total_seconds() > max_age_minutes * 60:
+                        continue
+                    pub_iso = pub_dt.isoformat()
+                except Exception:
+                    pub_iso = datetime.now(timezone.utc).isoformat()
+                title = item.get("title", "")
+                if title:
+                    all_results.append({
+                        "title":        title,
+                        "url":          item.get("url", ""),
+                        "published_at": pub_iso,
+                        "source":       "Messari",
+                        "coin_hint":    _coin_hint(title),
+                    })
+    except Exception as _me:
+        log.debug("[RSS] Messari fetch failed: %s", _me)
+
     # Deduplicate by title prefix (first 60 chars, lowercased)
     seen_titles: set = set()
     deduped = []

@@ -108,7 +108,10 @@ from ml_pipeline import get_blended_confidence
 from shadow_mode import ShadowModeMonitor, set_shadow_enabled
 
 # ── Up/Down high-frequency trader ────────────────────────────────────────────
-from updown_trader import run_updown_cycle
+from updown_trader import run_updown_cycle, check_updown_early_exits
+
+# ── Markets orchestrator (Kalshi Up/Down + cross-platform arb) ───────────────
+from markets_orchestrator import run_kalshi_updown_for_cycle
 
 # ── Module-level singletons ───────────────────────────────────────────────────
 _email_scheduler = EmailScheduler()
@@ -1763,6 +1766,19 @@ def main() -> None:
                 # regardless of time, so this runs even during the dead window.
                 if _running:
                     try:
+                        # Early exit check: close Poly updown positions at 88%+
+                        try:
+                            _ud_early_exits = check_updown_early_exits(
+                                get_all_trades_fn=get_all_open_trades,
+                                execute_exit_fn=lambda t, reason: execute_exit(
+                                    t, exit_reason=reason, exit_price=t.get("current_price")
+                                ),
+                            )
+                            if _ud_early_exits:
+                                log.info("[UPDOWN] %d early exit(s) triggered (88%% gate)", _ud_early_exits)
+                        except Exception:
+                            pass
+
                         _ud_count = run_updown_cycle(
                             place_paper_trade_fn=place_order,
                             get_balance_fn=get_current_balance,
@@ -2093,6 +2109,27 @@ def main() -> None:
                                 "[KALSHI] %d trade(s) executed this cycle",
                                 _kalshi_summary["kalshi_trades"],
                             )
+
+                        # ── Kalshi Up/Down crypto direction scanner ────────────
+                        try:
+                            _kalshi_ud_trades = run_kalshi_updown_for_cycle(
+                                kalshi_auth=_kalshi_auth,
+                                kalshi_fetcher=_kalshi_fetcher,
+                                kalshi_trader=_kalshi_trader,
+                                get_balance_fn=get_current_balance,
+                            )
+                            if _kalshi_ud_trades:
+                                log.info("[KALSHI-UPDOWN] %d crypto direction trades placed", _kalshi_ud_trades)
+                        except Exception as _kud_err:
+                            log.debug("[KALSHI-UPDOWN] Scanner error: %s", _kud_err)
+
+                        # ── Kalshi trailing stops + early exits ────────────────
+                        try:
+                            _kalshi_stops = _kalshi_trader.check_trailing_stops()
+                            if _kalshi_stops:
+                                log.info("[KALSHI-STOP] %d trailing stop(s) triggered", len(_kalshi_stops))
+                        except Exception as _kts_err:
+                            log.debug("[KALSHI] Trailing stop check error: %s", _kts_err)
 
                         # ── Check + close aged Kalshi paper positions ─────────
                         try:
