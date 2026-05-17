@@ -1260,6 +1260,19 @@ def _monitor_open_positions(cfg: dict) -> None:
                 f"Reason:   {exit_check['exit_reason']}\n"
             ),
         )
+        # Telegram close notification — ALL Polymarket exit paths (TARGET_HIT,
+        # STOP_HIT, TIME_EXPIRED, SIGNAL_FLIP) land here.  Includes win rate,
+        # balance, and total P&L as the user requested.
+        try:
+            notify_trade_closed(
+                event_title=trade.get("event_title", order_id),
+                pnl=result["profit"],
+                pnl_pct=result["profit_percent"],
+                hold_min=round(float(result.get("hold_duration", 0)) * 60, 1),
+                market="POLYMARKET",
+            )
+        except Exception:
+            pass
         log.debug("  Exit complete for %s", order_id)
 
 
@@ -1771,7 +1784,9 @@ def main() -> None:
                             _ud_early_exits = check_updown_early_exits(
                                 get_all_trades_fn=get_all_open_trades,
                                 execute_exit_fn=lambda t, reason: execute_exit(
-                                    t, exit_reason=reason, exit_price=t.get("current_price")
+                                    t["order_id"],
+                                    t.get("current_price", t.get("entry_price", 0.5)),
+                                    exit_reason=reason,
                                 ),
                             )
                             if _ud_early_exits:

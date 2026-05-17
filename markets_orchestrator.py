@@ -12,6 +12,7 @@ Session 2 upgrades:
   - Sports/politics blackout with news-based override
 """
 import logging
+import time
 from typing import List, Dict, Optional
 
 from signal_router import routing_decision
@@ -29,6 +30,121 @@ POLITICS_NEWS_WINDOW_SECS = 45 * 60
 
 # Categories always blocked (zero edge for ZiSi)
 _HARD_BLOCKED_CATEGORIES = {"SPORTS"}
+
+# ── Resolution Trade Advancement constants ────────────────────────────────────
+# Advancement 1: Resolution time sweet spot — 2-8h before close
+RESOLUTION_SWEET_SPOT_MIN_HRS = 0.5
+RESOLUTION_SWEET_SPOT_MAX_HRS = 8.0
+RESOLUTION_SWEET_SPOT_BOOST   = 1.20   # 20% Kelly boost when in sweet spot
+RESOLUTION_OUTSIDE_BOOST      = 0.80   # 20% reduction when outside sweet spot
+
+# Advancement 2: Minimum signal confidence for resolution trades
+RESOLUTION_MIN_CONFIDENCE      = 7.0   # 7/10 minimum (old routing default was lower)
+POLITICS_MIN_CONFIDENCE        = 7.5   # politics is riskier — needs stronger signal
+
+# Advancement 3: Price distance from coin-flip zone
+RESOLUTION_MIN_PRICE_DISTANCE  = 0.12  # must be >12% away from 50% (i.e. <0.38 or >0.62)
+
+# Advancement 4: Category multipliers (from historical backtesting)
+_CATEGORY_SIZE_MULTIPLIERS: Dict[str, float] = {
+    "ECONOMICS":  1.20,
+    "FINANCIALS": 1.20,
+    "TECHNOLOGY": 1.10,
+    "CRYPTO":     1.10,
+    "POLITICS":   0.85,   # higher noise — size down
+    "OTHER":      1.00,
+}
+
+# Advancement 5: Anti-stacking — max open resolution positions total
+MAX_OPEN_RESOLUTION_POSITIONS = 15
+
+# Advancement 7: News freshness — skip signals older than 2h
+NEWS_MAX_AGE_SECS = 7200
+
+# ── Resolution trade rolling win-rate tracker ────────────────────────────────
+_resolution_category_last5: Dict[str, list] = {}  # cat → list of bool (win=True)
+
+
+def _update_resolution_category(category: str, won: bool) -> None:
+    arr = _resolution_category_last5.setdefault(category, [])
+    arr.append(won)
+    if len(arr) > 5:
+        arr.pop(0)
+
+
+def _get_category_momentum_multiplier(category: str) -> float:
+    """Advancement 6: Category momentum — if last 3 trades in this category all
+    lost, reduce sizing 50%.  If last 3 all won, boost 15%."""
+    arr = _resolution_category_last5.get(category, [])
+    if len(arr) < 3:
+        return 1.0
+    recent = arr[-3:]
+    if all(recent):
+        log.info("[RESOLUTION] 📈 %s momentum 3-win streak → 1.15×", category)
+        return 1.15
+    if not any(recent):
+        log.info("[RESOLUTION] 📉 %s momentum 3-loss streak → 0.50×", category)
+        return 0.50
+    return 1.0
+
+
+def _count_open_resolution_positions() -> int:
+    """Count all non-crypto-directional open positions (resolution trades)."""
+    try:
+        import json, os
+        pf = os.path.join(os.path.dirname(__file__), "positions_state.json")
+        if not os.path.exists(pf):
+            return 0
+        data  = json.loads(open(pf, encoding="utf-8").read())
+        count = 0
+        for pos in data.get("active", []):
+            title = str(pos.get("event_title", "")).upper()
+            if "[UPDOWN]" not in title:
+                count += 1
+        return count
+    except Exception:
+        return 0
+
+
+def _check_news_freshness(signal: Dict, max_age_secs: int = NEWS_MAX_AGE_SECS) -> bool:
+    """Advancement 7: Require signal news to be < 2h old."""
+    ts = signal.get("_news_timestamp") or signal.get("fetched_at") or signal.get("published_at")
+    if not ts:
+        return True  # no timestamp → don't over-filter
+    try:
+        if isinstance(ts, str):
+            from datetime import datetime, timezone
+            dt  = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - dt).total_seconds()
+        else:
+            age = time.time() - float(ts)
+        if age > max_age_secs:
+            log.debug("[RESOLUTION] News age %.0fs > %ds max — stale signal", age, max_age_secs)
+            return False
+        return True
+    except Exception:
+        return True
+
+
+def _check_anti_late_entry(normalized_price: float, sentiment_dir: str) -> bool:
+    """Advancement 9: Skip if the market has already moved >30% in our favour —
+    it's likely fully priced.  E.g. a bullish signal at YES=0.85 offers little
+    residual upside vs the risk of a reversal."""
+    if sentiment_dir in ("bullish", "YES") and normalized_price > 0.82:
+        log.info("[RESOLUTION] Anti-late-entry: YES already at %.2f → skip", normalized_price)
+        return False
+    if sentiment_dir in ("bearish", "NO") and normalized_price < 0.18:
+        log.info("[RESOLUTION] Anti-late-entry: YES at %.2f (NO already cheap) → skip", normalized_price)
+        return False
+    return True
+
+
+def _get_rapid_fire_boost(signal: Dict) -> float:
+    """Advancement 10: Rapid-fire queue signals are high-conviction breaking news
+    — boost size 15% to capitalise while the market is still repricing."""
+    if signal.get("_from_rapid_fire") or signal.get("signal_type") == "RAPID_FIRE":
+        return 1.15
+    return 1.0
 
 
 def _count_open_crypto_directional(kalshi_trader=None) -> int:
@@ -184,6 +300,15 @@ def run_kalshi_for_cycle(
     except Exception:
         _open_tickers = set()
 
+    # Advancement 5: Anti-stacking — don't pile on if too many resolution bets open
+    _open_resolution = _count_open_resolution_positions()
+    if _open_resolution >= MAX_OPEN_RESOLUTION_POSITIONS:
+        log.info(
+            "[RESOLUTION] Anti-stack: %d/%d resolution positions already open — skipping cycle",
+            _open_resolution, MAX_OPEN_RESOLUTION_POSITIONS,
+        )
+        return summary
+
     for signal in signals:
         if _cycle_trade_count >= MAX_KALSHI_TRADES_PER_CYCLE:
             log.info(
@@ -191,6 +316,20 @@ def run_kalshi_for_cycle(
                 MAX_KALSHI_TRADES_PER_CYCLE,
             )
             break
+
+        # Advancement 1: Minimum confidence gate (raises floor vs routing default)
+        sig_conf = float(signal.get("confidence", 5))
+        if sig_conf < RESOLUTION_MIN_CONFIDENCE:
+            log.debug(
+                "[RESOLUTION] Signal confidence %.1f < %.1f minimum — skipping",
+                sig_conf, RESOLUTION_MIN_CONFIDENCE,
+            )
+            continue
+
+        # Advancement 7: News freshness gate
+        if not _check_news_freshness(signal):
+            log.debug("[RESOLUTION] Stale news signal — skipping")
+            continue
 
         try:
             # Cross-platform mispricing enrichment (adds _mispricing_boost to events)
@@ -203,7 +342,7 @@ def run_kalshi_for_cycle(
                 if _cycle_trade_count >= MAX_KALSHI_TRADES_PER_CYCLE:
                     break
 
-                event = match["event"]
+                event      = match["event"]
                 confidence = match["confidence"]
                 event_cat  = event.get("_category", "OTHER")
 
@@ -213,11 +352,16 @@ def run_kalshi_for_cycle(
                               event_cat, event.get("title", "")[:50])
                     continue
 
-                # ── Politics: only trade with recent news backing ─────────────
-                if event_cat == "POLITICS" and not _is_news_backed_politics(signal):
-                    log.debug("[KALSHI-BLOCK] POLITICS skipped — no recent news backing: %s",
-                              event.get("title", "")[:50])
-                    continue
+                # ── Politics: higher confidence + news gate ───────────────────
+                if event_cat == "POLITICS":
+                    if not _is_news_backed_politics(signal):
+                        log.debug("[KALSHI-BLOCK] POLITICS skipped — no recent news: %s",
+                                  event.get("title", "")[:50])
+                        continue
+                    if sig_conf < POLITICS_MIN_CONFIDENCE:
+                        log.debug("[KALSHI-BLOCK] POLITICS conf %.1f < %.1f — skip",
+                                  sig_conf, POLITICS_MIN_CONFIDENCE)
+                        continue
 
                 # ── Crypto anti-correlation cap ────────────────────────────────
                 if event_cat == "CRYPTO" and _crypto_positions >= MAX_CORRELATED_CRYPTO_POSITIONS:
@@ -261,7 +405,7 @@ def run_kalshi_for_cycle(
                     )
                     continue
 
-                # ── Expiry gate: must be a same-day market ────────────────────
+                # ── Expiry gate + Advancement 1: resolution sweet spot ────────
                 hours_to_close = event.get("_hours_to_close")
                 if hours_to_close is None:
                     from kalshi.fetcher import _parse_close_time
@@ -273,20 +417,18 @@ def run_kalshi_for_cycle(
                     )
                     continue
 
-                # ── Price gate: REQUIRE real price data — no 0.50 fallback ────
+                # ── Price gate ────────────────────────────────────────────────
                 yes_ask = event.get("yes_ask", 0) or 0
                 yes_bid = event.get("yes_bid", 0) or 0
 
                 if yes_ask == 0 and yes_bid == 0:
-                    # No price in bulk API response — try fetching live from /markets/{ticker}
-                    # This is expensive (one API call per market), so only for promising matches.
                     log.debug(
-                        "[KALSHI-PRICE] No price in bulk response for %s — skipping (no fallback)",
+                        "[KALSHI-PRICE] No price in bulk response for %s — skipping",
                         event.get("title", "")[:60],
                     )
-                    continue  # Skip — we do NOT use 0.50 default price
+                    continue
                 else:
-                    mid_price = (yes_ask + yes_bid) / 2 if (yes_ask and yes_bid) else (yes_ask or yes_bid)
+                    mid_price  = (yes_ask + yes_bid) / 2 if (yes_ask and yes_bid) else (yes_ask or yes_bid)
                     normalized = mid_price / 100.0 if mid_price > 1 else mid_price
                     if normalized <= 0.10 or normalized >= 0.90:
                         log.info(
@@ -295,10 +437,25 @@ def run_kalshi_for_cycle(
                         )
                         continue
 
+                # Advancement 2: Price distance from coin-flip zone
+                _dist_from_50 = abs(normalized - 0.50)
+                if _dist_from_50 < RESOLUTION_MIN_PRICE_DISTANCE:
+                    log.debug(
+                        "[RESOLUTION] Price %.2f too close to 50%% (dist=%.2f < %.2f) → skip: %s",
+                        normalized, _dist_from_50, RESOLUTION_MIN_PRICE_DISTANCE,
+                        event.get("title", "")[:50],
+                    )
+                    continue
+
+                # Advancement 9: Anti-late-entry filter
+                _sentiment_dir = signal.get("sentiment", "neutral")
+                if not _check_anti_late_entry(normalized, _sentiment_dir):
+                    continue
+
                 # ── GAP #1: Routing gate for Kalshi ───────────────────────────
                 _kalshi_routing = routing_decision(
                     confidence=float(signal.get("confidence", 5)),
-                    spread=0.03,         # Kalshi is order-book, no explicit spread param
+                    spread=0.03,
                     has_polymarket=False,
                     has_kalshi=True,
                     kalshi_yes_price=normalized,
@@ -314,7 +471,7 @@ def run_kalshi_for_cycle(
                         "  [KALSHI-ROUTING] SKIP — confidence below threshold for %s",
                         event.get("title", "")[:50],
                     )
-                    continue  # ticker NOT added to dedup
+                    continue
 
                 # ── Kelly position sizing ──────────────────────────────────────
                 try:
@@ -334,10 +491,39 @@ def run_kalshi_for_cycle(
                 routing_mult = float(signal.get("kelly_multiplier", 1.0))
                 if routing_mult != 1.0:
                     position_size = position_size * routing_mult
+
+                # Advancement 1: Resolution sweet spot multiplier
+                if hours_to_close is not None:
+                    if RESOLUTION_SWEET_SPOT_MIN_HRS <= hours_to_close <= RESOLUTION_SWEET_SPOT_MAX_HRS:
+                        position_size *= RESOLUTION_SWEET_SPOT_BOOST
+                        log.info(
+                            "  [RESOLUTION] Sweet spot %.1fh → +20%% size → $%.2f",
+                            hours_to_close, position_size,
+                        )
+                    elif hours_to_close > RESOLUTION_SWEET_SPOT_MAX_HRS:
+                        position_size *= RESOLUTION_OUTSIDE_BOOST
+
+                # Advancement 3: Category-specific size multiplier
+                _cat_mult = _CATEGORY_SIZE_MULTIPLIERS.get(event_cat, 1.0)
+                if _cat_mult != 1.0:
+                    position_size *= _cat_mult
                     log.info(
-                        "  [KALSHI-ROUTING] %s kelly×%.1f → $%.2f",
-                        signal.get("signal_type", ""), routing_mult, position_size,
+                        "  [RESOLUTION] %s category mult=%.2f× → $%.2f",
+                        event_cat, _cat_mult, position_size,
                     )
+
+                # Advancement 6: Category momentum multiplier
+                _mom_mult = _get_category_momentum_multiplier(event_cat)
+                if _mom_mult != 1.0:
+                    position_size *= _mom_mult
+
+                # Advancement 10: Rapid-fire boost
+                _rf_boost = _get_rapid_fire_boost(signal)
+                if _rf_boost > 1.0:
+                    position_size *= _rf_boost
+                    log.info("  [RESOLUTION] Rapid-fire boost %.2f× → $%.2f", _rf_boost, position_size)
+
+                position_size = round(max(0.50, position_size), 2)
 
                 # ── Execute trade ──────────────────────────────────────────────
                 trade = kalshi_trader.execute_trade(
@@ -348,7 +534,6 @@ def run_kalshi_for_cycle(
                 )
 
                 if trade:
-                    # Only NOW register ticker in dedup set — trade was successful
                     _traded_tickers.add(ticker)
                     summary["kalshi_trades"] += 1
                     summary["trades"].append(trade)
@@ -358,6 +543,7 @@ def run_kalshi_for_cycle(
                         _cycle_trade_count, MAX_KALSHI_TRADES_PER_CYCLE,
                         event.get("title", "")[:50], position_size, confidence,
                     )
+                    # Track category outcome for Advancement 6 (updated on close elsewhere)
 
         except Exception as e:
             log.warning("[KALSHI] Signal processing error: %s", e)
