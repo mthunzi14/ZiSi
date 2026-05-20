@@ -18,7 +18,8 @@ async def reconciliation_loop(state_mgr, telegram_fn=None) -> None:
     while True:
         await asyncio.sleep(RECONCILE_INTERVAL)
         try:
-            _run_reconcile_pass(state_mgr, telegram_fn)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _run_reconcile_pass, state_mgr, telegram_fn)
         except Exception as exc:
             log.warning("[RECONCILE] Pass failed: %s", exc)
 
