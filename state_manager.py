@@ -11,34 +11,66 @@ from pathlib import Path
 
 log = logging.getLogger("zisi.state")
 
-_STATE_FILE = Path(__file__).parent / "account_state.json"
-_DEFAULT_BALANCE = 100.0
-_lock = threading.Lock()
-_balance: float = _DEFAULT_BALANCE
+_STATE_FILE       = Path(__file__).parent / "account_state.json"
+_POSITIONS_FILE   = Path(__file__).parent / "positions_state.json"
+_DEFAULT_BALANCE  = 100.0
+_lock             = threading.Lock()
+_balance: float   = _DEFAULT_BALANCE
+
+
+def _balance_from_positions() -> float | None:
+    """
+    Derive the correct account balance from positions_state.json.
+    Returns None if the file is missing or unreadable.
+    This is the single source of truth — avoids accumulated drift from
+    Kalshi or any other market that was later removed.
+    """
+    if not _POSITIONS_FILE.exists():
+        return None
+    try:
+        pos     = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
+        summary = pos.get("summary") or {}
+        realized_pnl = float(summary.get("realized_pnl", 0) or 0)
+        return round(_DEFAULT_BALANCE + realized_pnl, 2)
+    except Exception:
+        return None
 
 
 def initialize_state() -> float:
-    """Load account balance from disk or create file with default $100."""
+    """Load account balance from disk, then reconcile with positions_state.json."""
     global _balance
     with _lock:
+        disk_balance = _DEFAULT_BALANCE
         if _STATE_FILE.exists():
             try:
                 data = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
-                _balance = float(data["balance"])
-                log.info(
-                    "Account state initialized: $%.2f (loaded from %s)",
-                    _balance, _STATE_FILE.name,
-                )
-                return _balance
+                disk_balance = float(data["balance"])
             except (KeyError, ValueError, json.JSONDecodeError, OSError) as exc:
                 log.warning(
                     "Corrupted state file (%s) — resetting to default $%.2f",
                     exc, _DEFAULT_BALANCE,
                 )
 
-        _balance = _DEFAULT_BALANCE
-        _write_state("Initialized with default balance")
-        log.info("Account state initialized: $%.2f (new file created)", _balance)
+        # Always reconcile against positions_state.json — it is the authoritative
+        # source of truth. If the disk value diverges by more than 5%, use the
+        # positions-computed value to prevent drift from removed markets (e.g. Kalshi).
+        computed = _balance_from_positions()
+        if computed is not None:
+            gap_pct = abs(disk_balance - computed) / max(1.0, abs(computed))
+            if gap_pct > 0.05:
+                log.warning(
+                    "[STATE] Balance mismatch on init: disk=$%.2f vs positions=$%.2f "
+                    "(%.1f%% gap) — using positions value",
+                    disk_balance, computed, gap_pct * 100,
+                )
+                _balance = computed
+            else:
+                _balance = disk_balance
+        else:
+            _balance = disk_balance
+
+        _write_state("Initialized — reconciled with positions_state")
+        log.info("Account state initialized: $%.2f", _balance)
         return _balance
 
 
@@ -55,8 +87,13 @@ def update_balance(new_balance: float, reason: str = "") -> None:
 
 
 def get_current_balance() -> float:
-    """Return the current in-memory account balance."""
-    return _balance
+    """Return the authoritative balance derived from positions_state.json.
+
+    Falls back to the in-memory value only if positions_state.json is unavailable.
+    This prevents any caller from seeing the stale accumulated value.
+    """
+    computed = _balance_from_positions()
+    return computed if computed is not None else _balance
 
 
 def reset_account(to_amount: float = 100.0) -> None:
@@ -69,12 +106,9 @@ def reset_account(to_amount: float = 100.0) -> None:
 
 
 def update_heartbeat(trades_executed: int = 0, paused: bool = False, reason: str = "heartbeat") -> None:
-    """Write timestamp every bot cycle so the dashboard can detect liveness.
-
-    Call this at the end of every main-loop cycle, not just on trades.
-    """
+    """Write timestamp every bot cycle so the dashboard can detect liveness."""
+    global _balance
     with _lock:
-        # Read existing state so we don't overwrite fields we don't own
         existing: dict = {}
         if _STATE_FILE.exists():
             try:
@@ -82,12 +116,18 @@ def update_heartbeat(trades_executed: int = 0, paused: bool = False, reason: str
             except Exception:
                 pass
         starting = float(existing.get("starting_balance", _DEFAULT_BALANCE))
-        existing["balance"] = _balance
-        existing["pnl"] = round(_balance - starting, 2)   # always correct
-        existing["trades_executed"] = trades_executed
-        existing["paused"] = paused
-        existing["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        existing["last_change_reason"] = reason
+
+        # Always derive from positions_state.json — prevents stale in-memory drift
+        computed = _balance_from_positions()
+        if computed is not None:
+            _balance = computed
+
+        existing["balance"]             = _balance
+        existing["pnl"]                 = round(_balance - starting, 2)
+        existing["trades_executed"]     = trades_executed
+        existing["paused"]              = paused
+        existing["last_updated"]        = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        existing["last_change_reason"]  = reason
         _STATE_FILE.write_text(json.dumps(existing, indent=2), encoding="utf-8")
 
 
@@ -112,6 +152,7 @@ def get_progress_toward_phase2() -> dict:
 
 
 def _write_state(reason: str = "") -> None:
+    global _balance
     # Merge with existing file so we never lose fields written by other functions
     existing: dict = {}
     if _STATE_FILE.exists():
@@ -120,8 +161,15 @@ def _write_state(reason: str = "") -> None:
         except Exception:
             pass
     starting = float(existing.get("starting_balance", _DEFAULT_BALANCE))
+
+    # Derive balance from positions_state.json (single source of truth).
+    # Keeps disk in sync even if _balance drifted due to a removed market.
+    computed = _balance_from_positions()
+    if computed is not None:
+        _balance = computed   # keep in-memory value authoritative too
+
     existing["balance"] = _balance
-    existing["pnl"] = round(_balance - starting, 2)   # always correct — never accumulated
+    existing["pnl"]     = round(_balance - starting, 2)
     existing["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     existing["last_change_reason"] = reason
     _STATE_FILE.write_text(json.dumps(existing, indent=2), encoding="utf-8")
@@ -197,3 +245,46 @@ def get_runtime_summary() -> dict | None:
     except Exception as exc:
         log.warning("[RUNTIME] Summary failed: %s", exc)
         return None
+
+
+# ── Reconciliation helpers ────────────────────────────────────────────────────
+
+def get_open_positions() -> list:
+    """Return all active (open) positions from positions_state.json."""
+    if not _POSITIONS_FILE.exists():
+        return []
+    try:
+        data = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
+        return data.get("active", [])
+    except Exception:
+        return []
+
+
+def is_confirmed(position_id: str) -> bool:
+    """Return True if this position has been confirmed (marked filled)."""
+    if not _POSITIONS_FILE.exists():
+        return False
+    try:
+        data = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
+        for pos in data.get("active", []):
+            if pos.get("id") == position_id or pos.get("order_id") == position_id:
+                return bool(pos.get("confirmed", False))
+    except Exception:
+        pass
+    return False
+
+
+def force_confirm(position: dict) -> None:
+    """Mark a position as confirmed (ghost fill correction)."""
+    if not _POSITIONS_FILE.exists():
+        return
+    try:
+        with _lock:
+            data = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
+            for pos in data.get("active", []):
+                if pos.get("order_id") == position.get("order_id"):
+                    pos["confirmed"] = True
+                    break
+            _POSITIONS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as exc:
+        log.warning("[STATE] force_confirm failed: %s", exc)
