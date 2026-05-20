@@ -36,7 +36,7 @@ export default function CommandCentre({ state = {}, positions = {} }) {
   useEffect(() => {
     const tick = () => {
       const now = new Date();
-      setUtc(now.toUTCString().slice(17, 25) + ' UTC');
+      setUtc(now.toISOString().slice(11, 19) + ' UTC');
     };
     tick();
     const id = setInterval(tick, 1000);
