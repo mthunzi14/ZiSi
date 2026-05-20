@@ -1,104 +1,74 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import Header from './components/Header';
-import Sidebar from './components/Sidebar';
-import BotStatus from './components/BotStatus';
-import EdgeValidation from './components/EdgeValidation';
-import MissedTrades from './components/MissedTrades';
-import AnalyticsBySection from './components/AnalyticsBySection';
-import ByUTC from './components/ByUTC';
-import RiskMetrics from './components/RiskMetrics';
-import MLStatus from './components/MLStatus';
-import SystemAlerts from './components/SystemAlerts';
-import RegimeIndicator from './components/RegimeIndicator';
-import ToastTest from './components/ToastTest';
-import Positions from './components/Positions';
-import SignalPipeline from './components/SignalPipeline';
-import SignalQueue from './components/SignalQueue';
-import PerformanceCard from './components/PerformanceCard';
-import LiveTradeFeed from './components/LiveTradeFeed';
+import CommandCentre from './components/CommandCentre';
+import AssetCards    from './components/AssetCards';
+import TradeFeed     from './components/TradeFeed';
+import WinRateChart  from './components/WinRateChart';
+import PositionMonitor from './components/PositionMonitor';
+import SystemHealth  from './components/SystemHealth';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('overview');
-  const [dashboardData, setDashboardData] = useState({});
-  const refreshRef = useRef(null);
+  const [state,     setState]     = useState({});
+  const [positions, setPositions] = useState({ active: [], summary: {} });
+  const [trades,    setTrades]    = useState([]);
+  const [candles,   setCandles]   = useState([]);
+  const esRef = useRef(null);
 
-  const handleRefresh = useCallback(async () => {
-    const res = await fetch('/api/health');
-    const data = await res.json();
-    setDashboardData(data);
-    return data;
+  // Polling fallback for health data
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const r = await fetch('/api/health');
+        const d = await r.json();
+        setState(d);
+      } catch { /* offline */ }
+    };
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
   }, []);
 
+  // SSE stream for live events
   useEffect(() => {
-    handleRefresh();
-    const id = setInterval(handleRefresh, 15_000);
-    return () => clearInterval(id);
-  }, [handleRefresh]);
+    const es = new EventSource('/api/health/stream');
+    esRef.current = es;
+
+    es.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data);
+        if (event.type === 'position_update')  setPositions(event.payload);
+        if (event.type === 'balance_update')   setState(s => ({ ...s, ...event.payload }));
+        if (event.type === 'candle_boundary')  setCandles(event.payload);
+        if (event.type === 'trade_executed' || event.type === 'trade_resolved') {
+          setTrades(t => [event.payload, ...t].slice(0, 50));
+        }
+      } catch { /* ignore malformed */ }
+    };
+
+    return () => es.close();
+  }, []);
 
   return (
-    <div className="app-container">
-      <Sidebar activeTab={activeTab} onTabChange={setActiveTab} />
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: 'var(--color-bg-base)' }}>
+      <CommandCentre state={state} positions={positions} />
 
-      <main className="app-main">
-        <Header onRefresh={handleRefresh} metrics={dashboardData} />
+      <div style={{ padding: 'var(--spacing-16)', flex: 1, display: 'flex', flexDirection: 'column', gap: 'var(--spacing-16)' }}>
 
-        <div className="app-content">
-          {activeTab === 'overview' && (
-            <>
-              {/* Row 1: Compact command strip (status + key metrics + pause) */}
-              <BotStatus />
+        {/* Row 1: Asset Cards */}
+        <AssetCards positions={positions} candles={candles} />
 
-              {/* Row 2: System alerts (health monitor output) */}
-              <SystemAlerts />
-
-              {/* Row 3: Regime pill */}
-              {dashboardData.regime && (
-                <RegimeIndicator regime={dashboardData.regime} />
-              )}
-
-              {/* Row 4b: Entity performance comparison */}
-              <PerformanceCard />
-
-              {/* Row 4c: Live trade feed (SSE-powered, real-time) */}
-              <LiveTradeFeed />
-
-              {/* Row 5: Open/closed positions */}
-              <Positions />
-
-              {/* Row 6: Exchange performance cards + Phase 1 progress */}
-              <MissedTrades data={dashboardData} />
-
-              {/* Row 7: Signal pipeline funnel */}
-              <SignalPipeline data={dashboardData} />
-            </>
-          )}
-
-          {activeTab === 'analytics' && (
-            <>
-              <h1>Advanced Analytics</h1>
-              <EdgeValidation data={dashboardData} />
-              <div className="analytics-sections">
-                <ByUTC data={dashboardData} />
-                <RiskMetrics data={dashboardData} />
-              </div>
-              <AnalyticsBySection />
-              <MLStatus />
-              <SignalQueue />
-            </>
-          )}
-
-          {activeTab === 'settings' && (
-            <div className="card mt-xl">
-              <h2>Settings</h2>
-              <p className="text-muted" style={{ marginBottom: '32px' }}>
-                Settings configuration coming soon.
-              </p>
-              <ToastTest />
-            </div>
-          )}
+        {/* Row 2: Trade Feed + Win Rate Chart */}
+        <div style={{ display: 'grid', gridTemplateColumns: '40% 1fr', gap: 'var(--spacing-16)' }}>
+          <TradeFeed trades={trades} positions={positions} />
+          <WinRateChart trades={trades} />
         </div>
-      </main>
+
+        {/* Row 3: Position Monitor + System Health */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--spacing-16)' }}>
+          <PositionMonitor positions={positions} candles={candles} />
+          <SystemHealth state={state} positions={positions} candles={candles} />
+        </div>
+      </div>
     </div>
   );
 }
