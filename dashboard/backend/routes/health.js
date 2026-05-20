@@ -515,6 +515,7 @@ router.get('/stream', (req, res) => {
 
   _sseClients.add(res);
   req.on('close', () => _sseClients.delete(res));
+  req.socket?.on('error', () => _sseClients.delete(res));
 
   // Send heartbeat immediately
   res.write(`data: ${JSON.stringify({ type: 'heartbeat', ts: Date.now() })}\n\n`);
@@ -549,6 +550,7 @@ setInterval(() => {
 
 // Poll candle boundary timers every 10s
 setInterval(() => {
+  if (_sseClients.size === 0) return;
   const now = Math.floor(Date.now() / 1000);
   const boundaries = [
     { asset: 'BTC', tf: '5m',  secs: 300 - (now % 300) },
