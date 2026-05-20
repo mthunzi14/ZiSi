@@ -7,6 +7,8 @@ import { readTradesFile } from '../utils/fileReader.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
 
+const readJSON = (fp) => JSON.parse(fs.readFileSync(fp, 'utf-8').replace(/^﻿/, ''));
+
 router.get('/', (req, res) => {
   try {
     const stateFile = path.join(__dirname, '../../../account_state.json');
@@ -47,7 +49,7 @@ router.get('/', (req, res) => {
       });
     }
 
-    const state = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
+    const state = readJSON(stateFile);
     const lastUpdate = new Date(state.last_updated);
     const now = new Date();
     const minutesAgo = Math.floor((now - lastUpdate) / 60000);
@@ -63,15 +65,15 @@ router.get('/', (req, res) => {
       status = 'offline';
     }
 
-    const balance = parseFloat(state.balance || 100);
-    const pnl = parseFloat(state.pnl || 0);
+    let balance = parseFloat(state.balance || 100);
+    let pnl = parseFloat(state.pnl || 0);
     const tradesExecuted = state.trades_executed || 0;
 
     // Runtime tracking
     let runtime = defaultRuntime;
     if (fs.existsSync(runtimeFile)) {
       try {
-        const rt = JSON.parse(fs.readFileSync(runtimeFile, 'utf-8'));
+        const rt = readJSON(runtimeFile);
         const hours = rt.runtime_hours || 0;
         runtime = {
           hours: Math.round(hours * 10) / 10,
@@ -325,7 +327,7 @@ router.get('/', (req, res) => {
     try {
       const mlFile = path.join(__dirname, '../../../ml_progress.json');
       if (fs.existsSync(mlFile)) {
-        ml_progress = JSON.parse(fs.readFileSync(mlFile, 'utf-8'));
+        ml_progress = readJSON(mlFile);
       }
     } catch (_) { /* non-fatal */ }
 
@@ -340,7 +342,7 @@ router.get('/', (req, res) => {
     try {
       const edgeFile = path.join(__dirname, '../../../edge_status.json');
       if (fs.existsSync(edgeFile)) {
-        edge_scorer_stats = JSON.parse(fs.readFileSync(edgeFile, 'utf-8'));
+        edge_scorer_stats = readJSON(edgeFile);
       }
     } catch (_) { /* non-fatal */ }
 
@@ -349,7 +351,7 @@ router.get('/', (req, res) => {
     try {
       const regimeFile = path.join(__dirname, '../../../regime_status.json');
       if (fs.existsSync(regimeFile)) {
-        regime = JSON.parse(fs.readFileSync(regimeFile, 'utf-8'));
+        regime = readJSON(regimeFile);
       }
     } catch (_) { /* non-fatal */ }
 
@@ -363,19 +365,35 @@ router.get('/', (req, res) => {
     let kalshi_closed_count = 0;
     let kalshi_closed_pnl   = 0;
     let kalshi_win_count    = 0;
+    let poly_closed_count   = 0;
+    let poly_closed_pnl     = 0;
+    let poly_win_count      = 0;
     try {
       const posFile = path.join(__dirname, '../../../positions_state.json');
       if (fs.existsSync(posFile)) {
-        const posData = JSON.parse(fs.readFileSync(posFile, 'utf-8'));
+        const posData = readJSON(posFile);
         positions_summary = posData.summary || positions_summary;
-        // Count Kalshi-specific closed positions for accurate trade stats
         const closedList = posData.closed || [];
+
+        // Polymarket closed stats — single source of truth
+        const polyClosed = closedList.filter(p => p.market === 'POLYMARKET');
+        poly_closed_count = polyClosed.length;
+        poly_closed_pnl   = polyClosed.reduce((s, p) => s + (p.realized_pnl || 0), 0);
+        poly_win_count    = polyClosed.filter(p => (p.realized_pnl || 0) > 0).length;
+
+        // Kalshi closed stats (should be 0 after cleanup)
         const kalshiClosed = closedList.filter(p => p.market === 'KALSHI');
         kalshi_closed_count = kalshiClosed.length;
         kalshi_closed_pnl   = kalshiClosed.reduce((s, p) => s + (p.realized_pnl || 0), 0);
         kalshi_win_count    = kalshiClosed.filter(p => (p.realized_pnl || 0) > 0).length;
       }
     } catch (_) { /* non-fatal */ }
+
+    // Derive balance from positions_state.json (single source of truth)
+    if (positions_summary.realized_pnl !== undefined) {
+      balance = Math.round((100.0 + (positions_summary.realized_pnl || 0)) * 100) / 100;
+      pnl = parseFloat((positions_summary.realized_pnl || 0).toFixed(2));
+    }
 
     res.json({
       status,
@@ -428,7 +446,13 @@ router.get('/', (req, res) => {
       real_trades: realTrades,
       real_pnl: pnl,
       real_win_rate: winRate,
-      // Kalshi: use positions_state.json closed count (ignores 592 orphaned records)
+      // Polymarket: from positions_state.json (authoritative)
+      poly_real_trades: poly_closed_count,
+      poly_real_pnl: parseFloat(poly_closed_pnl.toFixed(2)),
+      poly_real_win_rate: poly_closed_count > 0
+        ? parseFloat((poly_win_count / poly_closed_count).toFixed(4))
+        : 0,
+      // Kalshi: use positions_state.json closed count (should be 0 after cleanup)
       kalshi_real_trades: kalshi_closed_count,
       kalshi_real_pnl: parseFloat(kalshi_closed_pnl.toFixed(4)),
       kalshi_real_win_rate: kalshi_closed_count > 0
@@ -451,6 +475,13 @@ router.get('/', (req, res) => {
       regime,
       // ── Position summary ──────────────────────────────────────────────
       positions_summary,
+      // ── Macro context (FRED + funding rates + compounding progress) ───
+      macro_context: (() => {
+        try {
+          const mf = path.join(__dirname, '../../../macro_context.json');
+          return fs.existsSync(mf) ? readJSON(mf) : null;
+        } catch { return null; }
+      })(),
       error: null,
     });
 
@@ -472,5 +503,63 @@ router.get('/', (req, res) => {
     });
   }
 });
+
+// ── SSE stream — pushes live events to frontend ───────────────────────────
+const _sseClients = new Set();
+
+router.get('/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  _sseClients.add(res);
+  req.on('close', () => _sseClients.delete(res));
+
+  // Send heartbeat immediately
+  res.write(`data: ${JSON.stringify({ type: 'heartbeat', ts: Date.now() })}\n\n`);
+});
+
+function broadcastSSE(eventObj) {
+  const msg = `data: ${JSON.stringify(eventObj)}\n\n`;
+  for (const client of _sseClients) {
+    try { client.write(msg); } catch { _sseClients.delete(client); }
+  }
+}
+
+// Poll positions_state.json and broadcast position_update every 2s
+setInterval(() => {
+  try {
+    const posFile = path.join(__dirname, '../../../positions_state.json');
+    if (!fs.existsSync(posFile)) return;
+    const positions = JSON.parse(fs.readFileSync(posFile, 'utf-8').replace(/^﻿/, ''));
+    broadcastSSE({ type: 'position_update', payload: positions, ts: Date.now() });
+  } catch { /* ignore */ }
+}, 2000);
+
+// Poll account_state.json and broadcast balance_update every 5s
+setInterval(() => {
+  try {
+    const stateFile = path.join(__dirname, '../../../account_state.json');
+    if (!fs.existsSync(stateFile)) return;
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf-8').replace(/^﻿/, ''));
+    broadcastSSE({ type: 'balance_update', payload: state, ts: Date.now() });
+  } catch { /* ignore */ }
+}, 5000);
+
+// Poll candle boundary timers every 10s
+setInterval(() => {
+  const now = Math.floor(Date.now() / 1000);
+  const boundaries = [
+    { asset: 'BTC', tf: '5m',  secs: 300 - (now % 300) },
+    { asset: 'BTC', tf: '15m', secs: 900 - (now % 900) },
+    { asset: 'ETH', tf: '5m',  secs: 300 - (now % 300) },
+    { asset: 'SOL', tf: '5m',  secs: 300 - (now % 300) },
+    { asset: 'XRP', tf: '5m',  secs: 300 - (now % 300) },
+  ];
+  broadcastSSE({ type: 'candle_boundary', payload: boundaries, ts: Date.now() });
+}, 10000);
+
+export { broadcastSSE };
 
 export default router;
