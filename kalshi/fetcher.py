@@ -287,7 +287,7 @@ def fetch_kalshi_markets(auth=None, retry_count: int = 0, max_retries: int = 2) 
         log.debug("[KALSHI] fetch_kalshi_markets: auth not configured — skipping")
         return []
 
-    base_url = getattr(auth, "base_url", "https://trading-api.kalshi.com/trade-api/v2")
+    base_url = getattr(auth, "base_url", "https://api.elections.kalshi.com/trade-api/v2")
     path = "/markets?status=open&limit=100"
     try:
         _track_api_call()

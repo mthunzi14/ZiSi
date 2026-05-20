@@ -585,7 +585,7 @@ class KalshiTrader:
             resp = requests.get(
                 f"{self.base_url}{path}",
                 headers=self.auth.get_headers("GET", path),
-                timeout=6,
+                timeout=12,
             )
             if resp.status_code == 200:
                 data = resp.json().get("market", resp.json())
@@ -660,7 +660,7 @@ class KalshiTrader:
             resp = requests.get(
                 f"{self.base_url}{path}",
                 headers=self.auth.get_headers("GET", path),
-                timeout=6,
+                timeout=12,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -677,7 +677,7 @@ class KalshiTrader:
             resp = requests.delete(
                 f"{self.base_url}{path}",
                 headers=self.auth.get_headers("DELETE", path),
-                timeout=6,
+                timeout=12,
             )
             return resp.status_code in (200, 204)
         except Exception as exc:

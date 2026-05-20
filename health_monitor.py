@@ -35,7 +35,7 @@ HEALTH_LOG         = _BASE_DIR / "health_monitor.log"
 # Polymarket health endpoint (CLOB API root)
 POLYMARKET_HEALTH_URL = "https://clob.polymarket.com"
 # Kalshi health endpoint
-KALSHI_HEALTH_URL = "https://trading-api.kalshi.com"
+KALSHI_HEALTH_URL = "https://api.elections.kalshi.com"
 
 PAPER_MAX_HOLD_HOURS = 4
 LIVE_MAX_HOLD_HOURS  = 48

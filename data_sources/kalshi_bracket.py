@@ -34,7 +34,7 @@ _SERIES_MAP = {
 def _fetch_kalshi_markets(series: str) -> list:
     """Fetch active markets for a Kalshi series."""
     try:
-        url = f"https://trading-api.kalshi.com/trade-api/v2/markets?series_ticker={series}&status=open&limit=50"
+        url = f"https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker={series}&status=open&limit=50"
         headers = {"Accept": "application/json"}
         resp = requests.get(url, headers=headers, timeout=_TIMEOUT)
         data = resp.json()

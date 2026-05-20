@@ -1,7 +1,7 @@
 """
 Kalshi API Authentication — RSA-PSS SHA-256 signature signing.
 
-Kalshi's API v2 (trading-api.kalshi.com) uses asymmetric RSA-PSS signing.
+Kalshi's API v2 (api.elections.kalshi.com) uses asymmetric RSA-PSS signing.
 Auth headers per request:
   KALSHI-ACCESS-KEY       = key ID from .env
   KALSHI-ACCESS-TIMESTAMP = current time in milliseconds (integer)
@@ -33,7 +33,7 @@ class KalshiAuth:
         ).strip()
         raw_key = os.getenv("KALSHI_PRIVATE_KEY", "").strip().replace("\\n", "\n")
 
-        self.base_url = "https://trading-api.kalshi.com/trade-api/v2"
+        self.base_url = "https://api.elections.kalshi.com/trade-api/v2"
         self._private_key = None
         self.is_configured = False
 
@@ -128,19 +128,35 @@ class KalshiAuth:
     # ── Connection test ────────────────────────────────────────────────────────
 
     def validate_connection(self) -> Tuple[bool, str]:
-        """Return (ok, message). Hits /portfolio/balance as a live auth check."""
+        """Return (ok, message). Uses public /exchange/status for fast reachability,
+        then /portfolio/balance to confirm auth is working."""
         if not self.is_configured:
             return False, "RSA key not loaded"
+        # Step 1: fast public reachability check (no auth required)
+        try:
+            status_path = "/exchange/status"
+            sr = requests.get(
+                f"{self.base_url}{status_path}",
+                timeout=6,
+            )
+            if sr.status_code >= 500:
+                return False, f"Exchange status HTTP {sr.status_code}"
+        except Exception as exc:
+            return False, f"Unreachable: {exc}"
+        # Step 2: auth check with generous timeout (Kalshi auth endpoints can be slow)
         try:
             path = "/portfolio/balance"
             resp = requests.get(
                 f"{self.base_url}{path}",
                 headers=self.get_headers("GET", path),
-                timeout=8,
+                timeout=15,
             )
             if resp.status_code == 200:
                 data = resp.json()
                 return True, f"Connected | balance={data.get('balance', 0)}"
             return False, f"HTTP {resp.status_code}: {resp.text[:120]}"
+        except requests.exceptions.Timeout:
+            # Server reachable but auth endpoint slow — treat as degraded, not fatal
+            return False, "Auth endpoint timed out (server reachable)"
         except Exception as exc:
-            return False, f"Connection error: {exc}"
+            return False, f"Auth error: {exc}"

@@ -170,7 +170,7 @@ class NearResolutionScanner:
             return []
 
         # Use a lightweight endpoint — fetch markets directly
-        base_url = getattr(auth, "base_url", "https://trading-api.kalshi.com/trade-api/v2")
+        base_url = getattr(auth, "base_url", "https://api.elections.kalshi.com/trade-api/v2")
         path = "/markets?status=open&limit=200"
         try:
             resp = requests.get(
