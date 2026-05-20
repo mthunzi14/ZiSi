@@ -150,7 +150,7 @@ def calculate_daily_metrics(trades_list: list[dict]) -> dict:
 
     profits = [float(t.get("profit", 0) or 0) for t in closed]
     wins    = [p for p in profits if p > 0]
-    losses  = [p for p in profits if p <= 0]
+    losses  = [p for p in profits if p < 0]
 
     total_pnl  = sum(profits)
     avg_win    = sum(wins) / len(wins) if wins else 0.0
@@ -531,4 +531,56 @@ def track_polymarket_execution(matches: list, trades_executed: int) -> None:
         "[POLY-EXEC] Matches=%d | Trades=%d | Conversion=%.0f%%",
         match_count, trades_executed, conversion * 100,
     )
+
+
+# ── Inversion monitor (Session 10) ───────────────────────────────────────────
+
+_inversion_state: dict[str, bool] = {}       # asset/tf key -> inverted bool
+_recent_outcomes: dict[str, list] = {}        # asset/tf key -> rolling 40 outcomes
+
+
+def record_updown_outcome(asset: str, timeframe: str, won: bool) -> dict:
+    """
+    Record a resolved Up/Down trade outcome and check inversion threshold.
+    Returns state dict with rolling_wr and invert_signal.
+    """
+    from config import INVERSION_WINDOW, INVERSION_TRIGGER_WR, INVERSION_RECOVERY_WR
+    key = f"{asset}/{timeframe}"
+    outcomes = _recent_outcomes.setdefault(key, [])
+    outcomes.append(won)
+    if len(outcomes) > INVERSION_WINDOW:
+        outcomes.pop(0)
+
+    rolling_wr = sum(outcomes) / len(outcomes) if outcomes else 0.5
+    inverted   = _inversion_state.get(key, False)
+
+    if len(outcomes) >= INVERSION_WINDOW:
+        if rolling_wr < INVERSION_TRIGGER_WR and not inverted:
+            _inversion_state[key] = True
+            log.warning(
+                "[METRICS] %s WR=%.0f%% over %d trades — INVERTING signal",
+                key, rolling_wr * 100, INVERSION_WINDOW,
+            )
+        elif rolling_wr > INVERSION_RECOVERY_WR and inverted:
+            _inversion_state[key] = False
+            log.info("[METRICS] %s WR=%.0f%% recovered — inversion REVERTED", key, rolling_wr * 100)
+
+    return {
+        "key":        key,
+        "rolling_wr": round(rolling_wr, 4),
+        "inverted":   _inversion_state.get(key, False),
+        "samples":    len(outcomes),
+    }
+
+
+def get_inversion_state() -> dict:
+    """Return full inversion state for all tracked asset/timeframe pairs."""
+    return {
+        key: {
+            "inverted":   _inversion_state.get(key, False),
+            "rolling_wr": round(sum(v) / len(v), 4) if v else 0.5,
+            "samples":    len(v),
+        }
+        for key, v in _recent_outcomes.items()
+    }
 
