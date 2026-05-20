@@ -424,7 +424,7 @@ def get_portfolio_metrics() -> dict:
 
     profits = [float(t.get("profit", 0) or 0) for t in closed]
     wins = [p for p in profits if p > 0]
-    losses = [p for p in profits if p <= 0]
+    losses = [p for p in profits if p < 0]
 
     total_profit = sum(profits)
     avg_win = sum(wins) / len(wins) if wins else 0.0
@@ -630,7 +630,7 @@ def calculate_hypothetical_pnl() -> dict:
     }
 
 
-def setup_file_logging() -> logging.Logger:
+def setup_file_logging(level: str = "INFO") -> logging.Logger:
     """Configure the 'zisi' logger with a file handler and a console handler.
 
     Sets propagate=False so the root logger (configured separately via
@@ -638,13 +638,15 @@ def setup_file_logging() -> logging.Logger:
     """
     log_path = Path(__file__).parent / "zisi_bot_console.log"
 
+    numeric_level = getattr(logging, level.upper(), logging.INFO)
+
     logger = logging.getLogger("zisi")
     logger.setLevel(logging.DEBUG)
     logger.propagate = False  # prevent double-printing via root logger
 
     formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+        "%(asctime)s [%(levelname)-5s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
     )
 
     file_handler = logging.FileHandler(str(log_path), mode="a", encoding="utf-8")
@@ -652,7 +654,7 @@ def setup_file_logging() -> logging.Logger:
     file_handler.setFormatter(formatter)
 
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(numeric_level)
     console_handler.setFormatter(formatter)
 
     # Avoid adding duplicate handlers if called more than once

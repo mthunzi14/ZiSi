@@ -1,0 +1,12 @@
+{
+  "name": "zisi-bot",
+  "version": "2.0.0",
+  "description": "ZiSi Polymarket Up/Down Bot — single-command launcher",
+  "private": true,
+  "scripts": {
+    "start":  "npm --prefix dashboard/frontend run build && npm --prefix dashboard/backend start",
+    "dev":    "npm --prefix dashboard/frontend run build && npm --prefix dashboard/backend run dev",
+    "build":  "npm --prefix dashboard/frontend run build",
+    "install:all": "npm --prefix dashboard/frontend install && npm --prefix dashboard/backend install"
+  }
+}
