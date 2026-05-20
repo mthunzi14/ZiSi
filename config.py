@@ -48,6 +48,11 @@ RECONCILE_INTERVAL: int = 30
 MAX_OPEN_PER_ASSET: int = 2
 MAX_TOTAL_OPEN: int = 6
 
+# ── Backward-compat aliases (old modules still import these) ─────────────────
+PEAK_TRADING_HOURS_UTC    = TIME_GATE_UTC  # replaced by TIME_GATE_UTC in new code
+PEAK_KELLY_MULTIPLIER     = 1.0
+OFF_PEAK_KELLY_MULTIPLIER = 0.5
+
 # ── Load .env ─────────────────────────────────────────────────────────────────
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(_ENV_PATH)
@@ -121,6 +126,12 @@ def load_config() -> dict:
         # API behaviour
         "API_TIMEOUT_SECONDS": int(os.getenv("API_TIMEOUT_SECONDS", "10")),
         "API_RETRY_COUNT": int(os.getenv("API_RETRY_COUNT", "3")),
+        "API_RETRY_BACKOFF_SECONDS": int(os.getenv("API_RETRY_BACKOFF_SECONDS", "5")),
+
+        # Position management (backward-compat keys)
+        "POSITION_TARGET_MULTIPLIER":    float(os.getenv("POSITION_TARGET_MULTIPLIER",   "1.5")),
+        "POSITION_STOP_LOSS_MULTIPLIER": float(os.getenv("POSITION_STOP_LOSS_MULTIPLIER", "0.50")),
+        "POSITION_HOLD_TIME_HOURS":      int(os.getenv("POSITION_HOLD_TIME_HOURS",        "24")),
 
         # Logging level
         "LOG_LEVEL": os.getenv("LOG_LEVEL", "INFO"),
