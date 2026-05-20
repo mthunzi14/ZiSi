@@ -267,7 +267,9 @@ Kalshi pipeline:
 | Entry prices | Always $0.5000 | Real CLOB bid/ask mid |
 | Zero-P&L trades | Counted as LOSS | Counted as BREAKEVEN (not loss) |
 | Kalshi trades per cycle | 0 | ≥3 per cycle target |
-| Unrealized P&L refresh | Every 5–10 min | Every 5s via SSE |
+| Trades per cycle (combined) | Sporadic / 0 Kalshi | ≥20 Poly+Kalshi combined |
+| Win rate target | 33% (current) | ≥85% via signal quality + price-range gates |
+| Unrealized P&L refresh | Every 5–10 min | Every 5s via SSE live fetch |
 | Direction on Up/Down | YES/NO | UP/DOWN |
 | Balance at start | $109.22 | $100.00 (clean slate) |
 

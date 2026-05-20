@@ -266,6 +266,7 @@ def place_order(
     direction: str,
     entry_price: float,
     event_title: str = "",
+    expiry_ts: int = 0,
 ) -> Optional[dict]:
     """
     Place a BUY order for the given Polymarket market.
@@ -286,27 +287,35 @@ def place_order(
     cfg = _get_config()
     mode = cfg["BOT_MODE"]
 
-    shares = round(amount_dollars / entry_price, 4) if entry_price > 0 else 0
+    # Shares-first sizing (pbot pattern): avoids USD→shares rounding drift at low prices.
+    # Polymarket uses whole shares — round to nearest integer, minimum 1.
+    shares = max(1, round(amount_dollars / entry_price)) if entry_price > 0 else 1
+    actual_cost = round(shares * entry_price, 4)  # true cost derived from share count
     order_id = f"zisi_{uuid.uuid4().hex[:12]}"
     timestamp = datetime.now(timezone.utc).isoformat()
 
+    if not event_title:
+        log.warning("[TRADE] Missing event_title for %s — will display as [%s]", order_id, event_id[:16])
+    _display_title = event_title if event_title else f"[{event_id[:30]}]"
+
     if mode == "paper_trading":
         log.info(
-            "[PAPER] BUY %s | $%.2f @ %.4f | %s",
-            direction, amount_dollars, entry_price,
-            (event_title or event_id)[:55],
+            "[PAPER] BUY %s | %d shares @ %.4f = $%.4f | %s",
+            direction, shares, entry_price, actual_cost,
+            _display_title[:55],
         )
         order = {
             "order_id": order_id,
             "event_id": event_id,
             "market_id": market_id,
-            "event_title": event_title or event_id,
+            "event_title": _display_title,
             "direction": direction,
-            "amount_spent": amount_dollars,
+            "amount_spent": actual_cost,
             "shares_acquired": shares,
             "entry_price": entry_price,
             "timestamp": timestamp,
             "status": "FILLED",
+            **({"expiry_ts": expiry_ts} if expiry_ts else {}),
         }
         _open_positions[order_id] = {
             **order,
@@ -405,7 +414,12 @@ def execute_trade_smart(
     cfg = _get_config()
 
     sentiment = signal_data.get("sentiment", "neutral")
-    direction = "YES" if sentiment == "bullish" else "NO"
+    _ev_title_lower = (polymarket_event.get("title", "") or "").lower()
+    _is_updown = "up or down" in _ev_title_lower or "updown" in _ev_title_lower
+    if _is_updown:
+        direction = "UP" if sentiment == "bullish" else "DOWN"
+    else:
+        direction = "YES" if sentiment == "bullish" else "NO"
 
     markets = polymarket_event.get("markets", [])
     if direction == "YES":
@@ -426,14 +440,30 @@ def execute_trade_smart(
     market_id = market["id"]
     event_id = polymarket_event["id"]
 
-    # Compute mid-price from event bid/ask or fall back to market price
-    bid = float(polymarket_event.get("bid", 0))
-    ask = float(polymarket_event.get("ask", 0))
-    if bid > 0 and ask > 0:
-        mid_price = (bid + ask) / 2
-    else:
+    # Fetch live CLOB price for the specific market token — real bid/ask mid
+    clob_market_id = market.get("conditionId") or market.get("id", "")
+    mid_price = None
+    if clob_market_id:
+        try:
+            from data_fetcher import get_event_current_price as _gcp
+            _pd = _gcp(clob_market_id)
+            if _pd and isinstance(_pd.get("price"), (int, float)):
+                _p = float(_pd["price"])
+                if 0.03 < _p < 0.97:
+                    _bid = float(_pd.get("bid", _p - 0.01))
+                    _ask = float(_pd.get("ask", _p + 0.01))
+                    mid_price = round((_bid + _ask) / 2, 4)
+                    log.info("[SMART-EXEC] Live CLOB price %.4f for %s", mid_price, clob_market_id[:20])
+        except Exception as _pe:
+            log.debug("[SMART-EXEC] CLOB price fetch failed: %s", _pe)
+    if mid_price is None:
         mid_price = float(market.get("price", 0.5))
+        if mid_price <= 0.03 or mid_price >= 0.97:
+            log.warning("[SMART-EXEC] No valid price for %s (%.4f) — skipping", clob_market_id[:20], mid_price)
+            return None
+        log.debug("[SMART-EXEC] Using event price fallback %.4f", mid_price)
 
+    _ev_title = polymarket_event.get("title") or polymarket_event.get("question") or event_id
     if cfg["BOT_MODE"] == "paper_trading":
         log.info("[SMART-EXEC] Paper mode — delegating to place_order at %.4f", mid_price)
         return place_order(
@@ -442,6 +472,7 @@ def execute_trade_smart(
             amount_dollars=position_size,
             direction=direction,
             entry_price=mid_price,
+            event_title=_ev_title,
         )
 
     # Live mode: attempt limit orders before market fallback
@@ -518,6 +549,7 @@ def execute_trade_smart(
         amount_dollars=position_size,
         direction=direction,
         entry_price=chase_price,
+        event_title=_ev_title,
     )
 
 
@@ -641,44 +673,51 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
 
         entry_price = pos["entry_price"]
 
-        # ── Real-market exit price ─────────────────────────────────────────────
+        # ── Live exit price — NO simulation, all markets use real CLOB/Gamma data ──
         exit_price = None
         _market_id = pos.get("market_id") or pos.get("conditionId")
-        if _market_id and not is_updown:
+
+        # Try live CLOB price for ALL market types (including UP/DOWN)
+        if _market_id:
             try:
-                from data_fetcher import get_event_current_price as _gcp
+                from data_fetcher import get_event_current_price as _gcp, fetch_market_resolution as _fmr
                 _pd = _gcp(_market_id)
                 if _pd and isinstance(_pd.get("price"), (int, float)):
                     _real = float(_pd["price"])
-                    if 0.02 <= _real <= 0.98:
+                    # Accept any live price; if near 0/1 it is likely resolved
+                    if 0.01 <= _real <= 0.99:
                         exit_price = round(_real, 4)
-                        log.info("[PAPER-EXIT] Real market price %.4f for %s", exit_price, order_id)
-            except Exception:
-                pass
+                        log.info("[LIVE-EXIT] CLOB price %.4f for %s", exit_price, order_id)
+                    elif _real < 0.01:
+                        exit_price = 0.01
+                    else:
+                        exit_price = 0.99
+            except Exception as _ce:
+                log.debug("[LIVE-EXIT] CLOB fetch failed for %s: %s", order_id, _ce)
 
+        # If price fetch failed or market is at extreme, check resolution
+        if exit_price is None or exit_price <= 0.03 or exit_price >= 0.97:
+            try:
+                from data_fetcher import fetch_market_resolution as _fmr
+                _outcome = _fmr(_market_id) if _market_id else None
+                if _outcome in ("YES", "UP"):
+                    exit_price = 0.99
+                    log.info("[LIVE-EXIT] Resolved %s → 0.99 for %s", _outcome, order_id)
+                elif _outcome in ("NO", "DOWN"):
+                    exit_price = 0.01
+                    log.info("[LIVE-EXIT] Resolved %s → 0.01 for %s", _outcome, order_id)
+            except Exception as _re:
+                log.debug("[LIVE-EXIT] Resolution check failed for %s: %s", order_id, _re)
+
+        # Last resort: use stored current_price (honest — no fabrication)
         if exit_price is None:
-            if is_updown:
-                # UP/DOWN markets are expired — simulate resolution.
-                # Signal required RSI + momentum alignment → modest positive edge.
-                rng = random.Random(hash(order_id))
-                won = rng.random() < 0.58   # 58% win rate for RSI+momentum signals
-                exit_price = round(0.93 if won else 0.05, 4)
-                log.info(
-                    "[PAPER-EXIT] UP/DOWN simulated %s exit for %s @ %.2f",
-                    "WIN" if won else "LOSS", order_id, exit_price,
-                )
-            else:
-                # Fallback: use last known current_price (P&L = 0 if stale, honest).
-                exit_price = round(pos.get("current_price", entry_price), 4)
-                log.info(
-                    "[PAPER-EXIT] Using stored price %.4f for %s (live fetch unavailable)",
-                    exit_price, order_id,
-                )
+            exit_price = round(pos.get("current_price", entry_price), 4)
+            log.info("[LIVE-EXIT] Using stored price %.4f for %s (live fetch unavailable)", exit_price, order_id)
 
-        result = execute_exit(order_id, exit_price, exit_reason="TIME_EXPIRED")
+        result = execute_exit(order_id, exit_price, exit_reason="MARKET_EXPIRED")
         if result:
             log.info(
-                "[PAPER-AUTO-EXIT] %s closed after %.1fm | exit=%.4f | pnl=$%+.2f | reason=TIME_EXPIRED",
+                "[TIME-EXIT] %s closed after %.1fm | exit=%.4f | pnl=$%+.2f | reason=MARKET_EXPIRED",
                 order_id, age_minutes, exit_price, result["profit"],
             )
             closed.append({"order_id": order_id, **result})
@@ -737,30 +776,20 @@ def check_exit_condition(
     open_time: datetime = pos.get("open_time", datetime.now(timezone.utc))
     hours_held = (datetime.now(timezone.utc) - open_time).total_seconds() / 3600
 
-    # Fetch live price (fallback to entry price in paper mode)
-    if cfg["BOT_MODE"] == "paper_trading":
-        _ev_title = (pos.get("event_title") or "").upper()
-        _is_updown = "UPDOWN" in _ev_title or "UP OR DOWN" in _ev_title
-        if _is_updown:
-            # Simulate realistic price drift so dashboard shows non-zero unrealized PnL.
-            # Uses deterministic seed that changes every 3 minutes — price "moves" gradually.
-            _minutes_held = hours_held * 60
-            _direction = str(pos.get("direction", "YES")).upper()
-            _drift_sign = 1 if _direction in ("YES", "UP") else -1
-            _seed_bucket = int(_minutes_held // 3)  # new seed each 3-min bucket
-            _rng = random.Random(hash(order_id + str(_seed_bucket)))
-            # Bias toward win (58% edge) but keep drift small per bucket
-            _drift = _rng.gauss(0.012 * _drift_sign, 0.025)
-            _stored = pos.get("current_price", entry_price)
-            current_price = round(max(0.05, min(0.95, _stored + _drift)), 4)
-            _open_positions[order_id]["current_price"] = current_price
-        else:
-            current_price = pos.get("current_price", entry_price)
-    else:
-        from data_fetcher import get_event_current_price
-        price_data = get_event_current_price(pos["market_id"])
-        current_price = price_data["price"] if price_data else entry_price
-        _open_positions[order_id]["current_price"] = current_price
+    # Fetch live price from CLOB for ALL modes — no simulation
+    _market_id = pos.get("market_id") or pos.get("conditionId")
+    current_price = pos.get("current_price", entry_price)
+    if _market_id:
+        try:
+            from data_fetcher import get_event_current_price
+            price_data = get_event_current_price(_market_id)
+            if price_data and isinstance(price_data.get("price"), (int, float)):
+                _live = float(price_data["price"])
+                if 0.01 <= _live <= 0.99:
+                    current_price = round(_live, 4)
+                    _open_positions[order_id]["current_price"] = current_price
+        except Exception:
+            pass  # use stored current_price as fallback
 
     shares = pos["shares_acquired"]
     entry_value = pos["amount_spent"]
@@ -863,15 +892,19 @@ def execute_exit(order_id: str, current_price: float, exit_reason: str = "UNKNOW
     update_trade_record(order_id, exit_data)
     persist_positions()
 
-    # Update balance first so we can log the post-trade balance
+    # Balance is already updated by persist_positions() above — just read it back
     new_balance = get_current_balance()
     try:
-        new_balance = get_current_balance() + profit
         update_balance(new_balance, reason=f"Trade {order_id} closed with ${profit:+.2f}")
     except Exception as exc:
         log.error("Failed to update balance after trade %s: %s", order_id, exc)
 
-    outcome = "✅ WIN" if profit > 0 else "❌ LOSS"
+    if profit > 0:
+        outcome = "✅ WIN"
+    elif profit == 0:
+        outcome = "⚖️ BREAKEVEN"
+    else:
+        outcome = "❌ LOSS"
     log.info(
         "[EXIT] %s | %s | %s @ %.4f | pnl=$%+.2f | bal=$%.2f",
         outcome, title_short, exit_reason, current_price, profit, new_balance,
@@ -881,6 +914,29 @@ def execute_exit(order_id: str, current_price: float, exit_reason: str = "UNKNOW
     try:
         from ml_pipeline import link_trade_outcomes as _ml_link
         _ml_link()
+    except Exception:
+        pass
+
+    # Record UP/DOWN outcome into Markov tracker for statistical edge learning
+    try:
+        _direction = (pos.get("direction") or "").upper()
+        _title = (pos.get("event_title") or pos.get("event_id") or "").upper()
+        _coin = "BTC"
+        if "ETH" in _title or "ETHEREUM" in _title:
+            _coin = "ETH"
+        elif "SOL" in _title or "SOLANA" in _title:
+            _coin = "SOL"
+        elif "XRP" in _title or "RIPPLE" in _title:
+            _coin = "XRP"
+        if _direction in ("UP", "YES") or "UP" in _title:
+            _markov_outcome = "UP" if profit > 0 else "DOWN"
+        elif _direction in ("DOWN", "NO") or "DOWN" in _title:
+            _markov_outcome = "DOWN" if profit > 0 else "UP"
+        else:
+            _markov_outcome = None
+        if _markov_outcome and any(kw in _title for kw in ("BTC", "BITCOIN", "ETH", "ETHEREUM", "SOL", "SOLANA", "XRP", "CRYPTO")):
+            from markov_tracker import tracker as _markov
+            _markov.record(_coin, _markov_outcome)
     except Exception:
         pass
 
@@ -1055,7 +1111,7 @@ def persist_positions() -> None:
             sum(p.get("realized_pnl", 0) for p in merged_closed), 2
         ),
         "win_count":      sum(1 for p in merged_closed if (p.get("realized_pnl") or 0) > 0),
-        "loss_count":     sum(1 for p in merged_closed if (p.get("realized_pnl") or 0) <= 0),
+        "loss_count":     sum(1 for p in merged_closed if (p.get("realized_pnl") or 0) < 0),
     }
 
     data = {
@@ -1068,7 +1124,14 @@ def persist_positions() -> None:
 
     with _positions_write_lock:
         try:
-            out_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+            # Cap closed list to 300 most recent to prevent unbounded file growth
+            data["closed"] = data["closed"][:300]
+            # Atomic write: write to .tmp then os.replace so the dashboard never
+            # reads a partially-written file (which causes the JSON parse error).
+            tmp_path = out_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+            import os as _os
+            _os.replace(tmp_path, out_path)
         except Exception as exc:
             log.warning("[POSITIONS] Failed to persist: %s", exc)
 
@@ -1200,31 +1263,7 @@ def refresh_open_position_prices() -> int:
         except Exception as exc:
             log.debug("[PRICE-REFRESH] Failed for %s: %s", order_id, exc)
 
-    # For paper-mode UP/DOWN positions that didn't get a live CLOB price,
-    # simulate realistic price drift so the dashboard shows non-zero unrealized PnL.
-    _cfg = _get_config()
-    if _cfg.get("BOT_MODE") == "paper_trading":
-        now_drift = datetime.now(timezone.utc)
-        for order_id, pos in list(_open_positions.items()):
-            if pos.get("status") in ("CLOSED", "CANCELLED"):
-                continue
-            _ev_title = (pos.get("event_title") or "").upper()
-            if not ("UPDOWN" in _ev_title or "UP OR DOWN" in _ev_title):
-                continue
-            # Only simulate if we didn't just get a real price
-            _open_time = pos.get("open_time", now_drift)
-            _hours = (now_drift - _open_time).total_seconds() / 3600 if isinstance(_open_time, datetime) else 0
-            _minutes = _hours * 60
-            _direction = str(pos.get("direction", "YES")).upper()
-            _drift_sign = 1 if _direction in ("YES", "UP") else -1
-            _seed_bucket = int(_minutes // 3)
-            _rng = random.Random(hash(order_id + str(_seed_bucket)))
-            _drift = _rng.gauss(0.012 * _drift_sign, 0.025)
-            _entry = pos.get("entry_price", 0.5)
-            _stored = pos.get("current_price", _entry)
-            _new_price = round(max(0.05, min(0.95, _stored + _drift)), 4)
-            pos["current_price"] = _new_price
-            updated += 1
+    # No simulation — all price refreshes use live CLOB data regardless of mode
 
     if updated:
         persist_positions()

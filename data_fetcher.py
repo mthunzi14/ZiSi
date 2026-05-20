@@ -6,14 +6,23 @@ Fetches news, crypto prices, and Polymarket event data from external APIs.
 import re
 import time
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from config import load_config
 
 log = logging.getLogger("zisi.data_fetcher")
+
+# Persistent HTTP session with connection pooling — reuses TLS connections
+_http = requests.Session()
+_http.headers.update({"Connection": "keep-alive", "User-Agent": "ZiSi-Bot/1.0"})
+_http_adapter = HTTPAdapter(pool_connections=20, pool_maxsize=50, max_retries=0)
+_http.mount("https://", _http_adapter)
+_http.mount("http://", _http_adapter)
 
 # Article age filter: skip articles older than this many minutes
 _MAX_ARTICLE_AGE_MINUTES = 120
@@ -475,19 +484,36 @@ def _get_source_quality(source_name: str) -> float:
 def fetch_crypto_articles() -> list[dict]:
     """
     Hybrid news fetch from 4 sources: Cointelegraph + Decrypt + CryptoSlate (RSS)
-    + NewsAPI. Deduplicates then removes clearly non-crypto articles.
+    + NewsAPI. Fetches all 4 in parallel (saves ~6s vs sequential).
+    Deduplicates then removes clearly non-crypto articles.
     Tags every article with a source_quality float (0.0–1.0) used by sentiment_analyzer.
     """
-    ct_articles   = fetch_cointelegraph_rss()
-    dc_articles   = fetch_decrypt_rss()
-    cs_articles   = fetch_cryptoslate_rss()
-    na_articles   = fetch_news_from_newsapi()
+    _source_fns = {
+        "ct": fetch_cointelegraph_rss,
+        "dc": fetch_decrypt_rss,
+        "cs": fetch_cryptoslate_rss,
+        "na": fetch_news_from_newsapi,
+    }
+    _results: dict = {k: [] for k in _source_fns}
+    with ThreadPoolExecutor(max_workers=4) as _ex:
+        _futs = {_ex.submit(fn): name for name, fn in _source_fns.items()}
+        for _fut in as_completed(_futs, timeout=20):
+            _name = _futs[_fut]
+            try:
+                _results[_name] = _fut.result() or []
+            except Exception as _e:
+                log.debug("[FETCH-SOURCES] %s failed: %s", _name, _e)
+
+    ct_articles = _results["ct"]
+    dc_articles = _results["dc"]
+    cs_articles = _results["cs"]
+    na_articles = _results["na"]
 
     for art in na_articles:
         art.setdefault("source_weight", "MEDIUM")
 
     log.info(
-        "[FETCH-SOURCES] Cointelegraph=%d | Decrypt=%d | CryptoSlate=%d | NewsAPI=%d",
+        "[FETCH-SOURCES] Cointelegraph=%d | Decrypt=%d | CryptoSlate=%d | NewsAPI=%d (parallel)",
         len(ct_articles), len(dc_articles), len(cs_articles), len(na_articles),
     )
 
@@ -693,8 +719,9 @@ def fetch_polymarket_events(search_term: str) -> list[dict]:
         except Exception as _e:
             log.debug("[POLYMARKET-UPDOWN] Slug fetch error %s: %s", slug, _e)
 
-    # Generate candidate slugs for current and next 3 windows for each coin+duration
-    for _dur_min in (5, 15):
+    # Generate candidate slugs — 15-min only (5-min dominated by sub-10ms colocated HFT;
+    # from high-latency regions like Africa, 5-min fills are gone before we arrive)
+    for _dur_min in (15,):
         _interval = _dur_min * 60
         _boundary = ((_now_ts + _interval) // _interval) * _interval  # next boundary
         for _offset in range(4):  # next 4 windows
@@ -762,7 +789,11 @@ def fetch_polymarket_events(search_term: str) -> list[dict]:
             log.warning("[POLYMARKET] Query '%s' failed after retries", query)
             continue
 
-        raw = resp.json()
+        try:
+            raw = resp.json()
+        except MemoryError:
+            log.warning("[POLYMARKET] MemoryError parsing response for query '%s' — skipping", query)
+            continue
         if isinstance(raw, dict):
             raw = raw.get("data", raw.get("events", []))
 
@@ -867,16 +898,16 @@ def fetch_polymarket_events(search_term: str) -> list[dict]:
                 # Sanitize AFTER recording raw price.  Clamp near-resolved
                 # prices to 0.5 so downstream code never sees 0.9999 / 0.0001.
                 _yes_price = _raw_from_outcome
-                if _yes_price is not None and (_yes_price >= 0.90 or _yes_price <= 0.10):
-                    _yes_price = None  # don't use near-resolved outcomePrices for trading
+                if _yes_price is not None and (_yes_price >= 0.97 or _yes_price <= 0.03):
+                    _yes_price = None  # only reject fully-resolved prices, not lopsided active ones
 
                 _last = _raw_from_last
-                if _last is not None and (_last >= 0.90 or _last <= 0.10):
-                    _last = None  # don't use near-resolved lastTradePrice for trading
+                if _last is not None and (_last >= 0.97 or _last <= 0.03):
+                    _last = None  # only reject fully-resolved lastTradePrice
 
                 _mkt_price = _last or _yes_price or float(mkt.get("price") or 0.5)
-                if _mkt_price >= 0.90 or _mkt_price <= 0.10:
-                    _mkt_price = 0.5  # final safety cap
+                if _mkt_price >= 0.97 or _mkt_price <= 0.03:
+                    _mkt_price = 0.5  # final safety cap — only truly resolved markets
 
                 markets.append({
                     "id": mkt.get("id", ""),
@@ -955,6 +986,54 @@ def fetch_polymarket_events(search_term: str) -> list[dict]:
 # Real-time market price
 # ---------------------------------------------------------------------------
 
+def fetch_polymarket_book_imbalance(token_id: str) -> dict:
+    """
+    Fetch the Polymarket CLOB order book and compute YES/NO bid depth imbalance.
+
+    Returns:
+        {imbalance_ratio, yes_depth, no_depth, signal: "YES_HEAVY"|"NO_HEAVY"|"BALANCED"}
+    A 3:1+ imbalance in our direction means retail crowd is heavily one-sided — the
+    contrarian edge (or momentum confirmation) is exploitable.
+    """
+    try:
+        resp = _retry_request("GET", "https://clob.polymarket.com/book", params={"token_id": token_id})
+        if resp is None:
+            return {}
+        data = resp.json()
+        bids = data.get("bids", [])
+        asks = data.get("asks", [])
+
+        # Sum USD depth from bids (YES buyers) and asks (NO sellers / YES sellers)
+        yes_depth = sum(float(b.get("size", 0)) * float(b.get("price", 0)) for b in bids[:10])
+        no_depth  = sum(float(a.get("size", 0)) * (1 - float(a.get("price", 0))) for a in asks[:10])
+
+        total = yes_depth + no_depth
+        if total < 10:
+            return {}
+
+        ratio = yes_depth / max(no_depth, 0.01)
+        if ratio >= 3.0:
+            signal = "YES_HEAVY"
+        elif ratio <= 0.33:
+            signal = "NO_HEAVY"
+        else:
+            signal = "BALANCED"
+
+        log.info(
+            "[BOOK-IMBALANCE] token=%s | YES_depth=$%.0f NO_depth=$%.0f ratio=%.2f signal=%s",
+            token_id[:16], yes_depth, no_depth, ratio, signal,
+        )
+        return {
+            "imbalance_ratio": round(ratio, 3),
+            "yes_depth":       round(yes_depth, 2),
+            "no_depth":        round(no_depth, 2),
+            "signal":          signal,
+        }
+    except Exception as exc:
+        log.debug("[BOOK-IMBALANCE] Failed: %s", exc)
+        return {}
+
+
 def get_event_current_price(market_id: str) -> Optional[dict]:
     """
     Fetch real-time orderbook price for a specific Polymarket market.
@@ -995,3 +1074,277 @@ def get_event_current_price(market_id: str) -> Optional[dict]:
         "volume24h": float(data.get("volume24hr", 0)),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def fetch_market_resolution(market_id: str) -> Optional[str]:
+    """
+    Determine the final resolution outcome for a Polymarket market.
+
+    Checks CLOB token winner flags first, then falls back to Gamma API
+    outcomePrices / closed / winner fields.
+
+    Returns:
+        "YES" | "NO" | "UP" | "DOWN" — or None if still unresolved.
+    """
+    if not market_id:
+        return None
+
+    cfg = _get_config()
+
+    # ── Layer 1: CLOB token winner field ──────────────────────────────────────
+    try:
+        clob_url = cfg["POLYMARKET_CLOB_API_URL"].rstrip("/")
+        resp = _retry_request("GET", f"{clob_url}/markets/{market_id}", timeout=6)
+        if resp is not None:
+            data = resp.json() or {}
+            tokens = data.get("tokens", [])
+            for tok in tokens:
+                if tok.get("winner") is True:
+                    outcome = tok.get("outcome", "").upper()
+                    if outcome in ("YES", "NO", "UP", "DOWN"):
+                        log.debug("[RESOLUTION] CLOB winner=%s for %s", outcome, market_id)
+                        return outcome
+            # Price-based heuristic when explicit winner flag absent
+            for tok in tokens:
+                p = float(tok.get("price", 0.5))
+                outcome = tok.get("outcome", "").upper()
+                if p >= 0.97 and outcome in ("YES", "UP"):
+                    log.debug("[RESOLUTION] CLOB price heuristic YES/UP for %s", market_id)
+                    return outcome
+                if p <= 0.03 and outcome in ("NO", "DOWN"):
+                    log.debug("[RESOLUTION] CLOB price heuristic NO/DOWN for %s", market_id)
+                    return outcome
+    except Exception as exc:
+        log.debug("[RESOLUTION] CLOB check failed for %s: %s", market_id, exc)
+
+    # ── Layer 2: Gamma API outcomePrices / closed / winner ───────────────────
+    try:
+        gamma_url = cfg["POLYMARKET_GAMMA_API_URL"].rstrip("/")
+        resp = _retry_request("GET", f"{gamma_url}/markets", params={"conditionId": market_id}, timeout=6)
+        if resp is not None:
+            items = resp.json()
+            mkt = items[0] if isinstance(items, list) and items else (items or {})
+            # Explicit winner field
+            winner = (mkt.get("winner") or mkt.get("winningOutcome") or "").upper()
+            if winner in ("YES", "NO", "UP", "DOWN"):
+                log.debug("[RESOLUTION] Gamma winner=%s for %s", winner, market_id)
+                return winner
+            # outcomePrices array
+            op = mkt.get("outcomePrices")
+            if isinstance(op, list) and len(op) >= 2:
+                if float(op[0]) >= 0.97:
+                    return "YES"
+                if float(op[1]) >= 0.97:
+                    return "NO"
+            # closed flag with price check
+            if mkt.get("closed") or mkt.get("resolved"):
+                ltp = float(mkt.get("lastTradePrice", 0.5))
+                if ltp >= 0.97:
+                    return "YES"
+                if ltp <= 0.03:
+                    return "NO"
+    except Exception as exc:
+        log.debug("[RESOLUTION] Gamma check failed for %s: %s", market_id, exc)
+
+    return None  # still open / unresolvable
+
+
+# ── Polymarket CLOB Whale Trade Detection ──────────────────────────────────────
+
+_whale_cache: dict = {}
+_WHALE_CACHE_TTL = 120  # 2 minutes
+
+
+def fetch_polymarket_whale_trades(
+    market_id: str,
+    min_size_usd: float = 500.0,
+    lookback_seconds: int = 600,
+) -> list[dict]:
+    """
+    Scan the last `lookback_seconds` of Polymarket CLOB trades for a market
+    and return orders with notional value >= min_size_usd.
+
+    A cluster of large buys on YES = whale accumulation → bullish signal.
+    A cluster of large sells = smart money exiting → bearish signal.
+
+    Returns list of dicts: {side, price, size, usd_value, timestamp}
+    """
+    global _whale_cache
+    cache_key = f"{market_id}:{int(time.time() // _WHALE_CACHE_TTL)}"
+    if cache_key in _whale_cache:
+        return _whale_cache[cache_key]
+
+    cfg = load_config()
+    clob_url = cfg.get("POLYMARKET_CLOB_API_URL", "https://clob.polymarket.com").rstrip("/")
+    cutoff_ts = time.time() - lookback_seconds
+
+    try:
+        resp = _retry_request(
+            "GET",
+            f"{clob_url}/trades",
+            params={"market": market_id, "limit": 100},
+            timeout=8,
+        )
+        if resp is None:
+            return []
+
+        trades_raw = resp if isinstance(resp, list) else resp.get("data", [])
+        whale_trades = []
+
+        for t in trades_raw:
+            ts = float(t.get("timestamp") or t.get("created_at") or 0)
+            # Convert millis to seconds if needed
+            if ts > 1e12:
+                ts /= 1000
+            if ts < cutoff_ts:
+                continue
+
+            price = float(t.get("price", 0))
+            size  = float(t.get("size", 0))
+            if price <= 0 or size <= 0:
+                continue
+
+            usd_value = round(price * size, 2)
+            if usd_value < min_size_usd:
+                continue
+
+            whale_trades.append({
+                "side":      (t.get("side") or t.get("maker_side") or "UNKNOWN").upper(),
+                "price":     round(price, 4),
+                "size":      round(size, 2),
+                "usd_value": usd_value,
+                "timestamp": ts,
+            })
+
+        if whale_trades:
+            log.info(
+                "[WHALE] %d whale trades found for %s (min $%.0f, last %ds)",
+                len(whale_trades), market_id, min_size_usd, lookback_seconds,
+            )
+
+        _whale_cache[cache_key] = whale_trades
+        return whale_trades
+
+    except Exception as exc:
+        log.debug("[WHALE] Trade fetch failed for %s: %s", market_id, exc)
+        return []
+
+
+def get_whale_signal(market_id: str, min_usd: float = 500.0) -> Optional[str]:
+    """
+    Aggregate whale trades into a directional signal.
+
+    Returns "BULLISH" if whales are net buying YES,
+            "BEARISH" if whales are net buying NO,
+            None if insufficient data or balanced.
+    """
+    trades = fetch_polymarket_whale_trades(market_id, min_size_usd=min_usd)
+    if not trades:
+        return None
+
+    yes_usd = sum(t["usd_value"] for t in trades if t["side"] in ("BUY", "YES"))
+    no_usd  = sum(t["usd_value"] for t in trades if t["side"] in ("SELL", "NO"))
+    total   = yes_usd + no_usd
+
+    if total < min_usd * 2:
+        return None
+
+    ratio = yes_usd / total
+    if ratio >= 0.65:
+        log.info("[WHALE] BULLISH signal for %s (YES $%.0f vs NO $%.0f, ratio=%.2f)",
+                 market_id, yes_usd, no_usd, ratio)
+        return "BULLISH"
+    if ratio <= 0.35:
+        log.info("[WHALE] BEARISH signal for %s (YES $%.0f vs NO $%.0f, ratio=%.2f)",
+                 market_id, yes_usd, no_usd, ratio)
+        return "BEARISH"
+    return None
+
+
+# ── Binance aggTrades buy/sell pressure ───────────────────────────────────────
+_AGGTRADES_CACHE: dict = {}
+_AGGTRADES_TTL = 30   # 30-second cache (high-frequency signal)
+
+
+def get_binance_buysell_pressure(symbol: str, lookback_ms: int = 60000) -> Optional[dict]:
+    """
+    Compute buy vs. sell pressure from Binance aggTrades over the last `lookback_ms` milliseconds.
+
+    Taker buy trades = market orders lifting the ask = bullish aggression.
+    Taker sell trades = market orders hitting the bid = bearish aggression.
+
+    Args:
+        symbol:      Coin ticker, e.g. "BTC" → "BTCUSDT"
+        lookback_ms: Lookback window in ms (default: last 60 seconds)
+    Returns:
+        Dict with:
+            buy_ratio:  fraction of volume that was taker-buy (0–1)
+            direction:  "BULLISH" | "BEARISH" | "NEUTRAL"
+            buy_vol:    total buy volume (base asset)
+            sell_vol:   total sell volume (base asset)
+        Or None on failure.
+    """
+    import time as _t
+    binance_sym = symbol.upper().replace("BITCOIN", "BTC").replace("ETHEREUM", "ETH") + "USDT"
+    if binance_sym.endswith("USDTUSDT"):
+        binance_sym = binance_sym[:-4]
+
+    cache_key = (binance_sym, lookback_ms // 1000)
+    now = _t.time()
+    if cache_key in _AGGTRADES_CACHE:
+        cached_time, cached_data = _AGGTRADES_CACHE[cache_key]
+        if now - cached_time < _AGGTRADES_TTL:
+            return cached_data
+
+    try:
+        import requests as _req
+        end_ms = int(now * 1000)
+        start_ms = end_ms - lookback_ms
+        resp = _req.get(
+            "https://api.binance.com/api/v3/aggTrades",
+            params={"symbol": binance_sym, "startTime": start_ms, "endTime": end_ms, "limit": 1000},
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            return None
+        trades = resp.json()
+        if not trades:
+            return None
+
+        buy_vol = sell_vol = 0.0
+        for t in trades:
+            qty = float(t.get("q", 0))
+            is_buyer_maker = bool(t.get("m", False))
+            # m=True means buyer is maker → taker is seller → SELL aggression
+            # m=False means buyer is taker → BUY aggression
+            if is_buyer_maker:
+                sell_vol += qty
+            else:
+                buy_vol += qty
+
+        total = buy_vol + sell_vol
+        if total == 0:
+            return None
+
+        buy_ratio = buy_vol / total
+        if buy_ratio >= 0.60:
+            direction = "BULLISH"
+        elif buy_ratio <= 0.40:
+            direction = "BEARISH"
+        else:
+            direction = "NEUTRAL"
+
+        result = {
+            "symbol":    binance_sym,
+            "buy_ratio": round(buy_ratio, 4),
+            "direction": direction,
+            "buy_vol":   round(buy_vol, 4),
+            "sell_vol":  round(sell_vol, 4),
+        }
+        _AGGTRADES_CACHE[cache_key] = (now, result)
+        log.debug("[AGGTRADES] %s: buy=%.1f%% %s", binance_sym, buy_ratio * 100, direction)
+        return result
+
+    except Exception as exc:
+        log.debug("[AGGTRADES] Fetch failed for %s: %s", symbol, exc)
+        return None

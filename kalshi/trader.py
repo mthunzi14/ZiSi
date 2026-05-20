@@ -186,6 +186,9 @@ class KalshiTrader:
                     size=position_size,
                     confidence=confidence,
                     market="KALSHI",
+                    entry_price=entry_price,
+                    target_price=target_price,
+                    stop_loss=stop_loss,
                 )
             except Exception:
                 pass
@@ -328,6 +331,10 @@ class KalshiTrader:
                     pnl_pct=pnl_pct,
                     hold_min=hold_min,
                     market="KALSHI",
+                    entry_price=float(pos.get("entry_price", 0)),
+                    exit_price=float(pos.get("current_price", 0)),
+                    direction=pos.get("direction", ""),
+                    exit_reason=exit_reason,
                 )
             except Exception:
                 pass
@@ -442,7 +449,14 @@ class KalshiTrader:
             from telegram_bot import notify_trade_closed as _tg_close
             _tg_close(
                 event_title=pos.get("event_title", "")[:50],
-                pnl=pnl_dollars, pnl_pct=pnl_pct, hold_min=hold_min, market="KALSHI",
+                pnl=pnl_dollars,
+                pnl_pct=pnl_pct,
+                hold_min=hold_min,
+                market="KALSHI",
+                entry_price=float(pos.get("entry_price", 0)),
+                exit_price=float(exit_price),
+                direction=pos.get("direction", ""),
+                exit_reason=exit_reason,
             )
         except Exception:
             pass
@@ -695,7 +709,7 @@ def get_kalshi_summary() -> Dict:
     open_pos = list(_open_positions.values())
     closed_pos = list(_closed_positions)
     wins = [p for p in closed_pos if (p.get("realized_pnl") or 0) > 0]
-    losses = [p for p in closed_pos if (p.get("realized_pnl") or 0) <= 0 and p.get("close_time")]
+    losses = [p for p in closed_pos if (p.get("realized_pnl") or 0) < 0 and p.get("close_time")]
     realized = sum(p.get("realized_pnl") or 0 for p in closed_pos)
     return {
         "active_count": len(open_pos),
@@ -760,6 +774,7 @@ def persist_positions() -> None:
         merged_closed = poly_closed + kalshi_closed
 
         wins = sum(1 for p in merged_closed if (p.get("realized_pnl") or 0) > 0)
+        losses = sum(1 for p in merged_closed if (p.get("realized_pnl") or 0) < 0)
         unrealized = sum(p.get("unrealized_pnl") or 0 for p in poly_active)
         unrealized += sum(p.get("unrealized_pnl") or 0 for p in kalshi_active)
         realized   = sum(p.get("realized_pnl") or 0 for p in merged_closed)
@@ -772,7 +787,7 @@ def persist_positions() -> None:
             "unrealized_pnl": round(unrealized, 4),
             "realized_pnl":   round(realized, 4),
             "win_count":  wins,
-            "loss_count": len(merged_closed) - wins,
+            "loss_count": losses,
         }
 
         payload = {
@@ -783,6 +798,9 @@ def persist_positions() -> None:
             "closed":       merged_closed,
         }
         with _kalshi_write_lock:
-            out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            tmp_path = out_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            import os as _os
+            _os.replace(tmp_path, out_path)
     except Exception as exc:
         log.warning("[KALSHI-PERSIST] Failed to write positions_state.json: %s", exc)

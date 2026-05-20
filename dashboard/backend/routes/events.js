@@ -1,15 +1,6 @@
 /**
  * events.js — Server-Sent Events endpoint for real-time dashboard updates.
- *
- * Clients connect to GET /api/events and receive a stream of JSON-encoded
- * events whenever key bot state files change on disk.
- *
- * Event types emitted:
- *   trade_opened       — new position detected in positions_state.json
- *   trade_closed       — position moved to closed section
- *   balance_update     — account_state.json balance changed
- *   positions_snapshot — periodic full re-sync of position counts
- *   heartbeat          — sent every 5s so browsers don't time out
+ * Balance is always derived from positions_state.json (immune to bot drift).
  */
 
 import express from 'express';
@@ -24,13 +15,38 @@ const BOT_ROOT  = path.join(__dirname, '../../..');
 const STATE_FILE     = path.join(BOT_ROOT, 'account_state.json');
 const POSITIONS_FILE = path.join(BOT_ROOT, 'positions_state.json');
 
-// Connected SSE clients: Map<id, res>
+const STARTING_BALANCE = 100.0;
+
 const _clients = new Map();
 let _clientId  = 0;
 
-/**
- * Broadcast a typed event to all connected SSE clients.
- */
+// Live CLOB price cache: market_id → {price, ts}
+const _priceCache = new Map();
+const PRICE_CACHE_TTL_MS = 3000; // 3s TTL — one fresh fetch per 5s SSE tick
+
+async function _fetchClobPrice(marketId) {
+  if (!marketId) return null;
+  const cached = _priceCache.get(marketId);
+  if (cached && Date.now() - cached.ts < PRICE_CACHE_TTL_MS) return cached.price;
+  try {
+    const r = await fetch(`https://clob.polymarket.com/markets/${marketId}`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    const tokens = d.tokens || [];
+    const tok = tokens.find(t => (t.outcome || '').toUpperCase() === 'YES') || tokens[0] || {};
+    const bid = parseFloat(d.bestBid ?? tok.price ?? 0);
+    const ask = parseFloat(d.bestAsk ?? tok.price ?? 0);
+    const price = (bid > 0 && ask > 0) ? (bid + ask) / 2 : parseFloat(tok.price ?? 0);
+    if (price > 0.02 && price < 0.98) {
+      _priceCache.set(marketId, { price: Math.round(price * 10000) / 10000, ts: Date.now() });
+      return _priceCache.get(marketId).price;
+    }
+  } catch (_) {}
+  return null;
+}
+
 export function broadcastEvent(type, data) {
   if (_clients.size === 0) return;
   const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -43,8 +59,6 @@ export function broadcastEvent(type, data) {
   }
 }
 
-// ── File watchers ─────────────────────────────────────────────────────────────
-// Watcher instances — we close these before re-attaching to prevent accumulation.
 let _stateWatcher     = null;
 let _positionsWatcher = null;
 
@@ -52,36 +66,42 @@ let _lastBalance    = null;
 let _lastActiveKeys = null;
 let _lastClosedKeys = null;
 
-// Debounce timers — Windows fires 2-3 watch events per single file write.
-// Coalesce rapid-fire events into one handler invocation.
 let _stateDebounce     = null;
 let _positionsDebounce = null;
 const DEBOUNCE_MS = 80;
 
 function _safeRead(filePath) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch (_) {
-    return null;
-  }
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch (_) { return null; }
 }
 
 function _positionKeys(arr) {
   return (arr || []).map(p => p.order_id || '').filter(Boolean).sort().join(',');
 }
 
+function _balanceFromPositions() {
+  const pos = _safeRead(POSITIONS_FILE);
+  if (!pos) return null;
+  const realizedPnl = parseFloat((pos.summary || {}).realized_pnl || 0);
+  return Math.round((STARTING_BALANCE + realizedPnl) * 100) / 100;
+}
+
+function _buildBalancePayload() {
+  const state   = _safeRead(STATE_FILE);
+  const balance = _balanceFromPositions() ?? STARTING_BALANCE;
+  const pnl     = Math.round((balance - STARTING_BALANCE) * 100) / 100;
+  return {
+    balance,
+    pnl,
+    trades: state?.trades_executed || 0,
+    status: state?.status || 'running',
+  };
+}
+
 function _handleStateChange() {
-  const state = _safeRead(STATE_FILE);
-  if (!state) return;
-  const balance = parseFloat(state.balance || 100);
-  if (balance !== _lastBalance) {
+  const balance = _balanceFromPositions();
+  if (balance !== null && balance !== _lastBalance) {
     _lastBalance = balance;
-    broadcastEvent('balance_update', {
-      balance,
-      pnl:    parseFloat(state.pnl  || 0),
-      trades: state.trades_executed || 0,
-      status: state.status          || 'running',
-    });
+    broadcastEvent('balance_update', _buildBalancePayload());
   }
 }
 
@@ -89,12 +109,11 @@ function _handlePositionsChange() {
   const data = _safeRead(POSITIONS_FILE);
   if (!data) return;
 
-  const activeArr = data.active || [];
-  const closedArr = data.closed || [];
+  const activeArr  = data.active  || [];
+  const closedArr  = data.closed  || [];
   const activeKeys = _positionKeys(activeArr);
   const closedKeys = _positionKeys(closedArr);
 
-  // Trade opened: new order_id in active that wasn't there before
   if (activeKeys !== _lastActiveKeys && _lastActiveKeys !== null) {
     const prevSet = new Set((_lastActiveKeys || '').split(',').filter(Boolean));
     activeArr
@@ -103,7 +122,6 @@ function _handlePositionsChange() {
   }
   _lastActiveKeys = activeKeys;
 
-  // Trade closed: new order_id in closed that wasn't there before
   if (closedKeys !== _lastClosedKeys && _lastClosedKeys !== null) {
     const prevSet = new Set((_lastClosedKeys || '').split(',').filter(Boolean));
     closedArr
@@ -114,6 +132,9 @@ function _handlePositionsChange() {
       }));
   }
   _lastClosedKeys = closedKeys;
+
+  // Also broadcast updated balance when positions change
+  broadcastEvent('balance_update', _buildBalancePayload());
 }
 
 function _watchStateFile() {
@@ -138,11 +159,9 @@ function _watchPositionsFile() {
   } catch (_) { _positionsWatcher = null; }
 }
 
-// Seed initial snapshot so first-change detection works
 function _seedInitialState() {
-  const state = _safeRead(STATE_FILE);
-  if (state) _lastBalance = parseFloat(state.balance || 100);
-
+  const balance = _balanceFromPositions() ?? STARTING_BALANCE;
+  _lastBalance = balance;
   const positions = _safeRead(POSITIONS_FILE);
   if (positions) {
     _lastActiveKeys = _positionKeys(positions.active);
@@ -154,51 +173,61 @@ _seedInitialState();
 _watchStateFile();
 _watchPositionsFile();
 
-// Re-attach watchers every 30s — fs.watch can silently stop on Windows.
-// Closing old watchers first prevents accumulation.
+// Re-attach watchers every 30s
 setInterval(() => {
   _watchStateFile();
   _watchPositionsFile();
 }, 30_000);
 
-// Heartbeat every 5s — keeps SSE connections alive; also serves as a
-// liveness signal so the frontend can detect connection drops fast.
+// Heartbeat every 5s
 setInterval(() => {
   broadcastEvent('heartbeat', { ts: Date.now() });
 }, 5_000);
 
-// Full re-sync every 15s — corrects any drift from missed events.
-setInterval(() => {
-  const state     = _safeRead(STATE_FILE);
+// Full re-sync every 5s — enrich active Polymarket positions with live CLOB prices
+setInterval(async () => {
   const positions = _safeRead(POSITIONS_FILE);
-
-  if (state) {
-    const balance = parseFloat(state.balance || 100);
-    broadcastEvent('balance_update', {
-      balance,
-      pnl:    parseFloat(state.pnl ?? (balance - parseFloat(state.starting_balance || 100))),
-      trades: state.trades_executed || 0,
-      status: state.status || 'running',
-    });
-    _lastBalance = balance;
-  }
+  broadcastEvent('balance_update', _buildBalancePayload());
+  _lastBalance = _balanceFromPositions() ?? STARTING_BALANCE;
 
   if (positions) {
-    const summary = positions.summary || {};
-    broadcastEvent('positions_snapshot', {
-      active_count:  (positions.active  || []).length,
-      closed_count:  (positions.closed  || []).length,
-      win_count:     summary.win_count   || 0,
-      loss_count:    summary.loss_count  || 0,
-      realized_pnl:  summary.realized_pnl || 0,
-      unrealized_pnl: summary.unrealized_pnl || 0,
-    });
-    _lastActiveKeys = _positionKeys(positions.active);
-    _lastClosedKeys = _positionKeys(positions.closed);
-  }
-}, 15_000);
+    const activeArr = positions.active  || [];
+    const closedArr = positions.closed  || [];
+    const summary   = positions.summary || {};
 
-// ── SSE endpoint ─────────────────────────────────────────────────────────────
+    // Enrich each active Polymarket position with a live CLOB price (3s cache)
+    let liveUnrealized = 0;
+    const enrichedActive = await Promise.all(activeArr.map(async (pos) => {
+      if (pos.market !== 'POLYMARKET') {
+        liveUnrealized += parseFloat(pos.unrealized_pnl || 0);
+        return pos;
+      }
+      const marketId = pos.market_id || pos.conditionId || pos.order_id;
+      const livePrice = await _fetchClobPrice(marketId);
+      if (livePrice != null) {
+        const shares  = parseFloat(pos.shares || pos.shares_acquired || 0);
+        const cost    = parseFloat(pos.size   || pos.amount_spent    || 0);
+        const unrealizedPnl = Math.round((shares * livePrice - cost) * 100) / 100;
+        liveUnrealized += unrealizedPnl;
+        return { ...pos, current_price: livePrice, unrealized_pnl: unrealizedPnl };
+      }
+      liveUnrealized += parseFloat(pos.unrealized_pnl || 0);
+      return pos;
+    }));
+
+    broadcastEvent('positions_snapshot', {
+      active:         enrichedActive,
+      active_count:   enrichedActive.length,
+      closed_count:   closedArr.length,
+      win_count:      summary.win_count  || 0,
+      loss_count:     summary.loss_count || 0,
+      realized_pnl:   summary.realized_pnl  || 0,
+      unrealized_pnl: liveUnrealized,
+    });
+    _lastActiveKeys = _positionKeys(activeArr);
+    _lastClosedKeys = _positionKeys(closedArr);
+  }
+}, 5_000);
 
 router.get('/', (req, res) => {
   res.setHeader('Content-Type',      'text/event-stream');
@@ -210,19 +239,9 @@ router.get('/', (req, res) => {
   const id = ++_clientId;
   _clients.set(id, res);
 
-  // Immediately send current snapshot to new subscriber
-  const state     = _safeRead(STATE_FILE);
+  res.write(`event: balance_update\ndata: ${JSON.stringify(_buildBalancePayload())}\n\n`);
+
   const positions = _safeRead(POSITIONS_FILE);
-
-  if (state) {
-    res.write(`event: balance_update\ndata: ${JSON.stringify({
-      balance: parseFloat(state.balance || 100),
-      pnl:     parseFloat(state.pnl     || 0),
-      trades:  state.trades_executed || 0,
-      status:  state.status          || 'running',
-    })}\n\n`);
-  }
-
   if (positions) {
     const summary = positions.summary || {};
     res.write(`event: positions_snapshot\ndata: ${JSON.stringify({
@@ -235,9 +254,7 @@ router.get('/', (req, res) => {
     })}\n\n`);
   }
 
-  req.on('close', () => {
-    _clients.delete(id);
-  });
+  req.on('close', () => { _clients.delete(id); });
 });
 
 export default router;

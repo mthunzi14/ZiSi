@@ -5,8 +5,10 @@ Independent from Polymarket matcher.
 """
 import json
 import logging
+import re
+import requests
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 _SUSPENSIONS_FILE = Path(__file__).parent.parent / "category_suspensions.json"
 
@@ -61,6 +63,8 @@ _MACRO_WHITELIST: frozenset = frozenset({
     "crypto", "bitcoin", "ethereum", "btc", "eth", "blockchain", "defi",
     "regulation", "sec ", "congress", "senate", "election", "president",
     "geopoliti", "tariff", "sanction", "trade war", "federal",
+    # Price-range markets: "Bitcoin price range on May 20, $103k-$104k?"
+    "price range", "bitcoin price", "ethereum price", "btc price", "eth price",
 })
 
 # Final hard-gate: a matched Kalshi event title MUST contain one of these
@@ -74,6 +78,8 @@ _EXPLICIT_FINANCE_TERMS: frozenset = frozenset({
     "economy", "economic", "tariff", "sanction",
     "federal reserve", "federal funds", "funds rate",
     "unemployment", "pce", "federal",
+    # Price-range market titles pass the finance gate
+    "price range", "bitcoin price", "ethereum price",
 })
 
 
@@ -121,69 +127,78 @@ def _is_macro_eligible(event: Dict) -> bool:
 # Use realistic vocabulary that appears in actual Kalshi market titles.
 # Single-word implications are fine (score = 1.0 if word appears).
 CRYPTO_TO_MACRO = {
-    # Bitcoin / BTC — Kalshi's FOMC/rate markets use these exact words
+    # Bitcoin / BTC — price-range markets listed first so they match before FOMC terms
     "BTC_BULLISH":    [
+        "bitcoin price", "btc price", "price range",
         "fomc", "federal funds", "funds rate", "rate cut", "rate cuts",
         "inflation", "cpi", "unemployment", "nasdaq", "economic",
         "gdp", "recession", "tariff", "federal reserve",
         "bitcoin", "btc",
     ],
     "BTC_BEARISH":    [
+        "bitcoin price", "btc price", "price range",
         "fomc", "federal funds", "funds rate", "rate hike", "rate above",
         "inflation", "cpi", "unemployment", "recession", "tariff",
         "gdp", "federal reserve", "economic",
         "bitcoin", "btc",
     ],
     "BTC_NEUTRAL":    [
+        "bitcoin price", "btc price", "price range",
         "fomc", "federal funds", "funds rate", "rate above", "rate below",
         "inflation", "cpi", "economic", "gdp", "federal reserve",
         "bitcoin", "btc",
     ],
     # Ethereum / ETH
     "ETH_BULLISH":    [
+        "ethereum price", "eth price", "price range",
         "fomc", "federal funds", "funds rate", "rate cut",
         "defi", "inflation", "cpi", "nasdaq", "economic", "gdp",
         "ethereum", "eth",
     ],
     "ETH_BEARISH":    [
+        "ethereum price", "eth price", "price range",
         "fomc", "federal funds", "funds rate", "rate hike", "rate above",
         "inflation", "cpi", "recession", "regulation", "sec",
         "ethereum", "eth",
     ],
     "ETH_NEUTRAL":    [
+        "ethereum price", "eth price", "price range",
         "fomc", "federal funds", "funds rate", "rate above", "rate below",
         "inflation", "cpi", "economic", "gdp", "federal reserve",
         "ethereum", "eth",
     ],
     # Generic crypto signals
     "CRYPTO_BULLISH": [
+        "price range", "bitcoin price", "ethereum price",
         "fomc", "federal funds", "funds rate", "rate cut",
         "inflation", "cpi", "nasdaq", "economic", "gdp",
         "crypto", "bitcoin", "ethereum",
     ],
     "CRYPTO_BEARISH": [
+        "price range", "bitcoin price", "ethereum price",
         "fomc", "federal funds", "funds rate", "rate hike", "rate above",
         "inflation", "cpi", "recession", "unemployment",
         "crypto", "bitcoin", "ethereum",
     ],
     "CRYPTO_NEUTRAL": [
+        "price range", "bitcoin price", "ethereum price",
         "fomc", "federal funds", "funds rate", "rate above", "rate below",
         "inflation", "cpi", "economic", "gdp",
         "crypto", "bitcoin", "ethereum",
     ],
     # SOL, DOGE, XRP — use same macro correlation as CRYPTO
-    "SOL_BULLISH":    ["fomc", "federal funds", "funds rate", "crypto", "bitcoin", "inflation", "cpi", "nasdaq"],
-    "SOL_BEARISH":    ["fomc", "federal funds", "funds rate", "crypto", "recession", "inflation", "cpi"],
-    "SOL_NEUTRAL":    ["fomc", "federal funds", "funds rate", "crypto", "bitcoin", "inflation", "cpi"],
+    "SOL_BULLISH":    ["price range", "fomc", "federal funds", "funds rate", "crypto", "bitcoin", "inflation", "cpi", "nasdaq"],
+    "SOL_BEARISH":    ["price range", "fomc", "federal funds", "funds rate", "crypto", "recession", "inflation", "cpi"],
+    "SOL_NEUTRAL":    ["price range", "fomc", "federal funds", "funds rate", "crypto", "bitcoin", "inflation", "cpi"],
     "DOGE_BULLISH":   ["fomc", "crypto", "bitcoin", "inflation", "nasdaq"],
     "DOGE_BEARISH":   ["fomc", "crypto", "recession", "inflation", "cpi"],
     "DOGE_NEUTRAL":   ["fomc", "crypto", "bitcoin", "inflation"],
     "XRP_BULLISH":    ["fomc", "crypto", "regulation", "bitcoin", "inflation"],
     "XRP_BEARISH":    ["fomc", "crypto", "regulation", "recession", "inflation"],
     "XRP_NEUTRAL":    ["fomc", "crypto", "regulation", "bitcoin", "inflation"],
-    "OTHER_BULLISH":  ["fomc", "federal funds", "funds rate", "rate cut", "inflation", "cpi", "nasdaq", "economic"],
-    "OTHER_BEARISH":  ["fomc", "federal funds", "funds rate", "rate hike", "rate above", "inflation", "recession"],
-    "OTHER_NEUTRAL":  ["fomc", "federal funds", "funds rate", "inflation", "cpi", "economic", "gdp"],
+    "OTHER_BULLISH":  ["price range", "fomc", "federal funds", "funds rate", "rate cut", "inflation", "cpi", "nasdaq", "economic"],
+    "OTHER_BEARISH":  ["price range", "fomc", "federal funds", "funds rate", "rate hike", "rate above", "inflation", "recession"],
+    "OTHER_NEUTRAL":  ["price range", "fomc", "federal funds", "funds rate", "inflation", "cpi", "economic", "gdp"],
 }
 
 
@@ -195,7 +210,7 @@ class KalshiEventMatcher:
         self,
         signal: Dict,
         kalshi_events: List[Dict],
-        confidence_threshold: float = 0.6,
+        confidence_threshold: float = 0.45,
     ) -> List[Dict]:
         """
         Match a crypto sentiment signal to open Kalshi markets.
@@ -301,11 +316,132 @@ class KalshiEventMatcher:
 
         return diverse
 
+    def _get_current_price(self, coin: str) -> Optional[float]:
+        """Fetch current price for BTC or ETH from CoinGecko."""
+        _ids = {"BTC": "bitcoin", "ETH": "ethereum"}
+        cg_id = _ids.get(coin.upper())
+        if not cg_id:
+            return None
+        try:
+            r = requests.get(
+                f"https://api.coingecko.com/api/v3/simple/price?ids={cg_id}&vs_currencies=usd",
+                timeout=5,
+            )
+            data = r.json()
+            return float(data.get(cg_id, {}).get("usd", 0)) or None
+        except Exception:
+            return None
+
+    def match_price_range_markets(
+        self,
+        signal: Dict,
+        kalshi_events: List[Dict],
+        confidence_threshold: float = 0.45,
+    ) -> List[Dict]:
+        """
+        Directional bracket picker for Kalshi price-range markets.
+        'Bitcoin price range on May 18, $95k-$96k?' — 400+ of these exist.
+        BEARISH signal → pick brackets BELOW current price (more likely to land there).
+        BULLISH signal → pick brackets ABOVE current price.
+        NEUTRAL signal → pick brackets closest to current price (±5%).
+        Returns top 3 most relevant brackets as match dicts.
+        """
+        sentiment = signal.get("sentiment", "neutral").upper()
+        if sentiment not in ("BULLISH", "BEARISH", "NEUTRAL"):
+            return []
+
+        # Detect which coin from signal
+        coin = "BTC"
+        for crypto in ["BTC", "ETH"]:
+            if crypto in str(signal.get("affected_cryptos", [])).upper() or \
+               crypto in str(signal.get("headline", "")).upper() or \
+               crypto in str(signal.get("coin", "")).upper():
+                coin = crypto
+                break
+
+        coin_lower = coin.lower()
+        coin_name = "bitcoin" if coin == "BTC" else "ethereum"
+
+        # Filter to price-range markets for this coin
+        range_events = [
+            ev for ev in kalshi_events
+            if "price range" in ev.get("title", "").lower()
+            and (coin_lower in ev.get("title", "").lower()
+                 or coin_name in ev.get("title", "").lower())
+        ]
+
+        if not range_events:
+            return []
+
+        current_price = self._get_current_price(coin)
+        if not current_price:
+            # No price data — return top 3 by title order
+            log.debug("[PRICE-RANGE] No current price for %s — using unfiltered", coin)
+            return [
+                {"event": ev, "confidence": 0.55, "matched_implication": "price_range_unfiltered", "market": "KALSHI"}
+                for ev in range_events[:3]
+            ]
+
+        # Parse "$95k-$96k" or "$95,000-$96,000" style ranges from title
+        def _parse_range(title: str):
+            # Match patterns like "$95k", "$95,000", "95000", "95k"
+            nums = re.findall(r'\$?([\d,]+)k?', title.lower())
+            values = []
+            for n in nums:
+                try:
+                    v = float(n.replace(",", ""))
+                    if "k" in title[title.lower().find(n): title.lower().find(n) + len(n) + 1].lower():
+                        v *= 1000
+                    values.append(v)
+                except Exception:
+                    pass
+            return (min(values), max(values)) if len(values) >= 2 else (None, None)
+
+        # Score each bracket: prefer ones whose midpoint is in direction of signal
+        scored = []
+        for ev in range_events:
+            lo, hi = _parse_range(ev.get("title", ""))
+            if lo is None:
+                continue
+            midpoint = (lo + hi) / 2.0
+            gap_pct = (midpoint - current_price) / current_price  # positive = above current price
+
+            if sentiment == "BULLISH":
+                # Prefer brackets above current price — positive gap_pct is better
+                score = min(max(gap_pct * 10 + 0.55, 0.50), 0.85)
+            elif sentiment == "BEARISH":
+                # Prefer brackets below current price — negative gap_pct is better
+                score = min(max(-gap_pct * 10 + 0.55, 0.50), 0.85)
+            else:
+                # NEUTRAL: prefer brackets closest to current price (within ±5%)
+                abs_gap = abs(gap_pct)
+                if abs_gap > 0.05:
+                    continue  # skip brackets more than 5% away
+                score = round(0.55 + (0.05 - abs_gap) * 5, 4)
+                score = min(score, 0.75)
+
+            if score >= confidence_threshold:
+                scored.append((score, ev))
+
+        scored.sort(key=lambda x: -x[0])
+        top3 = scored[:3]
+
+        if top3:
+            log.info(
+                "[PRICE-RANGE] %s %s: current=$%.0f → %d directional brackets selected",
+                coin, sentiment, current_price, len(top3),
+            )
+
+        return [
+            {"event": ev, "confidence": round(score, 4), "matched_implication": "price_range_directional", "market": "KALSHI"}
+            for score, ev in top3
+        ]
+
     def match_with_category_filter(
         self,
         signal: Dict,
         kalshi_events: List[Dict],
-        confidence_threshold: float = 0.6,
+        confidence_threshold: float = 0.45,
     ) -> List[Dict]:
         """
         Category-aware matching: skips SPORTS markets for crypto signals and
@@ -358,6 +494,15 @@ class KalshiEventMatcher:
         )
 
         matches = self.match_signal_to_events(signal, filtered_events, confidence_threshold)
+
+        # Price-range directional bonus: add directional bracket picks on top of keyword matches
+        price_range_matches = self.match_price_range_markets(signal, kalshi_events, confidence_threshold)
+        if price_range_matches:
+            # Merge without duplicating the same event id
+            existing_ids = {m["event"].get("id") for m in matches}
+            for pm in price_range_matches:
+                if pm["event"].get("id") not in existing_ids:
+                    matches.append(pm)
 
         log.info(
             "[KALSHI-CAT-MATCH] Signal=%s | Matches=%d from %d filtered events",
