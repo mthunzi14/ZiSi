@@ -1,5 +1,6 @@
 // CommandCentre.jsx — sticky top bar with balance, regime, time gate, daily loss bar
 import { useState, useEffect } from 'react';
+import logo from '../assets/ZiSi_Final_Logo.png';
 
 const S = {
   bar: {
@@ -43,11 +44,14 @@ export default function CommandCentre({ state = {}, positions = {} }) {
     return () => clearInterval(id);
   }, []);
 
-  const balance    = parseFloat(state.balance || 100);
-  const startBal   = 100;
-  const dailyPnl   = parseFloat(state.pnl || 0);
+  const balance     = parseFloat(state.balance || 100);
+  const startBal    = 100;
+  const dailyPnl    = parseFloat(state.pnl || 0);
   const lossDrawPct = Math.max(0, ((startBal - balance) / startBal) * 100);
-  const regime     = state.regime || 'TREND';
+
+  // health endpoint returns regime as an object {regime, label, ...} — extract string
+  const regimeRaw  = state.regime;
+  const regimeStr  = typeof regimeRaw === 'object' ? (regimeRaw?.regime || 'TREND') : (regimeRaw || 'TREND');
   const timeGateOn = state.time_gate_open !== false;
 
   const pnlColor = dailyPnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)';
@@ -55,7 +59,7 @@ export default function CommandCentre({ state = {}, positions = {} }) {
 
   return (
     <header style={S.bar}>
-      <img src="/src/assets/ZiSi_Final_Logo.png" alt="ZiSi" style={S.logo} />
+      <img src={logo} alt="ZiSi" style={S.logo} />
       <span style={S.div}>|</span>
 
       <div>
@@ -70,8 +74,8 @@ export default function CommandCentre({ state = {}, positions = {} }) {
 
       <div>
         <div style={S.label}>Regime</div>
-        <span style={S.badge(regime === 'TREND' ? 'var(--color-accent)' : 'var(--color-accent-muted)')}>
-          {regime}
+        <span style={S.badge(regimeStr === 'TREND' ? 'var(--color-accent)' : 'var(--color-accent-muted)')}>
+          {regimeStr}
         </span>
       </div>
 
