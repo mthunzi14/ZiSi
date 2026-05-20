@@ -9,22 +9,46 @@ import logging
 from dotenv import load_dotenv
 from state_manager import initialize_state, get_current_balance
 
-# ── UTC Hour Weighting ────────────────────────────────────────────────────────
-# 22:00-06:00 UTC = geographic advantage window (100% Kelly)
-# 06:00-22:00 UTC = heavy bot competition (50% Kelly)
-PEAK_TRADING_HOURS_UTC: tuple = (22, 23, 0, 1, 2, 3, 4, 5)
-PEAK_KELLY_MULTIPLIER: float = 1.0
-OFF_PEAK_KELLY_MULTIPLIER: float = 0.5
+# ── pBot Intelligence Parameters ─────────────────────────────────────────────
+ASSETS: list = ["BTC", "ETH", "SOL", "XRP"]
+TIMEFRAMES: dict = {
+    "BTC": ["5m", "15m"],
+    "ETH": ["5m"],
+    "SOL": ["5m"],
+    "XRP": ["5m"],
+}
 
-# ── Market Filtering — 70/30 Strategy ────────────────────────────────────────
-# PRIMARY: BTC + ETH (70% of trades — most liquid, clearest signals)
-# SECONDARY: POLITICS (30% — emotional traders, sentiment edge stronger)
-PRIMARY_MARKETS: frozenset = frozenset({"BTC", "ETH"})
-SECONDARY_MARKETS: frozenset = frozenset({"POLITICS"})
-ALLOWED_MARKETS: frozenset = PRIMARY_MARKETS | SECONDARY_MARKETS
-MARKET_WEIGHTS: dict = {"BTC": 0.35, "ETH": 0.35, "POLITICS": 0.30}
+# Active trading window (UTC hours, inclusive start/exclusive end)
+TIME_GATE_UTC: tuple = (13, 23)
 
-# Load .env from the bot's directory
+# Inversion detection
+INVERSION_WINDOW: int = 40
+INVERSION_TRIGGER_WR: float = 0.45
+INVERSION_RECOVERY_WR: float = 0.52
+
+# Dual-entry cap
+DUAL_ENTRY_MAX_COMBINED: float = 0.92
+
+# Circuit breaker
+CIRCUIT_BREAKER_LOSSES: int = 2
+CIRCUIT_BREAKER_SKIP: int = 2
+
+# Daily loss limit (fraction of account)
+MAX_DAILY_LOSS_PCT: float = 0.15
+
+# Warmup guard
+WARMUP_SECONDS: int = 15
+WARMUP_MIN_TICKS: int = 3
+WARMUP_MAX_JUMP: float = 0.05
+
+# Reconciliation interval (seconds)
+RECONCILE_INTERVAL: int = 30
+
+# Position limits
+MAX_OPEN_PER_ASSET: int = 2
+MAX_TOTAL_OPEN: int = 6
+
+# ── Load .env ─────────────────────────────────────────────────────────────────
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(_ENV_PATH)
 
@@ -34,20 +58,15 @@ _initial_balance = initialize_state()
 # Module-level logger (plain print until logging is configured)
 _log = logging.getLogger("zisi.config")
 
-# All keys that MUST be present and non-empty
+# Keys that MUST be present and non-empty
 _REQUIRED_KEYS = [
     "POLYMARKET_GAMMA_API_URL",
     "POLYMARKET_DATA_API_URL",
     "POLYMARKET_CLOB_API_URL",
-    "NEWSAPI_KEY",
-    "GOOGLE_DRIVE_FOLDER_ID",
-    "GMAIL_SENDER_EMAIL",
 ]
 
 # Keys that are secret and must never be printed
 _SECRET_KEYS = {
-    "NEWSAPI_KEY",
-    "KALSHI_API_KEY",
     "GMAIL_APP_PASSWORD",
 }
 
@@ -59,50 +78,39 @@ def load_config() -> dict:
     Returns:
         dict: All configuration grouped by domain.
     Raises:
-        ValueError: If any required key is missing.
+        ValueError: If any required key is missing or validation fails.
     """
     raw = {
         # Polymarket endpoints
-        "POLYMARKET_GAMMA_API_URL": os.getenv("POLYMARKET_GAMMA_API_URL", "https://gamma-api.polymarket.com"),
-        "POLYMARKET_DATA_API_URL": os.getenv("POLYMARKET_DATA_API_URL", "https://data-api.polymarket.com"),
-        "POLYMARKET_CLOB_API_URL": os.getenv("POLYMARKET_CLOB_API_URL", "https://clob.polymarket.com"),
-
-        # API keys
-        "NEWSAPI_KEY": os.getenv("NEWSAPI_KEY", ""),
-        "KALSHI_API_KEY": os.getenv("KALSHI_API_KEY", ""),
-
-        # Anthropic / Claude
-        "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
-
-        # Free AI sentiment fallbacks (auto-detected, no code changes needed)
-        "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY", ""),   # Priority 2: Gemini Flash
-        "GROQ_API_KEY":   os.getenv("GROQ_API_KEY",   ""),   # Priority 3: Groq Llama 3.3 70B
+        "POLYMARKET_GAMMA_API_URL": os.getenv(
+            "POLYMARKET_GAMMA_API_URL", "https://gamma-api.polymarket.com"
+        ),
+        "POLYMARKET_DATA_API_URL": os.getenv(
+            "POLYMARKET_DATA_API_URL", "https://data-api.polymarket.com"
+        ),
+        "POLYMARKET_CLOB_API_URL": os.getenv(
+            "POLYMARKET_CLOB_API_URL", "https://clob.polymarket.com"
+        ),
 
         # Google integration
         "GOOGLE_DRIVE_FOLDER_ID": os.getenv("GOOGLE_DRIVE_FOLDER_ID", ""),
-        "GOOGLE_CREDENTIALS_FILE": os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json"),
+        "GOOGLE_CREDENTIALS_FILE": os.getenv(
+            "GOOGLE_CREDENTIALS_FILE", "credentials.json"
+        ),
         "GMAIL_SENDER_EMAIL": os.getenv("GMAIL_SENDER_EMAIL", ""),
         "GMAIL_APP_PASSWORD": os.getenv("GMAIL_APP_PASSWORD", ""),
         "GMAIL_ENABLED": os.getenv("GMAIL_ENABLED", "true").lower() == "true",
 
         # Bot meta
         "BOT_NAME": os.getenv("BOT_NAME", "ZiSi"),
-        "BOT_VERSION": os.getenv("BOT_VERSION", "1.0"),
+        "BOT_VERSION": os.getenv("BOT_VERSION", "2.0"),
         "BOT_MODE": os.getenv("BOT_MODE", "paper_trading"),
-        "CHECK_INTERVAL_MINUTES": int(os.getenv("CHECK_INTERVAL_MINUTES", "15")),
-        "MAX_CHECK_INTERVAL_MINUTES": int(os.getenv("MAX_CHECK_INTERVAL_MINUTES", "20")),
 
         # Risk management — balance loaded from account_state.json, not .env
         "ACCOUNT_BALANCE": get_current_balance(),
         "RISK_PER_TRADE_PERCENT": float(os.getenv("RISK_PER_TRADE_PERCENT", "2")),
-        "SIGNAL_THRESHOLD": int(os.getenv("SIGNAL_THRESHOLD", "6")),
-        "MAX_SIMULTANEOUS_TRADES": int(os.getenv("MAX_SIMULTANEOUS_TRADES", "30")),
-        "MIN_EVENT_LIQUIDITY_USD": float(os.getenv("MIN_EVENT_LIQUIDITY_USD", "1000")),
-
-        # Position management
-        "POSITION_TARGET_MULTIPLIER": float(os.getenv("POSITION_TARGET_MULTIPLIER", "1.5")),
-        "POSITION_STOP_LOSS_MULTIPLIER": float(os.getenv("POSITION_STOP_LOSS_MULTIPLIER", "0.50")),
-        "POSITION_HOLD_TIME_HOURS": int(os.getenv("POSITION_HOLD_TIME_HOURS", "24")),
+        "MAX_SIMULTANEOUS_TRADES": int(os.getenv("MAX_SIMULTANEOUS_TRADES", "6")),
+        "MIN_EVENT_LIQUIDITY_USD": float(os.getenv("MIN_EVENT_LIQUIDITY_USD", "500")),
 
         # Logging
         "LOG_TO_DRIVE": os.getenv("LOG_TO_DRIVE", "true").lower() == "true",
@@ -113,10 +121,27 @@ def load_config() -> dict:
         # API behaviour
         "API_TIMEOUT_SECONDS": int(os.getenv("API_TIMEOUT_SECONDS", "10")),
         "API_RETRY_COUNT": int(os.getenv("API_RETRY_COUNT", "3")),
-        "API_RETRY_BACKOFF_SECONDS": int(os.getenv("API_RETRY_BACKOFF_SECONDS", "5")),
 
         # Logging level
         "LOG_LEVEL": os.getenv("LOG_LEVEL", "INFO"),
+
+        # pBot intelligence params (mirrored from module-level constants)
+        "ASSETS": ASSETS,
+        "TIMEFRAMES": TIMEFRAMES,
+        "TIME_GATE_UTC": TIME_GATE_UTC,
+        "INVERSION_WINDOW": INVERSION_WINDOW,
+        "INVERSION_TRIGGER_WR": INVERSION_TRIGGER_WR,
+        "INVERSION_RECOVERY_WR": INVERSION_RECOVERY_WR,
+        "DUAL_ENTRY_MAX_COMBINED": DUAL_ENTRY_MAX_COMBINED,
+        "CIRCUIT_BREAKER_LOSSES": CIRCUIT_BREAKER_LOSSES,
+        "CIRCUIT_BREAKER_SKIP": CIRCUIT_BREAKER_SKIP,
+        "MAX_DAILY_LOSS_PCT": MAX_DAILY_LOSS_PCT,
+        "WARMUP_SECONDS": WARMUP_SECONDS,
+        "WARMUP_MIN_TICKS": WARMUP_MIN_TICKS,
+        "WARMUP_MAX_JUMP": WARMUP_MAX_JUMP,
+        "RECONCILE_INTERVAL": RECONCILE_INTERVAL,
+        "MAX_OPEN_PER_ASSET": MAX_OPEN_PER_ASSET,
+        "MAX_TOTAL_OPEN": MAX_TOTAL_OPEN,
     }
 
     # Check required keys
@@ -124,11 +149,11 @@ def load_config() -> dict:
     if missing:
         raise ValueError(f"Missing required config keys: {', '.join(missing)}")
 
-    validate_config(raw)
+    _validate(raw)
     return raw
 
 
-def validate_config(config: dict) -> bool:
+def _validate(config: dict) -> bool:
     """
     Verify all values are the correct type and within acceptable ranges.
 
@@ -141,27 +166,20 @@ def validate_config(config: dict) -> bool:
 
     # URL format check
     url_pattern = re.compile(r"^https?://")
-    for url_key in ("POLYMARKET_GAMMA_API_URL", "POLYMARKET_DATA_API_URL", "POLYMARKET_CLOB_API_URL"):
+    for url_key in (
+        "POLYMARKET_GAMMA_API_URL",
+        "POLYMARKET_DATA_API_URL",
+        "POLYMARKET_CLOB_API_URL",
+    ):
         if not url_pattern.match(config.get(url_key, "")):
             errors.append(f"{url_key} must be a valid URL starting with http(s)://")
 
-    # Numeric range checks
+    # Balance check
     balance = config.get("ACCOUNT_BALANCE", 0)
     if not isinstance(balance, (int, float)) or balance <= 0:
         errors.append("ACCOUNT_BALANCE must be > 0")
 
-    risk = config.get("RISK_PER_TRADE_PERCENT", 0)
-    if not (1 <= risk <= 5):
-        errors.append("RISK_PER_TRADE_PERCENT must be between 1 and 5")
-
-    threshold = config.get("SIGNAL_THRESHOLD", 0)
-    if not (5 <= threshold <= 10):
-        errors.append("SIGNAL_THRESHOLD must be between 5 and 10")
-
-    max_trades = config.get("MAX_SIMULTANEOUS_TRADES", 0)
-    if not (1 <= max_trades <= 500):
-        errors.append("MAX_SIMULTANEOUS_TRADES must be between 1 and 500")
-
+    # Mode check
     if config.get("BOT_MODE") not in ("paper_trading", "live_trading"):
         errors.append("BOT_MODE must be 'paper_trading' or 'live_trading'")
 
@@ -169,6 +187,10 @@ def validate_config(config: dict) -> bool:
         raise ValueError("Config validation failed:\n  " + "\n  ".join(errors))
 
     return True
+
+
+# Keep old name as alias for any callers that used validate_config directly
+validate_config = _validate
 
 
 def get_config(key: str, default=None):
@@ -199,6 +221,6 @@ def log_config_startup(config: dict | None = None) -> None:
         f"Account: ${cfg['ACCOUNT_BALANCE']:.0f} | "
         f"Risk: {cfg['RISK_PER_TRADE_PERCENT']:.0f}% | "
         f"Mode: {mode_tag} | "
-        f"Signal threshold: {cfg['SIGNAL_THRESHOLD']}/10 | "
-        f"Max simultaneous positions: {cfg['MAX_SIMULTANEOUS_TRADES']}"
+        f"Max simultaneous positions: {cfg['MAX_SIMULTANEOUS_TRADES']} | "
+        f"Assets: {cfg['ASSETS']}"
     )
