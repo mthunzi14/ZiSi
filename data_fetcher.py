@@ -911,7 +911,8 @@ def fetch_polymarket_events(search_term: str) -> list[dict]:
 
                 markets.append({
                     "id": mkt.get("id", ""),
-                    "conditionId": mkt.get("conditionId", ""),  # CLOB-compatible ID
+                    "conditionId": mkt.get("conditionId", ""),
+                    "clobTokenIds": mkt.get("clobTokenIds") or [],  # YES/NO token IDs for CLOB price fetch
                     "title": mkt.get("question", mkt.get("title", "")),
                     "outcomeLabel": _outcome_label,
                     "price": _mkt_price,

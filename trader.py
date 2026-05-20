@@ -440,8 +440,21 @@ def execute_trade_smart(
     market_id = market["id"]
     event_id = polymarket_event["id"]
 
-    # Fetch live CLOB price for the specific market token — real bid/ask mid
-    clob_market_id = market.get("conditionId") or market.get("id", "")
+    # Fetch live CLOB price — use YES token ID when available (long decimal string),
+    # fall back to conditionId / market id (hex) which may also work on CLOB.
+    _clob_tokens = market.get("clobTokenIds") or []
+    _token_objects = market.get("tokens") or []
+    _is_bearish_sentiment = (sentiment or "neutral").lower() == "bearish"
+
+    if _clob_tokens:
+        # Prefer the YES token (index 0) for price; derive NO price below if needed
+        clob_market_id = _clob_tokens[0]
+    elif _token_objects:
+        _yes_tok = next((t for t in _token_objects if t.get("outcome", "").upper() == "YES"), _token_objects[0] if _token_objects else None)
+        clob_market_id = (_yes_tok or {}).get("token_id", "") or market.get("conditionId") or market.get("id", "")
+    else:
+        clob_market_id = market.get("conditionId") or market.get("id", "")
+
     mid_price = None
     if clob_market_id:
         try:
@@ -452,14 +465,18 @@ def execute_trade_smart(
                 if 0.03 < _p < 0.97:
                     _bid = float(_pd.get("bid", _p - 0.01))
                     _ask = float(_pd.get("ask", _p + 0.01))
-                    mid_price = round((_bid + _ask) / 2, 4)
-                    log.info("[SMART-EXEC] Live CLOB price %.4f for %s", mid_price, clob_market_id[:20])
+                    yes_mid = round((_bid + _ask) / 2, 4)
+                    # For YES/UP trades: use yes_mid directly
+                    # For NO/DOWN trades: price = 1 - yes_mid (binary market complement)
+                    mid_price = round(1.0 - yes_mid, 4) if _is_bearish_sentiment else yes_mid
+                    log.info("[SMART-EXEC] Live CLOB price %.4f (YES=%.4f %s) for %s",
+                             mid_price, yes_mid, "NO" if _is_bearish_sentiment else "YES", str(clob_market_id)[:24])
         except Exception as _pe:
             log.debug("[SMART-EXEC] CLOB price fetch failed: %s", _pe)
     if mid_price is None:
         mid_price = float(market.get("price", 0.5))
         if mid_price <= 0.03 or mid_price >= 0.97:
-            log.warning("[SMART-EXEC] No valid price for %s (%.4f) — skipping", clob_market_id[:20], mid_price)
+            log.warning("[SMART-EXEC] No valid price for %s (%.4f) — skipping", str(clob_market_id)[:24], mid_price)
             return None
         log.debug("[SMART-EXEC] Using event price fallback %.4f", mid_price)
 
