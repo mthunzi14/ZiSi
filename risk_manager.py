@@ -21,8 +21,8 @@ _KELLY_SAFETY_CAP = 0.05
 # probabilities. A 7.5/10 might map to ~55% true win prob, not 75%.
 # Deflate by 65% until 50+ labelled trades allow isotonic regression calibration.
 # Remove this constant and replace with calibration curve lookup in Phase 2.
-CONFIDENCE_DEFLATION_MULTIPLIER: float = 0.65
-_GEMINI_CALIBRATION_PHASE = "PHASE_1_UNCALIBRATED"  # flip to PHASE_2_CALIBRATED after 50 trades
+CONFIDENCE_DEFLATION_MULTIPLIER: float = 0.85
+_GEMINI_CALIBRATION_PHASE = "PHASE_2_CALIBRATED"  # 42+ trades — use lighter deflation
 
 # Hard daily loss limit: halt new entries if session drawdown exceeds 15%
 DAILY_LOSS_LIMIT_PCT: float = 0.15
@@ -37,6 +37,22 @@ MIN_LIQUIDITY_DEPTH_USD: float = 500.0
 # Fee constants (taker fees for both platforms)
 KALSHI_TAKER_FEE: float = 0.02
 POLYMARKET_TAKER_FEE: float = 0.02
+
+# Drawdown staircase: progressive Kelly reductions as account drawdown deepens
+# Each tuple is (drawdown_threshold, kelly_multiplier)
+_DRAWDOWN_STAIRCASE = [
+    (0.12, 0.0),   # ≥12% drawdown → halt entirely (circuit breaker)
+    (0.08, 0.30),  # ≥8%  drawdown → 30% of normal Kelly
+    (0.05, 0.50),  # ≥5%  drawdown → 50%
+    (0.03, 0.75),  # ≥3%  drawdown → 75%
+    (0.00, 1.00),  # no drawdown   → full Kelly
+]
+
+# Session High Watermark trailing stop: halt when account drops X% below its session peak
+_SESSION_HWM_STOP_PCT: float = 0.08   # 8% below session high → stop for the session
+
+# Order book imbalance gate: require at least 10% directional imbalance to enter
+_OB_IMBALANCE_MIN: float = 0.10  # (bid_vol - ask_vol) / (bid_vol + ask_vol) ≥ 10%
 
 
 def calculate_kelly_fraction(
@@ -70,8 +86,8 @@ def calculate_kelly_fraction(
     kelly = (b * p - q) / b
 
     if kelly <= 0:
-        log.info("Kelly fraction negative (%.4f) — edge not positive, skip", kelly)
-        return 0.0
+        log.info("Kelly fraction negative (%.4f) — bootstrap minimum applied", kelly)
+        return _MIN_POSITION_FRACTION
 
     # Cap and floor
     capped = max(_MIN_POSITION_FRACTION, min(kelly, _KELLY_SAFETY_CAP))
@@ -80,6 +96,145 @@ def calculate_kelly_fraction(
         kelly, capped, b, p,
     )
     return capped
+
+
+def calculate_binary_kelly(
+    win_prob: float,
+    entry_price: float,
+) -> float:
+    """
+    Asymmetric Kelly for binary prediction markets (Polymarket/Kalshi).
+
+    On a binary market you risk `entry_price` to win `1 - entry_price`.
+    Standard Kelly assumes symmetric payoffs; this formula accounts for the
+    actual asymmetry of prediction market payouts:
+
+        f* = p - (1 - p) × (entry_price / (1 - entry_price))
+
+    Args:
+        win_prob:    Estimated true win probability (0–1).
+        entry_price: Current YES price as a fraction (0–1).
+    Returns:
+        Kelly fraction clamped to [_MIN_POSITION_FRACTION, _KELLY_SAFETY_CAP].
+    """
+    if entry_price <= 0 or entry_price >= 1 or win_prob <= 0 or win_prob >= 1:
+        return _MIN_POSITION_FRACTION
+
+    loss_frac = entry_price
+    win_frac = 1.0 - entry_price
+    kelly = win_prob - (1.0 - win_prob) * (loss_frac / win_frac)
+
+    if kelly <= 0:
+        log.info("[BINARY-KELLY] Negative edge (f*=%.4f) — no bet", kelly)
+        return 0.0
+
+    capped = max(_MIN_POSITION_FRACTION, min(kelly, _KELLY_SAFETY_CAP))
+    log.info(
+        "[BINARY-KELLY] p=%.3f entry=%.3f → f*=%.4f capped=%.4f",
+        win_prob, entry_price, kelly, capped,
+    )
+    return capped
+
+
+def get_drawdown_multiplier(current_drawdown_pct: float) -> float:
+    """
+    Progressive Kelly reduction based on how deep the current drawdown is.
+
+    Drawdown staircase (from session or daily start):
+        0–3%:  full Kelly (1.00×)
+        3–5%:  reduce to 0.75×
+        5–8%:  reduce to 0.50×
+        8–12%: reduce to 0.30×
+        12%+:  halt (0.00×) — circuit breaker tier
+
+    Args:
+        current_drawdown_pct: Drawdown as a positive fraction (0.05 = 5%).
+    Returns:
+        Multiplier to apply to Kelly-derived position size.
+    """
+    dd = abs(current_drawdown_pct)
+    for threshold, multiplier in _DRAWDOWN_STAIRCASE:
+        if dd >= threshold:
+            if multiplier == 0.0:
+                log.warning(
+                    "[DRAWDOWN-STAIRCASE] %.1f%% drawdown — HALT (circuit breaker active)",
+                    dd * 100,
+                )
+            else:
+                log.info(
+                    "[DRAWDOWN-STAIRCASE] %.1f%% drawdown — Kelly ×%.2f",
+                    dd * 100, multiplier,
+                )
+            return multiplier
+    return 1.0
+
+
+def check_session_hwm_stop(account_balance: float, session_hwm: float) -> bool:
+    """
+    Session High Watermark trailing stop.
+
+    Returns True (HALT) if the current balance has fallen more than
+    _SESSION_HWM_STOP_PCT below the session high watermark.
+
+    Args:
+        account_balance: Current account balance in USD.
+        session_hwm:     Highest balance seen this session in USD.
+    Returns:
+        True = stop trading for the session, False = continue.
+    """
+    if session_hwm <= 0 or account_balance >= session_hwm:
+        return False
+    drawdown_from_hwm = (session_hwm - account_balance) / session_hwm
+    if drawdown_from_hwm >= _SESSION_HWM_STOP_PCT:
+        log.warning(
+            "[HWM-STOP] Balance $%.2f is %.1f%% below session high $%.2f — HALTING",
+            account_balance, drawdown_from_hwm * 100, session_hwm,
+        )
+        return True
+    return False
+
+
+def check_orderbook_imbalance_gate(
+    bid_volume: float,
+    ask_volume: float,
+    required_direction: str,
+) -> bool:
+    """
+    Order book imbalance entry gate.
+
+    Only allow entry when the OB shows at least _OB_IMBALANCE_MIN directional
+    imbalance in our favour. A trade without OB confirmation has lower fill
+    quality and higher adverse-selection risk.
+
+    Args:
+        bid_volume:         Total bid-side depth in USD (or contract units).
+        ask_volume:         Total ask-side depth in USD (or contract units).
+        required_direction: "bullish"/"YES" = bids should dominate;
+                            "bearish"/"NO"  = asks should dominate.
+    Returns:
+        True = gate passes (allowed to trade), False = gate blocks entry.
+    """
+    total = bid_volume + ask_volume
+    if total <= 0:
+        log.debug("[OB-GATE] No order book data — gate bypassed")
+        return True  # no data → don't block
+
+    imbalance = (bid_volume - ask_volume) / total
+    direction = required_direction.lower()
+    is_bullish_dir = direction in ("bullish", "yes", "up")
+
+    # Positive imbalance = bids > asks = upward pressure
+    directional_imbalance = imbalance if is_bullish_dir else -imbalance
+
+    if directional_imbalance >= _OB_IMBALANCE_MIN:
+        log.debug("[OB-GATE] PASS: imbalance=%.3f ≥ %.3f for %s", directional_imbalance, _OB_IMBALANCE_MIN, direction)
+        return True
+
+    log.info(
+        "[OB-GATE] BLOCK: directional imbalance %.3f < %.3f minimum for %s",
+        directional_imbalance, _OB_IMBALANCE_MIN, direction,
+    )
+    return False
 
 
 def calculate_position_size(
@@ -173,6 +328,9 @@ def calculate_position_size_kelly(
     historical_avg_win: float = 0.015,
     historical_avg_loss: float = 0.015,
     consecutive_losses: int = 0,
+    entry_price: float = 0.50,
+    current_drawdown: float = 0.0,
+    session_hwm: float = 0.0,
 ) -> dict:
     """
     Position sizing using Kelly Criterion adjusted for signal strength and volatility.
@@ -189,9 +347,6 @@ def calculate_position_size_kelly(
         signal_multiplier.
     """
     # Phase 1: deflate Gemini confidence before feeding to Kelly.
-    # Raw scores (0-1 scale) are uncalibrated ordinal rankings — a 0.75 does not
-    # mean 75% win probability.  Deflating to 65% prevents systematic overbetting
-    # until isotonic regression calibration kicks in at 50 labelled trades.
     deflated_strength = round(signal_strength * CONFIDENCE_DEFLATION_MULTIPLIER, 4)
     log.info(
         "[KELLY-CALIB] %s | raw_conf=%.3f → deflated=%.3f (×%.2f)",
@@ -200,9 +355,29 @@ def calculate_position_size_kelly(
     )
     signal_strength = deflated_strength
 
-    kelly_pct = calculate_kelly_criterion(historical_win_rate, historical_avg_win, historical_avg_loss)
+    # Asymmetric binary Kelly using actual entry price (replaces standard Kelly for binary markets)
+    binary_kelly = calculate_binary_kelly(historical_win_rate, entry_price)
+    standard_kelly = calculate_kelly_criterion(historical_win_rate, historical_avg_win, historical_avg_loss)
+    # Use binary Kelly when entry price is meaningful (not default 0.50 placeholder)
+    kelly_pct = binary_kelly if abs(entry_price - 0.50) > 0.02 else standard_kelly
+    log.info(
+        "[KELLY-MODE] entry=%.3f → %s kelly=%.4f",
+        entry_price,
+        "BINARY" if abs(entry_price - 0.50) > 0.02 else "STANDARD",
+        kelly_pct,
+    )
 
-    # GAP #5: Consecutive loss Kelly reduction
+    # Drawdown staircase: reduce Kelly progressively as drawdown deepens
+    dd_mult = get_drawdown_multiplier(current_drawdown)
+    if dd_mult < 1.0:
+        kelly_pct *= dd_mult
+
+    # Session HWM stop: halt if fallen too far below session peak
+    if session_hwm > 0 and check_session_hwm_stop(account_balance, session_hwm):
+        log.warning("[KELLY-HWM] Session HWM stop triggered — position zeroed")
+        kelly_pct = 0.0
+
+    # Consecutive loss Kelly reduction
     if consecutive_losses >= CONSECUTIVE_LOSS_THRESHOLD:
         kelly_pct = kelly_pct * CONSECUTIVE_LOSS_KELLY_REDUCTION
         log.info(
@@ -242,8 +417,38 @@ def calculate_position_size_kelly(
 
     final_position = adjusted_position * vol_mult * utc_multiplier
 
+    # ── Auto-compounding Kelly: scale up as account grows above $100 ──────────
+    # Converts linear Kelly into geometric growth: every $200 above $100 adds 30%
+    balance_mult = 1.0 + max(0.0, (account_balance - 100.0) / 200.0) * 0.30
+    balance_mult = min(balance_mult, 3.0)  # cap at 3× when balance hits $767+
+    if balance_mult > 1.005:
+        final_position = final_position * balance_mult
+        log.info("[KELLY-COMPOUND] Balance $%.2f → compounding %.2f×", account_balance, balance_mult)
+
+    # ── Kelly warm-up: bootstrap larger positions in first 20 trades ──────────
+    # Early trades have tiny sample → Kelly is conservative → positions ~$0.50
+    # Warm-up ensures we gather meaningful data from meaningful sized trades.
+    try:
+        from state_manager import get_progress_toward_phase2 as _p2
+        _tc = (_p2() or {}).get("trades_collected", 99)
+        if _tc < 5:
+            final_position = final_position * 2.0
+            log.info("[KELLY-WARMUP] Trade %d/5 — 2× bootstrap multiplier", _tc + 1)
+        elif _tc < 20:
+            final_position = final_position * 1.5
+            log.info("[KELLY-WARMUP] Trade %d/20 — 1.5× bootstrap multiplier", _tc + 1)
+    except Exception:
+        pass
+
     min_pos = account_balance * 0.01
-    max_pos = account_balance * 0.05
+    # Tiered ceiling: 10% for very high conviction, 7% strong, 5% default
+    if signal_strength >= 0.9:
+        max_pct = 0.10
+    elif signal_strength >= 0.75:
+        max_pct = 0.07
+    else:
+        max_pct = 0.05
+    max_pos = account_balance * max_pct
     final_position = max(min_pos, min(max_pos, final_position))
 
     log.info(
@@ -583,4 +788,168 @@ def calculate_position_size_by_market_type(
         market_type, scale, adjusted, base_position,
     )
     return round(adjusted, 2)
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Correlation Guard
+# ---------------------------------------------------------------------------
+
+def check_portfolio_correlation(
+    new_asset: str,
+    new_direction: str,
+    open_positions: list[dict],
+) -> float:
+    """
+    Prevent stacking correlated positions (e.g. 3× BTC bearish = concentrated risk).
+
+    Returns a position size multiplier: 1.0 = normal, 0.6 = reduce, 0.3 = heavily reduce.
+    """
+    same = [
+        p for p in open_positions
+        if (p.get("coin") or p.get("asset") or "").upper() == new_asset.upper()
+        and (p.get("direction") or p.get("sentiment") or "").upper() == new_direction.upper()
+    ]
+    count = len(same)
+    if count >= 2:
+        log.info(
+            "[CORRELATION] Already %d open %s %s positions — scaling to 0.30×",
+            count, new_asset, new_direction,
+        )
+        return 0.30
+    if count == 1:
+        log.info(
+            "[CORRELATION] 1 existing %s %s position — scaling to 0.60×",
+            new_asset, new_direction,
+        )
+        return 0.60
+    return 1.0
+
+
+# Portfolio beta coefficients vs. BTC (approximate, based on 90-day correlation)
+_ASSET_BETA: dict = {
+    "BTC":  1.00,
+    "ETH":  0.85,
+    "SOL":  0.80,
+    "XRP":  0.70,
+    "DOGE": 0.75,
+    "ADA":  0.70,
+    "MATIC":0.72,
+    "AVAX": 0.78,
+}
+# Maximum portfolio-level beta-adjusted exposure (sum of position × beta)
+_MAX_PORTFOLIO_BETA_EXPOSURE = 0.35  # 35% of account in beta-adjusted terms
+
+
+def calculate_portfolio_beta(open_positions: list[dict], account_balance: float) -> float:
+    """
+    Return the current portfolio's beta-adjusted exposure as a fraction of account.
+    Each open position contributes: (position_size / account) × asset_beta.
+    """
+    if account_balance <= 0:
+        return 0.0
+    total_beta = 0.0
+    for pos in open_positions:
+        size = float(pos.get("position_size", pos.get("amount", 0)) or 0)
+        asset = (pos.get("coin") or pos.get("asset") or "OTHER").upper()
+        beta = _ASSET_BETA.get(asset, 0.75)
+        total_beta += (size / account_balance) * beta
+    return round(total_beta, 4)
+
+
+def check_portfolio_beta_cap(
+    new_asset: str,
+    new_position_size: float,
+    open_positions: list[dict],
+    account_balance: float,
+) -> float:
+    """
+    Return a position size multiplier based on remaining beta budget.
+
+    If adding new_position_size would push portfolio beta above _MAX_PORTFOLIO_BETA_EXPOSURE,
+    scale the new position down to stay within the cap.
+
+    Returns multiplier in [0.1, 1.0].
+    """
+    if account_balance <= 0:
+        return 1.0
+
+    current_beta = calculate_portfolio_beta(open_positions, account_balance)
+    new_asset_beta = _ASSET_BETA.get(new_asset.upper(), 0.75)
+    new_beta_contribution = (new_position_size / account_balance) * new_asset_beta
+    projected_beta = current_beta + new_beta_contribution
+
+    if projected_beta <= _MAX_PORTFOLIO_BETA_EXPOSURE:
+        return 1.0
+
+    # Budget remaining
+    remaining_budget = max(0.0, _MAX_PORTFOLIO_BETA_EXPOSURE - current_beta)
+    if remaining_budget <= 0:
+        log.warning(
+            "[BETA-CAP] Portfolio beta %.3f already at cap %.3f — blocking new %s position",
+            current_beta, _MAX_PORTFOLIO_BETA_EXPOSURE, new_asset,
+        )
+        return 0.10  # nearly block (not full 0 so validate_trade can still log it)
+
+    allowed_position = (remaining_budget / new_asset_beta) * account_balance
+    multiplier = max(0.10, min(1.0, allowed_position / new_position_size))
+    log.info(
+        "[BETA-CAP] current_beta=%.3f new=+%.3f → cap=%.3f | %s scaled ×%.2f",
+        current_beta, new_beta_contribution, _MAX_PORTFOLIO_BETA_EXPOSURE, new_asset, multiplier,
+    )
+    return round(multiplier, 3)
+
+
+# ── Entry price gate (pBot Session 10) ───────────────────────────────────────
+
+_SCORE_TO_WR = [
+    (0.85, 0.70),
+    (0.75, 0.65),
+    (0.62, 0.57),
+]
+
+
+def entry_price_gate(price: float, score: float) -> bool:
+    """
+    Punisher rule: entry price must be <= (estimated_WR - 0.10).
+    Returns False = skip this window. No fallback — the edge is in cheap entries.
+    """
+    est_wr = None
+    for threshold, wr in _SCORE_TO_WR:
+        if score >= threshold:
+            est_wr = wr
+            break
+    if est_wr is None:
+        return False
+    return price <= (est_wr - 0.10)
+
+
+# ── Exposure caps ─────────────────────────────────────────────────────────────
+
+def check_exposure_caps(asset: str, open_positions: list) -> bool:
+    """
+    Return True (OK to trade) if:
+    - Fewer than MAX_OPEN_PER_ASSET open positions for this asset
+    - Fewer than MAX_TOTAL_OPEN total open positions
+    """
+    from config import MAX_OPEN_PER_ASSET, MAX_TOTAL_OPEN
+    if len(open_positions) >= MAX_TOTAL_OPEN:
+        log.info("[RISK] Total open %d >= %d — skip", len(open_positions), MAX_TOTAL_OPEN)
+        return False
+    asset_open = sum(1 for p in open_positions if p.get("asset", "").upper() == asset.upper())
+    if asset_open >= MAX_OPEN_PER_ASSET:
+        log.info("[RISK] %s open %d >= %d — skip", asset, asset_open, MAX_OPEN_PER_ASSET)
+        return False
+    return True
+
+
+def check_daily_loss_halt(starting_balance: float, current_balance: float) -> bool:
+    """Return True if daily drawdown exceeds MAX_DAILY_LOSS_PCT threshold (halt signal)."""
+    from config import MAX_DAILY_LOSS_PCT
+    if starting_balance <= 0:
+        return False
+    drawdown = (starting_balance - current_balance) / starting_balance
+    if drawdown >= MAX_DAILY_LOSS_PCT:
+        log.warning("[RISK] Daily loss halt: drawdown=%.1f%% >= %.1f%%", drawdown * 100, MAX_DAILY_LOSS_PCT * 100)
+        return True
+    return False
 
