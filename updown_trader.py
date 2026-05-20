@@ -38,7 +38,16 @@ UPDOWN_KELLY_BASE  = 0.022
 UPDOWN_MAX_USD     = 10.00
 
 # Volume gate: current candle volume must be >= this fraction of 20-period avg
-VOLUME_GATE_RATIO = 0.60
+VOLUME_GATE_RATIO = 0.30
+# Absolute minimum 1m volume per coin (in base asset units — Binance native).
+# During quiet hours, avg_vol drops and the ratio gate becomes too restrictive.
+# If current volume >= floor, the gate always passes regardless of the ratio.
+VOLUME_GATE_ABSOLUTE_FLOORS: dict = {
+    "BTC":  2.0,     # BTC per minute  (off-peak minimum — 1 BTC/min can occur in quiet hours)
+    "ETH":  10.0,    # ETH per minute  (was 15)
+    "SOL":  75.0,    # SOL per minute  (was 500 — blocked valid 158 SOL/min readings)
+    "XRP":  5000.0,  # XRP per minute  (was 10000)
+}
 
 # BTC/ETH last-minute momentum thresholds (percentage move, NOT dollar amount).
 # Based on empirical data: >0.05% is the 94.3% WR zone — our minimum for entries.
@@ -47,7 +56,7 @@ BTC_MOMENTUM_THRESH_MED  = 0.080   # >0.080% → strong edge
 BTC_MOMENTUM_THRESH_HIGH = 0.150   # >0.150% → near-certain (99%+ WR zone)
 
 # Composite score gates
-COMPOSITE_SCORE_MIN  = 0.80   # below this → skip (raised from 0.62 — quality gate)
+COMPOSITE_SCORE_MIN  = 0.60   # lowered from 0.68 — was blocking too many valid entries
 COMPOSITE_SCORE_MED  = 0.75   # medium tier
 COMPOSITE_SCORE_HIGH = 0.85   # high tier
 
@@ -90,7 +99,20 @@ _session_win_streak: int = 0
 # Session loss circuit breaker for Up/Down
 _updown_session_loss: float = 0.0
 _updown_circuit_reset: float = 0.0
-UPDOWN_SESSION_LOSS_LIMIT = 6.0  # pause after $6 updown loss in a session
+UPDOWN_SESSION_LOSS_LIMIT = 10.0  # pause after $10 updown loss in a session
+_hwm_tracker: dict = {}  # high watermark per order_id for trailing floor stop
+
+# Per-duration win rate tracker (in-memory only, resets on restart)
+# Maps duration_min (5/10/15/60) → list of bool outcomes (True=win)
+_duration_wr: dict = {}
+_DURATION_MIN_SAMPLES = 10
+_DURATION_WR_FLOOR    = 0.40
+
+# Position ladder: high-conviction trades (score ≥ 0.85) enter 60% now, 40% after 3-min confirmation
+# _ladder_pending: { event_id: {coin, direction, remaining_size, entry_ts, entry_price, market_id} }
+_ladder_pending: dict = {}
+_LADDER_SCORE_THRESHOLD = 0.85
+_LADDER_CONFIRM_SECS    = 180  # 3 minutes
 
 
 def _fetch_binance_klines(symbol: str, interval: str = "1m", limit: int = 30) -> list:
@@ -167,6 +189,38 @@ def _compute_atr(klines: list, period: int = ATR_PERIOD) -> Optional[float]:
     return round(sum(trs[-period:]) / period, 6)
 
 
+def _compute_volume_trend(klines: list) -> str:
+    """Compare avg volume in first half vs second half of klines. Returns 'RISING' or 'FALLING'."""
+    if len(klines) < 2:
+        return "FLAT"
+    mid = len(klines) // 2
+    first_half_avg  = sum(float(k[5]) for k in klines[:mid]) / mid
+    second_half_avg = sum(float(k[5]) for k in klines[mid:]) / (len(klines) - mid)
+    return "RISING" if second_half_avg > first_half_avg else "FALLING"
+
+
+def _get_adaptive_composite_min() -> float:
+    """Dynamically adjust composite quality gate based on recent rolling win rate."""
+    try:
+        import json as _j, os as _o
+        pf = _o.path.join(_o.path.dirname(__file__), "positions_state.json")
+        data = _j.loads(open(pf, encoding="utf-8").read())
+        summary = data.get("summary", {})
+        win_count   = int(summary.get("win_count", 0))
+        loss_count  = int(summary.get("loss_count", 0))
+        closed      = win_count + loss_count
+        if closed < 5:
+            return COMPOSITE_SCORE_MIN  # insufficient data — use default
+        wr = win_count / closed
+        if wr > 0.55:
+            return 0.76   # winning → lower gate, take more trades
+        if wr < 0.40:
+            return 0.84   # losing → raise gate, be more selective
+        return COMPOSITE_SCORE_MIN
+    except Exception:
+        return COMPOSITE_SCORE_MIN
+
+
 def _check_volatility_gate(coin: str) -> bool:
     """Only trade when BTC ATR > 20-period median. Flat BTC = noise not signal.
     The +$20k trader only entered during genuine BTC volatility spikes — this replicates that."""
@@ -240,17 +294,18 @@ def _compute_composite_score(
     volatility_gate_pass: bool,
 ) -> float:
     """Composite signal quality score 0.0 – 1.0.
-    Only scores above COMPOSITE_SCORE_MIN (0.62) result in a trade.
-    Components: RSI(0.25) + MTF(0.25) + Momentum(0.20) + Volatility(0.15) + VWAP(0.10) + F&G(0.05)"""
+    Only scores above COMPOSITE_SCORE_MIN (0.80) result in a trade.
+    Components: RSI(0.22) + MTF(0.22) + Momentum(0.20) + Volatility(0.12) + VWAP(0.09) + F&G(0.15)
+    Fear & Greed raised from 0.05 to 0.15 — contrarian F&G has a 65%+ historical win rate."""
     score = 0.0
 
-    # 1. RSI alignment (0–0.25): stronger RSI = higher score
+    # 1. RSI alignment (0–0.22): stronger RSI = higher score
     rsi_dist = abs(avg_rsi - 50)
     rsi_norm = min(1.0, rsi_dist / 35.0)   # RSI=85 → dist=35 → 1.0
-    score += rsi_norm * 0.25
+    score += rsi_norm * 0.22
 
-    # 2. MTF confluence (0–0.25): 3/3 full, 2/3 partial
-    score += 0.25 if tf_agree == 3 else 0.15
+    # 2. MTF confluence (0–0.22): 3/3 full, 2/3 partial
+    score += 0.22 if tf_agree == 3 else 0.13
 
     # 3. Momentum (0–0.20): last-minute % move aligned with direction
     abs_move = abs(last_min_move)
@@ -262,27 +317,38 @@ def _compute_composite_score(
         score += 0.10
     # below minimum threshold → 0
 
-    # 4. Volatility gate (0–0.15): trading during genuine volatility
-    score += 0.15 if volatility_gate_pass else 0.0
+    # 4. Volatility gate (0–0.12): trading during genuine volatility
+    score += 0.12 if volatility_gate_pass else 0.0
 
-    # 5. VWAP position (0–0.10): price above/below rolling VWAP aligns with direction
+    # 5. VWAP position (0–0.09): price above/below rolling VWAP aligns with direction
     if len(klines_5m) >= ROLLING_VWAP_BARS:
         vwap = _compute_rolling_vwap(klines_5m)
         current_price = float(klines_5m[-1][4])
         if vwap is not None:
             if direction == "UP" and current_price > vwap:
-                score += 0.10
+                score += 0.09
             elif direction == "DOWN" and current_price < vwap:
-                score += 0.10
+                score += 0.09
             else:
                 score += 0.03  # small partial credit (VWAP not aligned but not disqualifying)
 
-    # 6. Fear & Greed alignment (0–0.05): contrarian or trend-following bonus
+    # 6. Fear & Greed alignment (0–0.15): contrarian or trend-following bonus
+    # Raised from 0.05 → 0.15: extreme F&G provides the strongest directional edge
     if fg_val is not None:
-        if (fg_val < 25 and direction == "UP") or (fg_val > 75 and direction == "DOWN"):
-            score += 0.05   # contrarian — highest edge
+        if (fg_val <= 25 and direction == "UP") or (fg_val >= 75 and direction == "DOWN"):
+            score += 0.15   # extreme contrarian — highest edge (buy fear, sell greed)
         elif (60 <= fg_val <= 75 and direction == "UP") or (25 <= fg_val <= 40 and direction == "DOWN"):
-            score += 0.03   # trend-following
+            score += 0.09   # trend-following with moderate F&G confirmation
+
+    # 7. Volume-price divergence (0–0.06): price + volume agree = confirmed trend
+    # Rising price with rising volume = genuine move; rising price with falling volume = weak
+    if len(klines_5m) >= 5:
+        _vol_trend = _compute_volume_trend(klines_5m[-5:])
+        _price_trend = "UP" if float(klines_5m[-1][4]) > float(klines_5m[-5][4]) else "DOWN"
+        if direction == _price_trend and _vol_trend == "RISING":
+            score += 0.06   # price + volume agreement: confirmed move
+        elif direction != _price_trend and _vol_trend == "FALLING":
+            score += 0.03   # weak counter-trend: partial credit
 
     return round(min(1.0, score), 4)
 
@@ -325,9 +391,8 @@ def _signal_for_timeframe(klines: list, tf_label: str, coin: str = "") -> Option
     if rsi is None:
         return None
 
-    # XRP requires stronger RSI signal — it's more noisy/pump-driven
-    rsi_up   = 60 if coin == "XRP" else 65
-    rsi_down = 40 if coin == "XRP" else 35
+    rsi_up   = 60
+    rsi_down = 40
 
     if rsi > rsi_up:
         direction = "UP"
@@ -366,13 +431,21 @@ def _generate_direction_signal(coin: str) -> Optional[dict]:
     # ── Volume gate (1m candles) ────────────────────────────────────────────
     volumes = [float(k[5]) for k in klines_1m]
     avg_vol = sum(volumes[:-1]) / max(1, len(volumes) - 1)
-    cur_vol = volumes[-1]
-    if avg_vol > 0 and cur_vol < VOLUME_GATE_RATIO * avg_vol:
+    cur_vol = volumes[-2] if len(volumes) >= 2 else volumes[-1]  # use confirmed candle, not forming
+    _vol_floor = VOLUME_GATE_ABSOLUTE_FLOORS.get(coin, 0.0)
+    _above_floor = cur_vol >= _vol_floor
+    _above_ratio = avg_vol <= 0 or cur_vol >= VOLUME_GATE_RATIO * avg_vol
+    if not _above_floor and not _above_ratio:
         log.info(
-            "[UPDOWN] %s volume gate failed — current %.0f < %.0f%% of avg %.0f",
-            coin, cur_vol, VOLUME_GATE_RATIO * 100, avg_vol,
+            "[UPDOWN] %s volume gate failed — current %.0f < floor %.0f AND < %.0f%% of avg %.0f",
+            coin, cur_vol, _vol_floor, VOLUME_GATE_RATIO * 100, avg_vol,
         )
         return None
+    if _above_floor and not _above_ratio:
+        log.debug(
+            "[UPDOWN] %s volume floor override — cur %.0f >= floor %.0f (below ratio but ok)",
+            coin, cur_vol, _vol_floor,
+        )
 
     # ── Consecutive-loss cooldown ────────────────────────────────────────────
     now_ts = int(time.time())
@@ -1040,10 +1113,11 @@ def _fetch_active_updown_markets(coin: str) -> list:
             "coin":         coin,
         }
 
-    for dur_min in (5, 10, 15):
+    for dur_min in (5, 10, 15, 60):
         interval = dur_min * 60
         boundary = ((now_ts + interval) // interval) * interval
-        for offset in range(4):
+        max_offsets = 2 if dur_min == 60 else 4
+        for offset in range(max_offsets):
             expiry_ts = boundary + offset * interval
             if expiry_ts < now_ts + 30:
                 continue
@@ -1077,16 +1151,18 @@ def _fetch_active_updown_markets(coin: str) -> list:
                 log.debug("[UPDOWN] Slug error %s: %s", slug, exc)
 
     if not found_events:
-        log.info("[UPDOWN] No active markets for %s", coin)
+        log.debug("[UPDOWN] No active markets for %s", coin)
 
     found_events.sort(key=lambda e: e["expiry_ts"])
     return found_events
 
 
-def check_updown_early_exits(get_all_trades_fn, execute_exit_fn) -> int:
+def check_updown_early_exits(get_all_trades_fn, execute_exit_fn, place_paper_trade_fn=None) -> int:
     """
-    Early exit at 88%+ of face value: lock in the gain rather than risk TIME_EXPIRED reversal.
-    The pattern of watching $0.93 positions crash to $0.05 is eliminated by this rule.
+    Early exit rules for UP/DOWN positions:
+    - 88%+ price: lock in the gain before TIME_EXPIRED reversal
+    - Trailing floor: once HWM hits 75¢, floor at 55¢ (protects 73% of profit)
+    - Ladder: place remaining 40% after 3-min confirmation when momentum holds
     Returns number of early exits executed.
     """
     exits = 0
@@ -1096,42 +1172,157 @@ def check_updown_early_exits(get_all_trades_fn, execute_exit_fn) -> int:
             title = str(trade.get("event_title", "")).upper()
             if "[UPDOWN]" not in title:
                 continue  # only updown positions
+            order_id      = trade.get("order_id", "?")
             current_price = float(trade.get("current_price", 0))
+            entry_price   = float(trade.get("entry_price", 0.5))
+            direction     = str(trade.get("direction", "")).upper()
+
+            # Update high watermark
+            _hwm = _hwm_tracker.get(order_id, current_price)
+            _hwm = max(_hwm, current_price)
+            _hwm_tracker[order_id] = _hwm
+
+            exit_reason = None
+
             if current_price >= 0.88:
-                # Lock in the 74%+ gain instead of risking reversal
+                _expiry_ts = int(trade.get("expiry_ts", 0))
+                _secs_left = _expiry_ts - int(time.time()) if _expiry_ts else 999
+                if _secs_left > 120:
+                    exit_reason = "EARLY_EXIT_88PCT"
+                    log.info(
+                        "[UPDOWN] EARLY EXIT trigger: %s | price=%.3f ≥ 0.88 — locking in gain (%ds left)",
+                        order_id[:20], current_price, _secs_left,
+                    )
+                else:
+                    log.info(
+                        "[UPDOWN] HOLD to expiry: %s | price=%.3f ≥ 0.88 but only %ds left — riding to 0.99",
+                        order_id[:20], current_price, _secs_left,
+                    )
+            elif _hwm >= 0.75 and current_price < 0.55:
+                exit_reason = "TRAILING_FLOOR_55"
                 log.info(
-                    "[UPDOWN] EARLY EXIT trigger: %s | price=%.3f ≥ 0.88 — locking in gain",
-                    trade.get("order_id", "?")[:20], current_price,
+                    "[UPDOWN] TRAILING FLOOR: %s | HWM=%.3f ≥ 0.75 but price dropped to %.3f < 0.55 — exit",
+                    order_id[:20], _hwm, current_price,
                 )
+
+            if exit_reason:
                 try:
-                    _exit_result = execute_exit_fn(trade, reason="EARLY_EXIT_88PCT")
+                    _exit_result = execute_exit_fn(trade, reason=exit_reason)
                     if _exit_result is not False and _exit_result is not None:
                         exits += 1
+                        _hwm_tracker.pop(order_id, None)  # clean up HWM entry
+                        # Record Markov outcome
+                        try:
+                            from markov_tracker import tracker as _mk
+                            _coin = next((c for c in ("BTC", "ETH", "SOL", "XRP") if c in title), None)
+                            if _coin:
+                                _won = current_price > entry_price
+                                _outcome = direction if _won else ("DOWN" if direction == "UP" else "UP")
+                                _mk.record(_coin, _outcome)
+                                log.debug("[MARKOV] Recorded %s→%s for %s", direction, _outcome, _coin)
+                                _slug = str(trade.get("slug", ""))
+                                try:
+                                    _dur_str = _slug.split("-updown-")[1].split("m-")[0]
+                                    record_updown_result(_coin, _won, int(_dur_str))
+                                except Exception:
+                                    record_updown_result(_coin, _won)
+                        except Exception:
+                            pass
                         try:
                             from telegram_bot import notify_trade_closed as _tg_close
-                            _cp  = float(trade.get("current_price", 0))
-                            _ep  = float(trade.get("entry_price", 0.5))
+                            _cp  = current_price
+                            _ep  = entry_price
                             _sh  = float(trade.get("shares_acquired", trade.get("shares", 0)))
                             _sz  = float(trade.get("size", trade.get("amount_spent", 0)))
                             _pnl = round(_sh * _cp - _sz, 4)
                             _pct = round((_cp - _ep) / _ep * 100, 1) if _ep > 0 else 0
-                            _tg_close(str(trade.get("event_title", "UPDOWN")), _pnl, _pct, 0.0)
+                            _tg_close(str(trade.get("event_title", "UPDOWN")), _pnl, _pct, 0.0,
+                                      exit_reason=exit_reason, entry_price=_ep, exit_price=_cp,
+                                      direction=direction)
                         except Exception:
                             pass
                 except Exception as _ee:
                     log.debug("[UPDOWN] Early exit failed: %s", _ee)
     except Exception as exc:
         log.debug("[UPDOWN] Early exit scan failed: %s", exc)
+
+    # ── Position ladder: place remaining 40% after 3-min confirmation ────────
+    if place_paper_trade_fn is None:
+        return exits
+    _now = int(time.time())
+    _expired_keys = []
+    for _lid, _lp in list(_ladder_pending.items()):
+        _elapsed = _now - _lp["entry_ts"]
+        if _elapsed < _LADDER_CONFIRM_SECS:
+            continue  # not yet 3 minutes
+        _l_coin = _lp["coin"]
+        _l_dir  = _lp["direction"]
+        # Check RSI momentum still aligned
+        try:
+            _rsi_1m = _compute_rsi(_fetch_binance_klines(_l_coin, "1m", 20), 14)
+            _rsi_5m = _compute_rsi(_fetch_binance_klines(_l_coin, "5m", 20), 14)
+            _bullish_ok = _l_dir == "UP"  and _rsi_1m is not None and _rsi_5m is not None and _rsi_1m > 55 and _rsi_5m > 50
+            _bearish_ok = _l_dir == "DOWN" and _rsi_1m is not None and _rsi_5m is not None and _rsi_1m < 45 and _rsi_5m < 50
+            _momentum_ok = _bullish_ok or _bearish_ok
+        except Exception:
+            _momentum_ok = False
+        if not _momentum_ok:
+            log.info("[LADDER] %s %s — momentum reversed after %ds, CANCEL remaining $%.2f",
+                     _l_coin, _l_dir, _elapsed, _lp["remaining_size"])
+            _expired_keys.append(_lid)
+            continue
+        # Place remaining 40%
+        try:
+            place_paper_trade_fn(
+                event_id=_lid,
+                market_id=_lp["market_id"],
+                amount_dollars=_lp["remaining_size"],
+                direction=_l_dir,
+                entry_price=_lp["entry_price"],
+                event_title=f"[UPDOWN][LADDER] {_lp['title']}",
+                expiry_ts=_lp["expiry_ts"],
+            )
+            log.info("[LADDER] %s %s — placed remaining 40%%=$%.2f after %ds confirm",
+                     _l_coin, _l_dir, _lp["remaining_size"], _elapsed)
+        except Exception as _le:
+            log.debug("[LADDER] Failed to place ladder entry: %s", _le)
+        _expired_keys.append(_lid)
+    for _k in _expired_keys:
+        _ladder_pending.pop(_k, None)
+
     return exits
 
 
-def record_updown_result(coin: str, won: bool) -> None:
+def _is_duration_blocked(duration_min: int) -> bool:
+    """Return True if this duration has WR < 40% over last ≥10 trades."""
+    outcomes = _duration_wr.get(duration_min, [])
+    if len(outcomes) < _DURATION_MIN_SAMPLES:
+        return False
+    wr = sum(outcomes) / len(outcomes)
+    if wr < _DURATION_WR_FLOOR:
+        log.info("[DURATION-WR] %dm WR=%.0f%% (%d trades) < 40%% — skipping this duration",
+                 duration_min, wr * 100, len(outcomes))
+        return True
+    return False
+
+
+def record_updown_result(coin: str, won: bool, duration_min: int = None) -> None:
     """
     Call after each UP/DOWN trade resolves to track consecutive losses,
-    the session-wide win streak, and the per-coin rolling win rate (Advancement G).
+    the session-wide win streak, per-coin rolling WR, and per-duration WR.
     """
     global _consecutive_losses, _coin_cooldown_until, _session_win_streak
     update_coin_rolling_wr(coin, won)  # Advancement G: rolling quality tracker
+    if duration_min is not None:
+        outcomes = _duration_wr.setdefault(duration_min, [])
+        outcomes.append(won)
+        if len(outcomes) > 50:
+            outcomes.pop(0)
+    try:
+        from markov_tracker import tracker as _mk
+        _mk.record(coin, "UP" if won else "DOWN")
+    except Exception:
+        pass
     if won:
         _consecutive_losses[coin] = 0
         _session_win_streak += 1
@@ -1239,7 +1430,7 @@ def run_updown_cycle(
         try:
             markets = _fetch_active_updown_markets(coin)
             if not markets:
-                log.info("[UPDOWN] No active markets for %s", coin)
+                log.debug("[UPDOWN] No active markets for %s", coin)
                 continue
 
             direction  = signal["direction"]
@@ -1332,16 +1523,40 @@ def run_updown_cycle(
                 coin, direction, avg_rsi, tf_agree,
                 _last_min_move, _klines_5m, _fear_greed_val, _vol_gate,
             )
-            if _comp_score < COMPOSITE_SCORE_MIN:
+            _adaptive_min = _get_adaptive_composite_min()
+            if _comp_score < _adaptive_min:
                 log.info(
                     "[UPDOWN] %s composite score=%.2f < %.2f minimum — skipping",
-                    coin, _comp_score, COMPOSITE_SCORE_MIN,
+                    coin, _comp_score, _adaptive_min,
                 )
                 continue
             log.info("[UPDOWN] %s | COMPOSITE SCORE = %.2f (%s tier)",
                 coin, _comp_score,
                 "HIGH" if _comp_score > COMPOSITE_SCORE_HIGH else ("MED" if _comp_score > COMPOSITE_SCORE_MED else "LOW"),
             )
+
+            # ── CoinGlass liquidation cascade boost ───────────────────────────
+            try:
+                from data_sources.coinglass import get_liquidation_signal_boost as _cg_boost
+                _cg = _cg_boost(coin, direction)
+                if _cg > 1.0:
+                    _comp_score = min(1.0, _comp_score * _cg)
+                    log.info("[COINGLASS] %s cascade confirms %s → score=%.3f", coin, direction, _comp_score)
+            except Exception:
+                pass
+
+            # ── LunarCrush social sentiment boost ────────────────────────────
+            try:
+                from data_sources.lunarcrush import get_confidence_boost as _lc_boost
+                _lc = _lc_boost(coin, direction)
+                if _lc > 1.0:
+                    _comp_score = min(1.0, _comp_score * _lc)
+                    log.info("[LUNARCRUSH] %s social sentiment confirms %s → score=%.3f", coin, direction, _comp_score)
+                elif _lc < 1.0:
+                    _comp_score = max(0.0, _comp_score * _lc)
+                    log.info("[LUNARCRUSH] %s social sentiment contradicts %s → score=%.3f", coin, direction, _comp_score)
+            except Exception:
+                pass
 
             # ── Cross-window correlation cap ──────────────────────────────────
             _corr_count = _count_correlated_positions(coin, direction)
@@ -1424,6 +1639,33 @@ def run_updown_cycle(
                 if market_obj is None:
                     continue
 
+                # ── Duration WR gate: skip historically losing durations ──────
+                _dur_min = best.get("duration_min", 15)
+                if _is_duration_blocked(_dur_min):
+                    continue
+
+                # ── 1-hour windows require higher composite score ──────────────
+                if _dur_min == 60 and _comp_score < 0.82:
+                    log.info("[UPDOWN] 1h window needs score≥0.82, got %.2f — skip", _comp_score)
+                    continue
+
+                # ── Markov EV gate ─────────────────────────────────────────────
+                try:
+                    from markov_tracker import tracker as _mk
+                    _prev = _mk.last_outcome(coin) or direction
+                    _norm_price = entry_price if direction == "UP" else (1.0 - entry_price)
+                    _ev_yes = _mk.expected_value(coin, _prev, _norm_price, "YES")
+                    _ev_no  = _mk.expected_value(coin, _prev, 1.0 - _norm_price, "NO")
+                    _best_ev = max(_ev_yes, _ev_no)
+                    # Only filter when we have 10+ outcomes (otherwise Markov returns 0.5 → neutral)
+                    if _mk.sample_size(coin) >= 10 and _best_ev < 0.04:
+                        log.debug("[MARKOV] %s EV=%.3f < 4%% — skip window (no statistical edge)", coin, _best_ev)
+                        continue
+                    if _mk.sample_size(coin) >= 10:
+                        log.info("[MARKOV-EV] %s EV=%.3f @ price=%.3f (n=%d)", coin, _best_ev, entry_price, _mk.sample_size(coin))
+                except Exception:
+                    pass
+
                 # ── Advancement A: Orderbook imbalance signal ─────────────────
                 _ob_boost = 1.0
                 _market_token = market_obj.get("conditionId") or market_obj.get("id", "")
@@ -1486,6 +1728,23 @@ def run_updown_cycle(
                     )
                     continue
 
+                # ── Spread gate: skip illiquid windows (spread > 4%) ─────────
+                _token_id_exec = market_obj.get("conditionId") or market_obj.get("id", "")
+                if _token_id_exec:
+                    _live_mid, _live_spread = _fetch_clob_price_and_spread(_token_id_exec)
+                    if _live_spread is not None and _live_spread > 0.02:
+                        log.info(
+                            "[UPDOWN] %s spread %.3f > 2%% — illiquid window, skipping",
+                            coin, _live_spread,
+                        )
+                        continue
+                    if _live_mid is not None and abs(_live_mid - entry_price) > 0.03:
+                        log.info(
+                            "[UPDOWN] %s price drift %.3f → %.3f (>3%%) since scan — skipping stale entry",
+                            coin, entry_price, _live_mid,
+                        )
+                        continue
+
                 # ── Advancement J: Momentum acceleration check ───────────────
                 if not _check_momentum_acceleration(coin, direction):
                     continue
@@ -1494,13 +1753,31 @@ def run_updown_cycle(
                 if not _check_candle_close_strength(coin, direction):
                     continue
 
+                # ── Position ladder: split entry for high-conviction trades ─────
+                _ladder_size = size
+                if _comp_score >= _LADDER_SCORE_THRESHOLD and event_id not in _ladder_pending:
+                    _ladder_size = round(size * 0.60, 2)
+                    _ladder_pending[event_id] = {
+                        "coin":           coin,
+                        "direction":      direction,
+                        "remaining_size": round(size * 0.40, 2),
+                        "entry_ts":       int(time.time()),
+                        "entry_price":    entry_price,
+                        "market_id":      market_id,
+                        "expiry_ts":      best.get("expiry_ts", 0),
+                        "title":          best.get("title", ""),
+                    }
+                    log.info("[LADDER] %s %s | entering 60%%=$%.2f, holding 40%%=$%.2f for 3-min confirm",
+                             coin, direction, _ladder_size, size - _ladder_size)
+
                 order = place_paper_trade_fn(
                     event_id=event_id,
                     market_id=market_id,
-                    amount_dollars=size,
+                    amount_dollars=_ladder_size,
                     direction=direction,
                     entry_price=entry_price,
                     event_title=f"[UPDOWN] {best['title']}",
+                    expiry_ts=best.get("expiry_ts", 0),
                 )
 
                 if order:

@@ -196,8 +196,8 @@ def market_freshness_score(market: dict) -> float:
     yes_price_raw = market.get("yes_ask") or market.get("yes_bid") or 0
     yes_price = float(yes_price_raw) / 100.0 if yes_price_raw > 1 else float(yes_price_raw)
 
-    # Price near resolution?
-    near_resolved = yes_price < 0.10 or yes_price > 0.90
+    # Price near resolution? (widened from 0.10/0.90 — same-day markets legitimately reach 95%+)
+    near_resolved = yes_price < 0.05 or yes_price > 0.95
 
     # Parse close_time to compute TTR fraction
     close_str = market.get("close_time") or market.get("expiration_time", "")
@@ -221,8 +221,8 @@ def market_freshness_score(market: dict) -> float:
         hours_remaining = 24.0
         pct_elapsed = 0.5
 
-    # Stale: predetermined outcome (near resolved + >70% elapsed)
-    if near_resolved and pct_elapsed > 0.70:
+    # Stale: predetermined outcome (near resolved + >85% elapsed — was 70%, too aggressive)
+    if near_resolved and pct_elapsed > 0.85:
         return 0.0
 
     # Freshness decays logarithmically with elapsed fraction
@@ -249,7 +249,7 @@ def load_category_win_rates() -> None:
     if not _CATEGORY_WIN_RATES_FILE.exists():
         return
     try:
-        data = json.loads(_CATEGORY_WIN_RATES_FILE.read_text(encoding="utf-8"))
+        data = json.loads(_CATEGORY_WIN_RATES_FILE.read_text(encoding="utf-8-sig"))
         for cat, stats in data.items():
             if cat in _category_win_rates:
                 _category_win_rates[cat]["wins"] = int(stats.get("wins", 0))
@@ -287,7 +287,7 @@ def fetch_kalshi_markets(auth=None, retry_count: int = 0, max_retries: int = 2) 
         log.debug("[KALSHI] fetch_kalshi_markets: auth not configured — skipping")
         return []
 
-    base_url = getattr(auth, "base_url", "https://api.elections.kalshi.com/trade-api/v2")
+    base_url = getattr(auth, "base_url", "https://trading-api.kalshi.com/trade-api/v2")
     path = "/markets?status=open&limit=100"
     try:
         _track_api_call()

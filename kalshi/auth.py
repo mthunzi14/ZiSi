@@ -1,7 +1,7 @@
 """
 Kalshi API Authentication — RSA-PSS SHA-256 signature signing.
 
-Kalshi's API v2 (api.elections.kalshi.com) uses asymmetric RSA-PSS signing.
+Kalshi's API v2 (trading-api.kalshi.com) uses asymmetric RSA-PSS signing.
 Auth headers per request:
   KALSHI-ACCESS-KEY       = key ID from .env
   KALSHI-ACCESS-TIMESTAMP = current time in milliseconds (integer)
@@ -33,7 +33,7 @@ class KalshiAuth:
         ).strip()
         raw_key = os.getenv("KALSHI_PRIVATE_KEY", "").strip().replace("\\n", "\n")
 
-        self.base_url = "https://api.elections.kalshi.com/trade-api/v2"
+        self.base_url = "https://trading-api.kalshi.com/trade-api/v2"
         self._private_key = None
         self.is_configured = False
 

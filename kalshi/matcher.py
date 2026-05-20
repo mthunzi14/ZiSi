@@ -302,12 +302,14 @@ class KalshiEventMatcher:
         # range at different thresholds for the same date).  Without this filter
         # all 3 capped results would be from the same expired/zero-price batch,
         # leaving no room for a different (valid) event family.
-        # We use the first 6 words of the title as a "family key".
+        # We use the first 8 words of the title as a "family key" so that
+        # same-date price-range brackets ("$103k-$104k?" vs "$104k-$105k?")
+        # count as distinct families rather than collapsing all 100 to 1.
         diverse: List[Dict] = []
         seen_families: set = set()
         for m in matches:
             raw_title = m["event"].get("title", "").lower().strip()
-            family = " ".join(raw_title.split()[:6])  # "bitcoin price range on may 14"
+            family = " ".join(raw_title.split()[:8])  # "bitcoin price range on may 20, $103k-$104k?"
             if family not in seen_families:
                 seen_families.add(family)
                 diverse.append(m)

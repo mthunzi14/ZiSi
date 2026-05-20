@@ -35,7 +35,7 @@ HEALTH_LOG         = _BASE_DIR / "health_monitor.log"
 # Polymarket health endpoint (CLOB API root)
 POLYMARKET_HEALTH_URL = "https://clob.polymarket.com"
 # Kalshi health endpoint
-KALSHI_HEALTH_URL = "https://api.elections.kalshi.com"
+KALSHI_HEALTH_URL = "https://trading-api.kalshi.com"
 
 PAPER_MAX_HOLD_HOURS = 4
 LIVE_MAX_HOLD_HOURS  = 48
@@ -154,48 +154,28 @@ def _check_position_reconciliation() -> bool:
 
 
 def _check_bankroll_accuracy() -> bool:
-    """Verify local balance roughly matches what JSONL trades say it should be."""
+    """Verify local balance matches positions_state.json realized P&L."""
     if not STATE_FILE.exists():
         return True
 
     try:
         state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         local_balance = float(state.get("balance", 100))
-
-        # Recompute from trade file
-        trades_file = _BASE_DIR / "zisi_local_trades.jsonl"
-        if not trades_file.exists():
-            return True
-
-        total_pnl = 0.0
-        with trades_file.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    r = json.loads(line)
-                    if r.get("type") != "signal" and r.get("status", "").upper() == "CLOSED":
-                        total_pnl += float(r.get("profit", 0) or 0)
-                except Exception:
-                    continue
-
         starting_balance = float(state.get("starting_balance", state.get("initial_balance", 100.0)))
 
-        # Include shadow trade P&L — shadow trades update account_state but are NOT
-        # written to zisi_local_trades.jsonl (that's ZiSi-only), so computed must add them.
-        shadow_pnl = 0.0
-        shadow_file = _BASE_DIR / "shadow_state.json"
-        if shadow_file.exists():
-            try:
-                s = json.loads(shadow_file.read_text(encoding="utf-8"))
-                shadow_pnl = float(s.get("pnl", 0) or 0)
-            except Exception:
-                pass
+        # Use positions_state.json as the single source of truth for realized P&L.
+        # This avoids discrepancies between zisi_local_trades.jsonl and what the
+        # trader actually booked (Kalshi, partial fills, etc.).
+        positions_file = _BASE_DIR / "positions_state.json"
+        if not positions_file.exists():
+            return True
 
-        expected_balance = round(starting_balance + total_pnl + shadow_pnl, 2)
+        pos = json.loads(positions_file.read_text(encoding="utf-8"))
+        realized_pnl = float((pos.get("summary") or {}).get("realized_pnl", 0) or 0)
+
+        expected_balance = round(starting_balance + realized_pnl, 2)
         discrepancy = abs(local_balance - expected_balance)
-        discrepancy_pct = discrepancy / max(1.0, expected_balance)
+        discrepancy_pct = discrepancy / max(1.0, abs(expected_balance))
 
         # 5% tolerance — small rounding gaps are normal with many small trades
         if discrepancy_pct > 0.05:
