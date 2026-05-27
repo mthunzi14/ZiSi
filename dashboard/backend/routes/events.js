@@ -13,7 +13,7 @@ const router    = express.Router();
 const BOT_ROOT  = path.join(__dirname, '../../..');
 
 const STATE_FILE     = path.join(BOT_ROOT, 'account_state.json');
-const POSITIONS_FILE = path.join(BOT_ROOT, 'positions_state.json');
+const POSITIONS_FILE = path.join(BOT_ROOT, 'infrastructure', 'exchange', 'positions_state.json');
 
 const STARTING_BALANCE = 100.0;
 

@@ -20,32 +20,32 @@ _HISTORY_FILE = Path(__file__).parent / "balance_history.jsonl"
 _MIN_INTERVAL_SECONDS = 600  # 10 minutes
 
 _last_append_ts: float = 0.0
+_last_trades: int = -1
 
 
 def record_balance(balance: float, pnl: float, trades: int) -> None:
     """
-    Append a balance snapshot if enough time has passed since the last one.
-    Thread-safe for single-writer use (main loop only).
+    Append a balance snapshot if enough time has passed since the last one,
+    or immediately if the number of closed trades has changed.
     """
-    global _last_append_ts
+    global _last_append_ts, _last_trades
 
     now_ts = datetime.now(timezone.utc).timestamp()
-    if now_ts - _last_append_ts < _MIN_INTERVAL_SECONDS:
-        return  # Too soon — skip to avoid duplicates
-
-    record = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "balance":   round(float(balance), 4),
-        "pnl":       round(float(pnl), 4),
-        "trades":    int(trades),
-    }
-    try:
-        with open(_HISTORY_FILE, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record) + "\n")
-        _last_append_ts = now_ts
-        log.debug("[EQUITY] Snapshot: $%.2f | P&L: $%+.2f | trades: %d", balance, pnl, trades)
-    except Exception as exc:
-        log.warning("[EQUITY] Failed to write balance snapshot: %s", exc)
+    if trades != _last_trades or now_ts - _last_append_ts >= _MIN_INTERVAL_SECONDS:
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "balance":   round(float(balance), 4),
+            "pnl":       round(float(pnl), 4),
+            "trades":    int(trades),
+        }
+        try:
+            with open(_HISTORY_FILE, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
+            _last_append_ts = now_ts
+            _last_trades = trades
+            log.debug("[EQUITY] Snapshot: $%.2f | P&L: $%+.2f | trades: %d", balance, pnl, trades)
+        except Exception as exc:
+            log.warning("[EQUITY] Failed to write balance snapshot: %s", exc)
 
 
 def load_history() -> list:

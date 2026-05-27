@@ -7,19 +7,22 @@ import os
 import re
 import logging
 from dotenv import load_dotenv
-from state_manager import initialize_state, get_current_balance
 
-# ── pBot Intelligence Parameters ─────────────────────────────────────────────
-ASSETS: list = ["BTC", "ETH", "SOL", "XRP"]
+ASSETS: list = ["BTC", "ETH", "SOL", "XRP", "ADA", "LINK", "DOGE", "AVAX", "SUI"]
 TIMEFRAMES: dict = {
     "BTC": ["5m", "15m"],
-    "ETH": ["5m"],
-    "SOL": ["5m"],
-    "XRP": ["5m"],
+    "ETH": ["5m", "15m"],
+    "SOL": ["5m", "15m"],
+    "XRP": ["5m", "15m"],
+    "ADA": ["5m"],
+    "LINK": ["5m"],
+    "DOGE": ["5m"],
+    "AVAX": ["5m"],
+    "SUI": ["5m"],
 }
 
-# Active trading window (UTC hours, inclusive start/exclusive end)
-TIME_GATE_UTC: tuple = (13, 23)
+# Active trading window (UTC hours, inclusive start/exclusive end) - set to 24/7
+TIME_GATE_UTC: tuple = (0, 24)
 
 # Inversion detection
 INVERSION_WINDOW: int = 40
@@ -34,7 +37,7 @@ CIRCUIT_BREAKER_LOSSES: int = 2
 CIRCUIT_BREAKER_SKIP: int = 2
 
 # Daily loss limit (fraction of account)
-MAX_DAILY_LOSS_PCT: float = 0.15
+MAX_DAILY_LOSS_PCT: float = 0.03
 
 # Warmup guard
 WARMUP_SECONDS: int = 15
@@ -56,9 +59,6 @@ OFF_PEAK_KELLY_MULTIPLIER = 0.5
 # ── Load .env ─────────────────────────────────────────────────────────────────
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(_ENV_PATH)
-
-# Initialize persistent account state once at import time
-_initial_balance = initialize_state()
 
 # Module-level logger (plain print until logging is configured)
 _log = logging.getLogger("zisi.config")
@@ -109,10 +109,14 @@ def load_config() -> dict:
         # Bot meta
         "BOT_NAME": os.getenv("BOT_NAME", "ZiSi"),
         "BOT_VERSION": os.getenv("BOT_VERSION", "2.0"),
+        "KALSHI_EMAIL": os.getenv("KALSHI_EMAIL", ""),
+        "KALSHI_PASSWORD": os.getenv("KALSHI_PASSWORD", ""),
+        "KALSHI_API_KEY": os.getenv("KALSHI_API_KEY", ""),
+        "KALSHI_PRIVATE_KEY": os.getenv("KALSHI_PRIVATE_KEY", ""),
         "BOT_MODE": os.getenv("BOT_MODE", "paper_trading"),
 
         # Risk management — balance loaded from account_state.json, not .env
-        "ACCOUNT_BALANCE": get_current_balance(),
+        "ACCOUNT_BALANCE": (lambda: __import__("infrastructure.state.state_manager", fromlist=["get_current_balance"]).get_current_balance())(),
         "RISK_PER_TRADE_PERCENT": float(os.getenv("RISK_PER_TRADE_PERCENT", "2")),
         "MAX_SIMULTANEOUS_TRADES": int(os.getenv("MAX_SIMULTANEOUS_TRADES", "6")),
         "MIN_EVENT_LIQUIDITY_USD": float(os.getenv("MIN_EVENT_LIQUIDITY_USD", "500")),
@@ -136,7 +140,7 @@ def load_config() -> dict:
         # Logging level
         "LOG_LEVEL": os.getenv("LOG_LEVEL", "INFO"),
 
-        # pBot intelligence params (mirrored from module-level constants)
+        # ZiSi intelligence params (mirrored from module-level constants)
         "ASSETS": ASSETS,
         "TIMEFRAMES": TIMEFRAMES,
         "TIME_GATE_UTC": TIME_GATE_UTC,

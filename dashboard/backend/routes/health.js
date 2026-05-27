@@ -369,7 +369,7 @@ router.get('/', (req, res) => {
     let poly_closed_pnl     = 0;
     let poly_win_count      = 0;
     try {
-      const posFile = path.join(__dirname, '../../../positions_state.json');
+      const posFile = path.join(__dirname, '../../../infrastructure/exchange/positions_state.json');
       if (fs.existsSync(posFile)) {
         const posData = readJSON(posFile);
         positions_summary = posData.summary || positions_summary;
@@ -531,7 +531,7 @@ function broadcastSSE(eventObj) {
 // Poll positions_state.json and broadcast position_update every 2s
 setInterval(() => {
   try {
-    const posFile = path.join(__dirname, '../../../positions_state.json');
+    const posFile = path.join(__dirname, '../../../infrastructure/exchange/positions_state.json');
     if (!fs.existsSync(posFile)) return;
     const positions = JSON.parse(fs.readFileSync(posFile, 'utf-8').replace(/^﻿/, ''));
     broadcastSSE({ type: 'position_update', payload: positions, ts: Date.now() });

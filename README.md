@@ -1,291 +1,178 @@
-# ZiSi — Autonomous Prediction Market Trading Bot
+# ZiSi v1 — Autonomous Prediction Market Trading Workstation
 
-ZiSi is a self-learning, multi-source, AI-driven paper-trading bot for **Polymarket** and **Kalshi**. It harvests news from 10+ sources in real-time, scores sentiment through a 10-level AI cascade, matches markets with Kelly-sized positions, and learns from every trade outcome — autonomously.
+ZiSi v1 is an institutional-grade, self-learning, multi-source quantitative trading suite designed for high-velocity predictive arbitrage on **Polymarket** and **Kalshi**. Combining real-time news harvesting, multi-layered AI sentiment cascades, advanced technical signal confluence check-gates, and rolling logistic regression self-learning feedback loops, ZiSi v1 operates completely autonomously 24/7.
 
-**Current stats (paper mode):** 72.9% win rate · $1,318 realized P&L · 680 closed trades · ML Phase 2 active
+```
+                  ┌────────────────────────────────────────┐
+                  │   News Harvest (11 channels, 24/7)     │
+                  │   CoinTelegraph · Decrypt · Reddit...  │
+                  └───────────────────┬────────────────────┘
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │ 10-Tier Sentiment Cascade (Claude/Gem) │
+                  └───────────────────┬────────────────────┘
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │ Technical Confluence Gating Check-Rows │
+                  │ RSI · Momentum · OFI · volume · spread │
+                  └───────────────────┬────────────────────┘
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │ Capital Protection & Kelly Bet Sizer  │
+                  │ 0.5% base size · Hard-capped $2.00 bet │
+                  └───────────────────┬────────────────────┘
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │       Active Order Execution           │
+                  │ Polymarket UP/DOWN · Kalshi Events     │
+                  └───────────────────┬────────────────────┘
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │       ML Outcome Retraining Loop       │
+                  │ Phase 2 logistic regression feedback   │
+                  └────────────────────────────────────────┘
+```
 
 ---
 
-## Architecture
+## Technical Architecture & Core Layers
 
-```
-News Sources (11 channels, zero dead zones)
-  Primary:  NewsAPI · CoinTelegraph · Decrypt · CryptoSlate RSS
-  Free ext: CryptoPanic · Reddit (4 subreddits) · Google News RSS · CoinDesk RSS
-        ↓
-Rapid-Fire Scanner (background, 90s interval)
-  Detects breaking news → queues immediate Kalshi cycle without waiting 15 min
-        ↓
-Sentiment Cascade (10 levels, auto-fallback)
-  Claude → Gemini Flash → Groq Llama → Cerebras → Mistral → OpenRouter
-        → Together AI → FinBERT → VADER → Keyword
-        ↓
-Signal Classification  (TYPE_A_HIGH / TYPE_A_LOW / TYPE_B_HIGH / TYPE_B_LOW)
-        ↓
-5 Einstein Advancements (size multipliers, stacked)
-  D: Fear & Greed Index (Alternative.me)
-  E: Asymmetric Directional Kelly (per YES/NO win rate)
-  F: UTC Hour Edge Multiplier (self-learned)
-  G: Rolling Coin Signal Quality Decay (regime detection)
-  H: Polymarket Volume Surge Detector (smart money signal)
-        ↓
-Gate Chain  (liquidity → spread → price → confluence → MTF → EV → routing)
-        ↓
-Kelly Sizing  (regime + drawdown + signal-type + Einstein multipliers, capped 2.8×)
-        ↓
-Execution
-  ├── Polymarket UP/DOWN  (RSI + momentum, 24/7, 3 windows/coin/cycle)
-  └── Kalshi macro events (15-min cycle + immediate rapid-fire trigger)
-        ↓
-Position Monitor  (target / stop / signal-flip / max-hold exit)
-        ↓
-ML Feedback Loop
-  Outcome labeller → 695 labelled trades → Phase 2 logistic regression active
-```
-
-News cycles run every **15 minutes** (96/day). UP/DOWN RSI trades run every cycle, 24/7. The rapid-fire scanner fires extra Kalshi cycles within 90 seconds of breaking news.
-
----
-
-## Quick Start
-
-### Prerequisites
-- Python 3.11+
-- Node.js 18+
-
-### 1. Install dependencies
-
-```bash
-pip install -r requirements.txt
-pip install vaderSentiment          # local fallback — no API key
-cd dashboard/backend && npm install && cd ../..
-```
-
-### 2. Configure `.env`
-
-```env
-# Core trading
-KALSHI_API_KEY=your_key_id
-KALSHI_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
-NEWSAPI_KEY=your_key                 # optional — RSS sources work without it
-
-# AI Sentiment chain (first valid key wins — all have free tiers)
-ANTHROPIC_API_KEY=your_key           # Claude — highest quality
-GEMINI_API_KEY=your_key             # Free 1,500 req/day
-GROQ_API_KEY=your_key               # Free 14,400 req/day
-CEREBRAS_API_KEY=your_key           # Free tier
-MISTRAL_API_KEY=your_key            # Free tier
-OPENROUTER_API_KEY=your_key         # Free open-source models
-TOGETHER_API_KEY=your_key           # $25 free credits
-
-# Telegram
-TELEGRAM_BOT_TOKEN=your_token
-TELEGRAM_CHAT_ID=your_chat_id
-
-# Bot settings
-BOT_MODE=paper_trading              # paper_trading | live_trading
-ACCOUNT_BALANCE=100
-RISK_PER_TRADE_PERCENT=2
-SIGNAL_THRESHOLD=6
-```
-
-### 3. Launch
-
-```bash
-cd dashboard/backend
-npm start
-```
-
-Dashboard → **http://localhost:5000**
-
-The dashboard auto-spawns `python main.py`. Bot output streams live to the terminal.
-
----
-
-## Features
-
-### News Intelligence — 11 Sources
-
-| Source | Type | Key Required |
-|---|---|---|
-| CoinTelegraph | RSS | No |
-| CoinDesk | RSS | No |
-| Decrypt | RSS | No |
-| CryptoSlate | RSS | No |
-| CryptoPanic | Free API | No |
-| Reddit r/CryptoCurrency | JSON API | No |
-| Reddit r/Bitcoin | JSON API | No |
-| Reddit r/ethereum | JSON API | No |
-| Google News (BTC/ETH/Macro) | RSS | No |
-| NewsAPI | REST | Optional |
-| Binance Funding Rate | REST | No |
-
-### Rapid-Fire Breaking News Scanner
-
-A background daemon thread runs every **90 seconds** harvesting from all free sources. When a headline matches 2+ extreme-confidence keywords (ETF approval, crash, hack, record high, etc.) for a tracked coin, it queues an immediate Kalshi execution cycle — **ZiSi reacts to breaking news within 90 seconds** instead of waiting up to 15 minutes.
-
-### UP/DOWN RSI Cycle (24/7)
-
-Monitors BTC, ETH, SOL via Binance 1-min candles. Trades up to 3 windows per coin per cycle using RSI + momentum signals. Runs uninterrupted through overnight dead windows.
-
-### Sentiment Cascade — 10 Levels
-
-```
-P1  Claude Sonnet      — premium, highest quality
-P2  Gemini 2.0 Flash   — free, 1,500/day, 1h backoff on quota
-P3  Groq Llama-70B     — free, 14,400/day
-P4  Cerebras Llama-70B — free tier
-P5  Mistral Small      — free tier
-P6  OpenRouter (Llama/Qwen/Phi — free models)
-P7  Together Llama-70B — $25 free credits
-P8  FinBERT            — local, financial-domain BERT
-P9  VADER              — local, no install beyond pip
-P10 Keyword fallback   — zero latency, always available
-```
-
-### ML Self-Learning (Phase 2 Active)
-
-- **Phase 1** (< 50 labelled trades): Gemini confidence × 0.65 deflation
-- **Phase 2** (≥ 50): Logistic regression trained on actual trade outcomes. Blended 50% Gemini + 50% model probability. Auto-activates on startup if 50+ labelled examples exist.
-- **695 labelled trades** as of May 2026. Val accuracy and ROC-AUC shown on dashboard.
-
-### 5 Einstein Position Sizing Advancements
-
-| Module | Signal | Effect |
-|---|---|---|
-| Fear & Greed | Extreme Fear + UP | 1.20× size |
-| Directional Kelly | Per-direction historical WR | Up to 1.60× or down to 0.50× |
-| UTC Hour Edge | Self-learned hourly WR | 1.15× / 0.85× |
-| Decay Detector | Rolling 30-trade coin WR | 0.80× when WR < 48% |
-| Volume Surge | vol24hr > 2× liquidity | 1.15× |
-
-All multipliers stack, capped at **2.8× base Kelly**.
-
-### Kalshi Macro Execution
-
-Trades 6 event categories: politics, economics, sports, financials, crypto, technology. Paper positions close after **30 minutes** with confidence-weighted simulation. Cross-cycle dedup prevents re-entering the same market. Open positions survive bot restarts via `_load_open_from_disk()`.
-
----
-
-## Dashboard
-
-Real-time via SSE (Server-Sent Events) + 5s polling fallback.
-
-| Component | Refresh | Description |
-|---|---|---|
-| Bot Status strip | 5s SSE | Balance, P&L, trades, win rate, uptime |
-| Live Trade Feed | Instant SSE | Last 15 trades with flash animation |
-| Positions | 5s | Open + closed with timestamps, unrealized P&L |
-| Equity Curve | 15s | Balance over time |
-| ML Calibration | 15s | Training samples, val accuracy, ROC-AUC, phase |
-| ZiSi Performance | 15s | WR, avg win/loss, all-time stats |
-| Signal Analytics | 15s | By coin, by signal strength |
-
-### Dashboard API
-
-| Endpoint | Description |
-|---|---|
-| `GET /api/positions` | Active + closed positions + summary |
-| `GET /api/events` | SSE stream: balance, trades, heartbeat |
-| `GET /api/health` | Full bot health + signal analytics |
-| `GET /api/equity` | Balance time-series |
-| `GET /api/system-health` | ML status, diagnostics |
-| `GET /api/performance` | ZiSi trade performance stats |
-| `POST /api/control/pause` | Pause signal processing |
-| `POST /api/control/resume` | Resume signal processing |
-
-### Telegram Commands
-
-| Command | Description |
-|---|---|
-| `/status` | Live balance, P&L, win rate, open positions |
-| `/pnl` | Breakdown by market (Polymarket vs Kalshi) |
-| `/positions` | All open positions |
-| `/performance` | By coin and direction |
-| `/help` | Command list |
-
----
-
-## Utilities
-
-### Clean Slate Reset
-
-```bash
-python clean_slate.py              # interactive
-python clean_slate.py --force      # skip confirmation
-python clean_slate.py --balance 200
-```
-
-Resets: `positions_state.json`, `account_state.json`, `system_alerts.json`, `signal_queue.json`  
-Preserves: `zisi_local_trades.jsonl`, `ml_labelled_outcomes.jsonl`, `balance_history.jsonl`
-
----
-
-## Repository Structure
+ZiSi v1 has been completely refactored into a highly modular, decoupled architecture separating business logic from raw execution and presentation layers:
 
 ```
 ZiSi_Bot/
-├── main.py                     Main loop (15-min cycles + rapid-fire scanner)
-├── trader.py                   Polymarket paper/live execution
-├── updown_trader.py            24/7 RSI UP/DOWN cycle + Einstein advancements
-├── rss_fetcher.py              Free multi-source news harvester (new)
-├── sentiment_analyzer.py       10-level AI sentiment cascade
-├── event_matcher.py            Polymarket event matching
-├── signal_router.py            Platform routing (Poly vs Kalshi)
-├── risk_manager.py             Kelly sizing + gate chain
-├── ml_pipeline.py              Outcome labeller + logistic regression trainer
-├── state_manager.py            Account balance + heartbeat persistence
-├── health_monitor.py           90s background health checks
-├── clean_slate.py              State reset utility
-├── data_fetcher.py             Primary news + price fetching
-├── kalshi/
-│   ├── auth.py                 RSA-PSS signature
-│   ├── fetcher.py              6-category market fetch
-│   ├── matcher.py              Signal → Kalshi matching
-│   └── trader.py               Execution + position lifecycle
-└── dashboard/
-    ├── backend/
-    │   ├── server.js           Express API + bot process manager
-    │   └── routes/             REST endpoints + SSE event stream
-    └── frontend/src/           React dashboard (Vite)
-        └── components/
-            ├── BotStatus.jsx   Live balance strip
-            ├── Positions.jsx   Active + closed with timestamps
-            ├── LiveTradeFeed.jsx  Real-time trade feed (SSE)
-            ├── EquityChart.jsx
-            ├── MLStatus.jsx
-            └── PerformanceCard.jsx
+├── app/                        # Bootstrapping and orchestration
+│   ├── main.py                 # Core asyncio runner loop (staggered 15s checks)
+│   ├── sovereign_runner.py     # Independent daemon lifecycler
+│   └── telegram_bot.py         # Chat ops command & control interface
+├── core/                       # Quantitative decision engine
+│   ├── engine/                 # Event matchers, order executors, and cycle control
+│   ├── ml/                     # Labeling models, outcome logs, and ML pipelines
+│   ├── risk/                   # Gating chains and position sizing models
+│   └── shared/                 # Config loaders, telemetry, and common utilities
+├── infrastructure/             # Native API connectors and state managers
+│   ├── exchange/               # Kalshi & Polymarket spot / orderbook feeds
+│   ├── state/                  # Heartbeat watchdogs and local state files
+│   └── websocket/              # Active streams and prices feeds
+└── presentation/               # Multi-platform visual console
+    └── dashboard/              # Bento-style administrative control deck
+        ├── backend/            # Express.js API gateway + process controller
+        └── frontend/           # Premium Vite + React Obsidian-Gold HUD
 ```
 
 ---
 
-## GitHub Actions
+## 🔒 1. Capital Protection Risk Sizing Profiles
 
-Two CI workflows run on every push and pull request to `main`:
+To protect the trade capital stack from extreme market drawdowns, spike liquidations, or quick succession losses, ZiSi v1 enforces a strict, mathematical risk mitigation system inside `core/risk/position_sizer.py`:
 
-| Workflow | Trigger | What it checks |
-|---|---|---|
-| `python-lint.yml` | push / PR | Syntax-checks all `.py` files with `ast.parse`. Flags import errors. |
-| `frontend-build.yml` | push / PR | `npm ci` + `npm run build` in `dashboard/frontend`. Catches JSX/CSS errors. |
+*   **0.5% Base Account Bet Sizing:** Base trade allocations are strictly locked to **0.5% of the total account balance** (e.g., exactly `$0.50` on a `$100.00` bankroll). This ensures a survival runway of over 200 consecutive losses.
+*   **Hard Sizing Cap:** To completely isolate the account from sudden indicator failures or extreme volatility spikes, all position sizes are locked behind a **hard absolute limit of $2.00 per trade**. Kelly multipliers and adaptive weights can scale allocations downward, but can never breach this limit.
+*   **Regime-Adaptive Kelly Modifiers:** When volatility peaks (high-volatility ATR regime), a strict **0.50x modifier** is immediately applied to all bet sizes, instantly halving risk exposure.
+*   **Decay & Expiry Filters:** If an asset's rolling 10-trade win rate falls below 30%, size allocations scale down to **0.50x**. Additionally, markets expiring in less than 1 hour are penalised with a **0.30x scaling factor** to mitigate late-expiry slippage.
 
 ---
 
-## Troubleshooting
+## 🛡️ 2. Self-Healing Heartbeat Watchdog
 
-**No trades for several cycles**  
-Check `[CYCLE-SUMMARY]` — shows which gate rejects most signals. Common: wide spreads, no matching events, dead-hour filter active (1–4 AM UTC).
+To guarantee 100% continuous uptime and bypass silent asyncio freezes, ZiSi v1 integrates an active **Self-Healing Watchdog** directly into the Node.js Express server (`presentation/dashboard/backend/server.js`):
 
-**Kalshi not closing trades**  
-Open positions are restored from disk on restart via `_load_open_from_disk()`. Hold time is 30 minutes. Check `[KALSHI-CLOSE]` in logs after 30 min.
+*   **Active Uptime Scans:** The backend server queries the shared `account_state.json` file every **60 seconds**.
+*   **Liveness Tracking:** The trading bot updates its timestamped liveness key (`last_updated`) at the beginning of its boot sequence and at the end of every active scanning cycle.
+*   **Automatic Restarts:** If the heartbeat becomes **older than 4 minutes (240 seconds)**, the Express server flags a freeze event.
+*   **Force Kill & Recover:** On Windows, the watchdog executes a force-kill chain using the system tree-killer:
+    `taskkill /F /T /PID <botProcess.pid>`
+    Once terminated, Node's unexpected exit hook catches the death, waits 15 seconds for socket buffers to clear, and auto-spawns a fresh Python process under `C:\Python313\python.exe` to restore active trading seamlessly.
 
-**Dashboard shows old win rate**  
-Win rate recomputes from `positions_state.json` closed array. After mule-history removal it will reflect ZiSi-only trades (72.9%).
+---
 
-**ML still Phase 1**  
-`ensure_phase2_activated()` runs at startup. If `ml_labelled_outcomes.jsonl` has 50+ lines and `lr_model.pkl` doesn't exist, training runs immediately. Check `[ML-TRAIN]` in startup logs.
+## 📊 3. Institutional Bento Analytics Tab
 
-**Rapid scanner not firing**  
-`rapid_fire_queue.json` is created when a spike signal is detected. Check `[RAPID]` in logs. Scanner runs every 90s — check for RSS fetch failures under `[RSS]`.
+The refactored presentation layer introduces an ultra-premium, dark-obsidian bento-style **Analytics Tab** (`presentation/dashboard/frontend/src/components/Analytics.jsx`) that extracts advanced mathematical metrics directly from the live trading states:
 
-**Ctrl+C / shutdown**  
-Uses `threading.Event` — responds immediately. Shadow monitor + rapid scanner stop cleanly. Give 2–3 seconds for final disk writes.
+*   **Technical Signal Confluence Radar:** A live, comprehensive checklist displaying real-time indicator statuses (RSI, Momentum, Order Flow Imbalance, Volume Multipliers, and AI Sentiment confidence) for all **13 active asset-timeframe loops** (BTC, ETH, SOL, XRP, ADA, LINK, DOGE, AVAX, SUI).
+*   **Volatility Regime Radar:** A real-time volatility tracking panel visualising whether the current market state is `NORMAL` or `TURBULENT`, highlighting active ATR percentages and the corresponding Kelly bet modifier applied to the sizer.
+*   **Hourly Execution Profitability Heatmap:** A beautiful 24-box HSL-colored grid mapping trade density and win rates to their respective UTC execution hours. This helps identify profitable trading sessions and filters out dead-hour trading zones.
+*   **Mathematical Risk & Expectancy Profiles:** High-fidelity metrics displaying the mathematical edge:
+    *   *Profit Factor:* Gross profits divided by gross losses.
+    *   *Expectancy/Bet:* Net average profit or loss generated per executed position.
+    *   *Max Drawdown & Active Lose Streak:* Tracks peak-to-trough capital decline.
+    *   *Risk of Ruin Profile:* A probabilistic risk metric based on win rates and sizing caps.
+*   **Ensemble ML Retraining Engine:** A progress tracker monitoring the live sample gathering count, illustrating progress towards the 50-sample limit required to trigger automatic retraining of the Phase 2 logistic regression ensemble models.
+
+---
+
+## 🚀 Quick Start Guide
+
+### Prerequisites
+*   Windows OS (configured for PowerShell execution)
+*   Python `3.13.x` (installed at `C:\Python313\python.exe`)
+*   Node.js `18.x` or `20.x`
+
+### 1. Installation
+
+Clone the repository and install the comprehensive dependencies for both the core engine and the dashboard server:
+
+```powershell
+# Core Python libraries
+pip install -r requirements.txt
+
+# Dashboard dependencies
+cd presentation/dashboard/backend
+npm install
+cd ../frontend
+npm install
+```
+
+### 2. Configure Environment
+
+Create a `.env` file in the root directory:
+
+```env
+# Bot Sizing & Risk Parameters
+BOT_MODE=paper_trading              # paper_trading | live_trading
+ACCOUNT_BALANCE=100.0
+RISK_PER_TRADE_PERCENT=0.5
+SIGNAL_THRESHOLD=6.0
+
+# Kalshi & Polymarket Credentials
+KALSHI_API_KEY=your_key_id
+KALSHI_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+
+# Multi-Tiered AI Sentiment Keys (First active key takes precedence)
+ANTHROPIC_API_KEY=your_claude_key
+GEMINI_API_KEY=your_gemini_key
+GROQ_API_KEY=your_groq_key
+```
+
+### 3. Build & Run
+
+To build the production frontend assets and launch the unified trading suite:
+
+```powershell
+# In the repository root
+npm run build   # Compiles frontend React bundle
+npm start       # Launches Node API server, activates the watchdog, and spawns the bot
+```
+
+Navigate to **`http://localhost:5000`** in your browser to access the premium gold-obsidian ZiSi v1 console.
+
+---
+
+## 🛠️ Utilities
+
+### State Resetter (`clean_slate.py`)
+To clean up trading states, reset the simulation ledger, or adjust starting balances while keeping ML historical training logs intact:
+```powershell
+python clean_slate.py --balance 100.0 --force
+```
+*Resets:* `positions_state.json`, `account_state.json`, `system_alerts.json`, `signal_queue.json`  
+*Preserves:* `ml_training_data.jsonl` (protects core logistic regression training logs!)
+
+### Desktop Branding Shortcut
+A rounded, custom gold-branded desktop icon is saved at `presentation/dashboard/frontend/public/zisi_desktop_icon.png`. A fast internet shortcut (`ZiSi.url`) resides directly on the Windows Desktop for instant single-click trading hub access.
+
+---
+
+## 🛡️ License & Attributions
+**ZiSi v1** is a proprietary high-frequency predictive arbitrage engine. Developed with deep mathematical rigor and state-of-the-art AI-assisted pairs coding.

@@ -411,7 +411,7 @@ Full viewport, 3-row grid:
 **File:** `CommandCentre.jsx`
 
 Elements (left to right):
-- **ZiSi** wordmark in Oswald 900 — `--color-accent` (`#2b7fff`)
+- **ZiSi logo** — `ZiSi_Final_Logo.png` (zebra-stripe icon + "Zisi" navy wordmark), height 32px, copied to `dashboard/frontend/src/assets/`
 - Divider `|`
 - **Live balance** — monospace, green/red delta indicator
 - **Daily P&L** — `+$X.XX` green or `−$X.XX` red, Montserrat 500

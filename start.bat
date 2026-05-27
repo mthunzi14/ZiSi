@@ -14,14 +14,14 @@ echo.
 echo  Press Ctrl+C once to stop all services cleanly.
 echo.
 
-cd /d "%~dp0dashboard\backend"
+cd /d "%~dp0presentation\dashboard\backend"
 
 REM Check if frontend has been built; if not, build it first
 if not exist "..\frontend\dist\index.html" (
     echo [ZiSi] Frontend not built yet - building now...
-    cd /d "%~dp0dashboard\frontend"
+    cd /d "%~dp0presentation\dashboard\frontend"
     call npm run build
-    cd /d "%~dp0dashboard\backend"
+    cd /d "%~dp0presentation\dashboard\backend"
 )
 
 REM Start everything (server.js spawns the bot automatically)

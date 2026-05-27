@@ -1,0 +1,51 @@
+# regime_filter.py - ATR-based regime + UTC time gate
+import json
+import logging
+import os
+from datetime import datetime, timezone
+from typing import Literal
+
+log = logging.getLogger("zisi.regime_filter")
+
+_REGIME_STATUS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "regime_status.json"
+)
+
+def get_regime_mode(timeframe: str = "5m") -> Literal["TREND", "MEAN_REVERSION"]:
+    """
+    Read real-time ATR/volatility status from regime_status.json instead of calendar.
+    For 5m/15m: RANGE and NORMAL -> MEAN_REVERSION; VOLATILE/SHOCK -> TREND.
+    For daily/others: RANGE -> MEAN_REVERSION; others -> TREND.
+    """
+    tf = str(timeframe).lower()
+    try:
+        if os.path.exists(_REGIME_STATUS_PATH):
+            with open(_REGIME_STATUS_PATH, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+                regime = data.get("regime", "NORMAL")
+                if tf in ("5m", "15m"):
+                    if regime in ("RANGE", "NORMAL"):
+                        return "MEAN_REVERSION"
+                    return "TREND"
+                else:
+                    if regime == "RANGE":
+                        return "MEAN_REVERSION"
+                    return "TREND"
+    except Exception as e:
+        log.warning("[RegimeFilter] Failed to read regime_status.json, defaulting to TREND: %s", e)
+    
+    return "TREND"
+
+
+def time_gate_open() -> bool:
+    """Return True to run 24/7 (Time Gate removed)."""
+    return True
+
+
+def apply_regime(direction: str, regime: str) -> str:
+    """
+    Apply regime logic to a raw RSI signal direction.
+    Always trade in the direction of raw momentum (inversion disabled).
+    """
+    return direction
+

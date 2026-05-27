@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router    = express.Router();
 const BOT_ROOT  = path.join(__dirname, '../../..');
 
-const POSITIONS_FILE = path.join(BOT_ROOT, 'positions_state.json');
+const POSITIONS_FILE = path.join(BOT_ROOT, 'infrastructure', 'exchange', 'positions_state.json');
 
 function safeRead(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }

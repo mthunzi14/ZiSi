@@ -84,7 +84,7 @@ router.get('/', (req, res) => {
     const recent_alerts  = alerts.slice(-10).reverse(); // last 10, newest first
 
     // ── Positions age summary ──────────────────────────────────────────────
-    const posData = readJson(path.join(BOT_ROOT, 'positions_state.json'), { active: [] });
+    const posData = readJson(path.join(BOT_ROOT, 'infrastructure', 'exchange', 'positions_state.json'), { active: [] });
     const active = posData.active || [];
     const now = Date.now();
     const position_ages = active.map(p => {

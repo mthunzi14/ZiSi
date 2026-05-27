@@ -38,7 +38,7 @@ class EmailScheduler:
         self._enabled: bool = bool(gmail_enabled and self.sender_email and self.sender_password)
 
         if not self._enabled:
-            log.info("EmailScheduler disabled (GMAIL_ENABLED=false) — Telegram is the sole notification channel")
+            log.debug("EmailScheduler disabled — Telegram is the sole notification channel")
 
     # ── Scheduling logic ─────────────────────────────────────────────────────
 

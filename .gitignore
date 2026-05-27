@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
@@ -64,3 +64,18 @@ desktop.ini
 *API KEY*.docx
 *api_key*.docx
 
+# ZiSi local runtime states & scratch
+.codex/
+scratch/
+taste-skill-beta-v2/
+pmxt/
+archive/
+calibration_state.json
+category_suspensions.json
+diagnostics_state.json
+macro_context.json
+markov_state.json
+pyth_prices.json
+metrics_*.json
+trade_journal_export.csv
+zisi_bot_console.log

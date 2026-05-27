@@ -1,0 +1,141 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Syne:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap');
+
+:root {
+  /* Mtsunzi Styling / FutureDesk Palette - Overhauled to Warm Obsidian & Dark Gold */
+  --color-cream-light:  #0c0c0e;   /* page background - Charcoal Black */
+  --color-cream-deep:   #1b1b1e;   /* section backgrounds, input fills */
+  --color-cream-dark:   #2b2b30;   /* hover states, badges */
+  --color-obsidian:     #fafaf9;   /* primary text, primary buttons */
+  --color-ink:          #ffffff;   /* text hover */
+  --color-graphite:     #a1a1aa;   /* secondary text, captions */
+  --color-iron:         #71717a;   /* muted text, placeholder, inactive nav */
+  --color-mist:         #3f3f46;   /* scrollbar thumb, dividers */
+  --color-snow:         #161619;   /* card surfaces, modals */
+
+  /* Semantic Aliases */
+  --color-bg:             #0c0c0e;   /* body background */
+  --color-surface:        #161619;   /* card / panel surface */
+  --color-border:         #27272a;   /* default card borders */
+  --color-border-subtle:  #1f1f23;   /* inner borders, section separators */
+  --color-text-primary:   #fafaf9;
+  --color-text-secondary: #a1a1aa;
+  --color-text-muted:     #71717a;
+  --color-accent:         #c59b27;   /* premium dark gold accent */
+  --color-profit:         #10b981;   /* premium bright emerald green */
+  --color-loss:           #ef4444;   /* premium vibrant ruby red */
+  --color-amber:          #f97316;   /* premium warm amber */
+  --color-accent-muted:   #b45309;
+
+  /* Typography variables */
+  --font-primary: 'Outfit', 'DM Sans', system-ui, sans-serif;
+  --font-display: 'Syne', 'Outfit', sans-serif;
+
+  /* Spacing */
+  --spacing-4:    4px;
+  --spacing-8:    8px;
+  --spacing-12:   12px;
+  --spacing-16:   16px;
+  --spacing-20:   20px;
+  --spacing-24:   24px;
+  --spacing-28:   28px;
+  --spacing-32:   32px;
+  --spacing-40:   40px;
+  --spacing-48:   48px;
+  --section-gap:  56px;   /* between major sections */
+  --card-padding: 32px;   /* internal card padding */
+
+  /* Border radius */
+  --radius-sm:    8px;     /* small inputs, chips */
+  --radius-md:    14px;    /* inputs, small buttons */
+  --radius-lg:    20px;    /* nav items, small cards */
+  --radius-cards: 24px;    /* standard cards */
+  --radius-hero:  32px;    /* hero cards, CTAs, dark banners */
+  --radius-full:  9999px;  /* pills, full-round buttons, badges */
+
+  /* Shadows */
+  --shadow-xs:      0 1px 2px rgba(9,9,11,0.02);
+  --shadow-sm:      0 3px 12px rgba(9,9,11,0.03), 0 1px 2px rgba(9,9,11,0.02);
+  --shadow-md:      0 8px 24px rgba(9,9,11,0.04), 0 2px 8px rgba(9,9,11,0.02);
+  --shadow-lg:      0 16px 48px rgba(9,9,11,0.06), 0 4px 16px rgba(9,9,11,0.03);
+  --shadow-premium: 0px 30px 60px rgba(0,0,0,0.04),
+                    0px 4px 10px rgba(0,0,0,0.01),
+                    inset 0 1px 0 rgba(255,255,255,0.6);
+}
+
+:root[data-theme='light'] {
+  /* Mtsunzi Styling / FutureDesk Palette - Linen & White-Gold Light Mode */
+  --color-cream-light:  #fafaf7;   /* Warm linen page background */
+  --color-cream-deep:   #f4f4eb;   /* Light card surface backgrounds */
+  --color-cream-dark:   #e9e9da;   /* Hover, active state deep linen */
+  --color-obsidian:     #121214;   /* Charcoal primary text/button background */
+  --color-ink:          #000000;   /* Deepest black hover text */
+  --color-graphite:     #52525b;   /* Secondary zinc text */
+  --color-iron:         #71717a;   /* Tertiary text, placeholders */
+  --color-mist:         #e4e4e7;   /* Dividers, borders */
+  --color-snow:         #ffffff;   /* Pure white card surface background */
+
+  /* Semantic Aliases */
+  --color-bg:             #fafaf7;
+  --color-surface:        #ffffff;
+  --color-border:         #e4e4e7;
+  --color-border-subtle:  #f4f4f5;
+  --color-text-primary:   #121214;
+  --color-text-secondary: #52525b;
+  --color-text-muted:     #71717a;
+  --color-accent:         #c59b27;   /* Polished gold accent - remains gold! */
+  --color-profit:         #10b981;
+  --color-loss:           #ef4444;
+  --color-amber:          #f97316;
+  --color-accent-muted:   #d97706;
+
+  /* Adjust shadow for light theme for high-end feel */
+  --shadow-xs:      0 1px 2px rgba(9,9,11,0.05);
+  --shadow-sm:      0 3px 12px rgba(9,9,11,0.04), 0 1px 2px rgba(9,9,11,0.03);
+  --shadow-md:      0 8px 24px rgba(9,9,11,0.05), 0 2px 8px rgba(9,9,11,0.03);
+  --shadow-lg:      0 16px 48px rgba(9,9,11,0.07), 0 4px 16px rgba(9,9,11,0.04);
+}
+
+/* Global resets & selections */
+::selection {
+  background: var(--color-accent);
+  color: #0c0c0e;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+html, body {
+  background-color: var(--color-cream-light);
+  color: var(--color-obsidian);
+  font-family: var(--font-primary);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* Scrollbar setup */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-cream-deep);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-mist);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-iron);
+}
