@@ -155,10 +155,11 @@ async def _evaluate_market_signals(
         candle_start = (int(now_ts) // (interval_minutes * 60)) * (interval_minutes * 60)
         elapsed = now_ts - candle_start
         
-        # Strict 8-second Execution Gate to prevent late/slippage FOMO entries
-        if elapsed > 8.0:
+        # Execution Gate: 12s window (was 8s) — gives staggered assets enough runway
+        # 12s is still only 4% of a 300-second 5m candle; slippage risk is negligible
+        if elapsed > 12.0:
             log.warning(
-                "[MAIN] %s/%s LATE_ENTRY_ABORT: elapsed time %.1fs exceeds 8.0s execution gate. Skipping candle.",
+                "[MAIN] %s/%s LATE_ENTRY_ABORT: elapsed time %.1fs exceeds 12.0s execution gate. Skipping candle.",
                 asset, timeframe, elapsed
             )
             return None
@@ -169,9 +170,9 @@ async def _evaluate_market_signals(
 
         now_ts_after = datetime.now(timezone.utc).timestamp()
         elapsed_after = now_ts_after - candle_start
-        if elapsed_after > 8.0:
+        if elapsed_after > 12.0:
             log.warning(
-                "[MAIN] %s/%s LATE_ENTRY_ABORT: post-evaluation elapsed time %.1fs exceeds 8.0s gate.",
+                "[MAIN] %s/%s LATE_ENTRY_ABORT: post-evaluation elapsed time %.1fs exceeds 12.0s gate.",
                 asset, timeframe, elapsed_after
             )
             return None
@@ -213,13 +214,21 @@ async def _validate_trade_slot(
     if is_dual and (up_price + dn_price) >= DUAL_ENTRY_MAX_COMBINED:
         is_dual = False
 
-    # Strict 53¢ Price Ceiling to guarantee positive symmetric risk-to-reward ratio (half-Kelly expectation floor)
+    # Score-Tiered Price Ceiling — preserves edge on high-conviction signals while
+    # still protecting against buying near-resolved expensive contracts on weak signals.
+    # EV analysis: score=0.76 at 58¢ DOWN → est WR 65% → EV = 0.65×0.42 - 0.35×0.58 = +8.7¢/$ edge.
     if not is_dual and (timeframe in ("5m", "15m")):
-        if entry_price > 0.53:
-            context.log_skip("entry_price_expensive", asset, timeframe, {"price": entry_price})
+        if score >= 0.70:
+            price_ceiling = 0.62   # High conviction: allow up to 62¢
+        elif score >= 0.62:
+            price_ceiling = 0.57   # Moderate conviction: up to 57¢
+        else:
+            price_ceiling = 0.53   # Low conviction: original strict ceiling
+        if entry_price > price_ceiling:
+            context.log_skip("entry_price_expensive", asset, timeframe, {"price": entry_price, "ceiling": price_ceiling, "score": score})
             log.info(
-                "[MAIN] %s/%s LATE_WICK_ABORT: entry price %.4f exceeds strict 53¢ price ceiling. Skipping trade entry.",
-                asset, timeframe, entry_price
+                "[MAIN] %s/%s PRICE_CEILING_ABORT: entry price %.4f exceeds %.2f¢ ceiling for score=%.2f. Skipping.",
+                asset, timeframe, entry_price, price_ceiling * 100, score
             )
             return False, {}
 

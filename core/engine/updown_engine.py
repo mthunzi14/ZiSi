@@ -346,8 +346,8 @@ class UpDownEngine:
 
         # Raw direction from RSI & OFI Confluence (Tighter indicators to ensure high win rate)
         if (rsi > 60 and mom >= 0.02) or (rsi > 54 and mom >= 0.01 and ofi > 0.45):
-            # Relaxed OFI divergence gate for consolidated/neutral markets (RSI 45-55) vs trending markets
-            ofi_up_block_threshold = -0.35 if (45 <= rsi <= 55) else -0.20
+            # OFI divergence gate: loosen to 0.28 for 5m (noisy), 0.20 for 15m (stable)
+            ofi_up_block_threshold = -0.35 if (45 <= rsi <= 55) else (-0.28 if self.timeframe == "5m" else -0.20)
             if ofi < ofi_up_block_threshold:
                 log.info("[ENGINE] %s/%s: Spot OFI divergence/selling pressure (OFI = %.4f). Blocking UP trade entry (threshold %.2f).", self.asset, self.timeframe, ofi, ofi_up_block_threshold)
                 return None
@@ -355,8 +355,8 @@ class UpDownEngine:
             rsi_eff = max(rsi, 60)
             score_base = min(0.85, 0.50 + (rsi_eff - 60) / 40 * 0.35)
         elif (rsi < 40 and mom <= -0.02) or (rsi < 46 and mom <= -0.01 and ofi < -0.45):
-            # Relaxed OFI divergence gate for consolidated/neutral markets (RSI 45-55) vs trending markets
-            ofi_dn_block_threshold = 0.35 if (45 <= rsi <= 55) else 0.20
+            # OFI divergence gate: loosen to 0.28 for 5m (noisy), 0.20 for 15m (stable)
+            ofi_dn_block_threshold = 0.35 if (45 <= rsi <= 55) else (0.28 if self.timeframe == "5m" else 0.20)
             if ofi > ofi_dn_block_threshold:
                 log.info("[ENGINE] %s/%s: Spot OFI divergence/buying pressure (OFI = %.4f). Blocking DOWN trade entry (threshold %.2f).", self.asset, self.timeframe, ofi, ofi_dn_block_threshold)
                 return None
