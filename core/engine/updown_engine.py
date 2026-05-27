@@ -496,9 +496,8 @@ class UpDownEngine:
         polymarket_l2_gateway.subscribe(up_tk)
         polymarket_l2_gateway.subscribe(dn_tk)
 
-        # Relax spread checks under paper trading mode to enable active trade testing
-        _is_paper = get_config("BOT_MODE") == "paper_trading"
-        effective_max_spread = 0.99 if _is_paper else max_spread
+        # Always enforce live spread gate regardless of mode — this is a live simulation
+        effective_max_spread = max_spread
 
         up_price, dn_price = None, None
         for attempt in range(4):
@@ -552,22 +551,13 @@ class UpDownEngine:
                 if spread <= effective_max_spread:
                     return derived_up, dn_p, spread
 
-        if _is_paper:
-            # High-fidelity Spot-derived fallback to ensure active paper trade flows
-            rsi_val = getattr(self, "_last_rsi", 50.0)
-            # Base price is 0.50. High RSI pushes UP higher and DOWN lower, and vice versa
-            rsi_shift = (rsi_val - 50.0) * 0.005  # Up to +/- 10c
-            up_price = round(0.50 + rsi_shift, 4)
-            # Ensure price stays within reasonable boundaries
-            up_price = max(0.10, min(0.90, up_price))
-            dn_price = round(1.0 - up_price, 4)
-            spread = 0.04
-            log.info(
-                "[PAPER-FALLBACK] %s/%s: Resolved dry CLOB book via Spot RSI(%.1f) -> up=%.2fc dn=%.2fc",
-                self.asset, self.timeframe, rsi_val, up_price * 100, dn_price * 100
-            )
-            return up_price, dn_price, spread
-
+        # Hard skip — no live book means no trade. PAPER-FALLBACK removed.
+        # This bot simulates live capital. RSI-derived fake prices produce blind bets.
+        # If Polymarket has no live book for this candle yet, we wait for the next one.
+        log.warning(
+            "[LIVE-BOOK-REQUIRED] %s/%s: No valid L2 book after 4 attempts. Hard-skipping candle.",
+            self.asset, self.timeframe
+        )
         return None
 
     async def prefetch_upcoming_market(self, session: aiohttp.ClientSession, next_boundary: int) -> None:
