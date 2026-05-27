@@ -3,15 +3,24 @@ import { useState } from 'react';
 import CountUpStats from './common/CountUpStats';
 
 export default function Analytics({ state = {} }) {
-  const byUTC = state.byUTC || [];
-  const profitFactor = state.profitFactor || 0;
-  const expectancy = state.expectancy || 0;
-  const maxDrawdown = state.maxDrawdown || 0;
-  const currentDrawdown = state.currentDrawdown || 0;
-  const consecutiveLosses = state.consecutiveLosses || 0;
-  const riskOfRuin = state.riskOfRuin || 'Low';
-  const regime = state.regime || { regime: 'NORMAL', label: 'Normal', atr_pct: 0, kelly_multiplier: 1.0 };
-  const mlProgress = state.ml_progress || { cycles_collected: 0, cycles_needed: 50, progress_percent: 0 };
+  const safeState = state || {};
+  const byUTC = safeState.byUTC || [];
+  
+  const profitFactor = parseFloat(safeState.profitFactor ?? 0);
+  const expectancy = parseFloat(safeState.expectancy ?? 0);
+  const maxDrawdown = parseFloat(safeState.maxDrawdown ?? 0);
+  const currentDrawdown = parseFloat(safeState.currentDrawdown ?? 0);
+  const consecutiveLosses = parseInt(safeState.consecutiveLosses ?? 0, 10);
+  const riskOfRuin = safeState.riskOfRuin || 'Low';
+  
+  const regime = safeState.regime || { regime: 'NORMAL', label: 'Normal', atr_pct: 0, kelly_multiplier: 1.0 };
+  const atrPct = parseFloat(regime.atr_pct ?? 0);
+  const kellyMultiplier = parseFloat(regime.kelly_multiplier ?? 1.0);
+  
+  const mlProgress = safeState.ml_progress || { cycles_collected: 0, cycles_needed: 50, progress_percent: 0 };
+  const mlCollected = parseInt(mlProgress.cycles_collected ?? 0, 10);
+  const mlNeeded = parseInt(mlProgress.cycles_needed ?? 50, 10);
+  const mlPercent = parseFloat(mlProgress.progress_percent ?? 0);
 
   // Generate complete 24-hour UTC grid list
   const hoursGrid = Array.from({ length: 24 }, (_, h) => {
@@ -181,7 +190,7 @@ export default function Analytics({ state = {} }) {
                 15m ATR Percentage (Volatility)
               </span>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: '700', color: 'var(--color-obsidian)' }}>
-                {(parseFloat(regime.atr_pct || 0) * 100).toFixed(3)}%
+                {(atrPct * 100).toFixed(3)}%
               </span>
             </div>
 
@@ -191,7 +200,7 @@ export default function Analytics({ state = {} }) {
                 Regime Kelly Bet Sizer Modifier
               </span>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: '700', color: 'var(--color-accent)' }}>
-                {parseFloat(regime.kelly_multiplier || 1.0).toFixed(2)}x
+                {kellyMultiplier.toFixed(2)}x
               </span>
             </div>
 
@@ -326,7 +335,7 @@ export default function Analytics({ state = {} }) {
                 Ensemble Cycle Progress
               </span>
               <span style={{ fontFamily: 'var(--font-mono)', fontWeight: '700', color: 'var(--color-accent)' }}>
-                {mlProgress.progress_percent.toFixed(0)}% Complete
+                {mlPercent.toFixed(0)}% Complete
               </span>
             </div>
             
@@ -340,7 +349,7 @@ export default function Analytics({ state = {} }) {
               position: 'relative'
             }}>
               <div style={{ 
-                width: `${Math.min(100, mlProgress.progress_percent)}%`, 
+                width: `${Math.min(100, mlPercent)}%`, 
                 height: '100%', 
                 background: 'linear-gradient(90deg, #b45309 0%, var(--color-accent) 100%)',
                 borderRadius: 'inherit',
@@ -355,7 +364,7 @@ export default function Analytics({ state = {} }) {
               Data Samples
             </span>
             <span style={{ fontFamily: 'var(--font-mono)', fontWeight: '700', color: 'var(--color-obsidian)' }}>
-              {mlProgress.cycles_collected} / {mlProgress.cycles_needed} cycles
+              {mlCollected} / {mlNeeded} cycles
             </span>
           </div>
 
@@ -365,7 +374,7 @@ export default function Analytics({ state = {} }) {
               Next Cycle
             </span>
             <span style={{ fontFamily: 'var(--font-mono)', fontWeight: '700', color: 'var(--color-profit)' }}>
-              {mlProgress.cycles_collected >= mlProgress.cycles_needed ? 'READY' : 'GATHERING FEED'}
+              {mlCollected >= mlNeeded ? 'READY' : 'GATHERING FEED'}
             </span>
           </div>
 
