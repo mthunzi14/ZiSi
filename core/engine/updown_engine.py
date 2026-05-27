@@ -315,8 +315,7 @@ class UpDownEngine:
             try:
                 from core.engine.regime_detector import RegimeDetector
                 detector = RegimeDetector(timeframe=self.timeframe, atr_window=14)
-                for c in closes:
-                    detector.update_price(c, symbol="BTC")
+                detector.update_prices(closes, symbol="BTC")
             except Exception as e:
                 log.warning("[ENGINE] Failed to update regime detector: %s", e)
 

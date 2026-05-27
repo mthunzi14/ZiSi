@@ -22,6 +22,7 @@ except ImportError:
 from infrastructure.state.state_manager import (
     initialize_runtime_tracking, update_runtime_tracking,
     update_heartbeat, get_current_balance, initialize_state,
+    _get_trades_count,
 )
 from core.engine.updown_engine import UpDownEngine, register_engine
 from core.risk.risk_manager import entry_price_gate, check_daily_loss_halt, check_exposure_caps
@@ -108,6 +109,27 @@ async def _sleep_to_next_candle(
         sleep_secs = next_boundary - now + 1.5
         if sleep_secs > 0:
             await asyncio.sleep(sleep_secs)
+
+
+async def heartbeat_daemon() -> None:
+    """
+    Independent background heartbeat daemon task.
+    Updates the account state file timestamp every 30 seconds to keep
+    the self-healing watchdog active and prevent false restarts.
+    """
+    log.info("[HEARTBEAT] Starting self-healing heartbeat daemon...")
+    while True:
+        try:
+            # Check if paused flag exists
+            paused = Path("bot_paused.flag").exists()
+            # Get closed trades count
+            trades = _get_trades_count()
+            # Call state manager update
+            update_heartbeat(trades_executed=trades, paused=paused, reason="daemon-tick")
+            log.debug("[HEARTBEAT] Heartbeat written successfully (trades=%d, paused=%s)", trades, paused)
+        except Exception as e:
+            log.error("[HEARTBEAT] Heartbeat daemon tick error: %s", e)
+        await asyncio.sleep(30)
 
 
 async def _evaluate_market_signals(
@@ -524,6 +546,7 @@ async def main() -> None:
 
             tasks.append(reconciliation_loop(state_manager, _try_telegram))
             tasks.append(arbitrage_scanner_loop(_try_telegram))
+            tasks.append(heartbeat_daemon())
 
             log.info("[MAIN] Launching %d asyncio tasks (Dynamic asset loops + reconciliation + arbitrage scanner)", len(tasks))
             await asyncio.gather(*tasks)

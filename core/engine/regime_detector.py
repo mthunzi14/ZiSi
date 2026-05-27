@@ -59,6 +59,20 @@ class RegimeDetector:
             symbol, price, self._current_regime, self._current_atr, self.kelly_multiplier,
         )
 
+    def update_prices(self, prices: list[float], symbol: str = "BTC") -> None:
+        """Feed multiple prices at once, recalculating and writing to disk only once at the end."""
+        valid_prices = [p for p in prices if p > 0]
+        if not valid_prices:
+            return
+        now = time.time()
+        for p in valid_prices:
+            self._price_history.append((now, p))
+        self._recalculate()
+        log.debug(
+            "[Regime] %s bulk update finished → regime=%s ATR=%.4f%% Kelly×%.2f",
+            symbol, self._current_regime, self._current_atr, self.kelly_multiplier,
+        )
+
     # ── ATR + regime logic ─────────────────────────────────────────────────────
 
     def _recalculate(self) -> None:

@@ -73,20 +73,27 @@ To protect the trade capital stack from extreme market drawdowns, spike liquidat
 
 ---
 
-## 🛡️ 2. Self-Healing Heartbeat Watchdog
+## 🛡️ 2. Self-Healing Heartbeat Watchdog & Heartbeat Daemon
 
-To guarantee 100% continuous uptime and bypass silent asyncio freezes, ZiSi v1 integrates an active **Self-Healing Watchdog** directly into the Node.js Express server (`presentation/dashboard/backend/server.js`):
+To guarantee 100% continuous uptime and bypass silent asyncio freezes, ZiSi integrates an active **Self-Healing Watchdog** directly into the Node.js Express server (`presentation/dashboard/backend/server.js`) paired with a Python **Heartbeat Daemon** (`app/main.py`):
 
 *   **Active Uptime Scans:** The backend server queries the shared `account_state.json` file every **60 seconds**.
-*   **Liveness Tracking:** The trading bot updates its timestamped liveness key (`last_updated`) at the beginning of its boot sequence and at the end of every active scanning cycle.
+*   **Python Heartbeat Daemon:** Spawns a persistent background task ticking every **30 seconds** to refresh the `last_updated` state. This prevents the bot from appearing stale during its 5-minute and 15-minute candle sleeps, avoiding false terminations.
 *   **Automatic Restarts:** If the heartbeat becomes **older than 4 minutes (240 seconds)**, the Express server flags a freeze event.
 *   **Force Kill & Recover:** On Windows, the watchdog executes a force-kill chain using the system tree-killer:
     `taskkill /F /T /PID <botProcess.pid>`
-    Once terminated, Node's unexpected exit hook catches the death, waits 15 seconds for socket buffers to clear, and auto-spawns a fresh Python process under `C:\Python313\python.exe` to restore active trading seamlessly.
+    Once terminated, Node's unexpected exit hook catches the death, waits 15 seconds, and auto-spawns a fresh Python process under `C:\Python313\python.exe` to restore active trading seamlessly.
 
 ---
 
-## 📊 3. Institutional Bento Analytics Tab
+## ⚙️ 3. Premium Lockable Settings & Hover Sidebar
+
+*   **Vantage Sidebar Hover Zone:** The navigation sidebar implements a vertically centered gold circular pull-handle (`▶`). Bounded within a $140\text{px}$ middle region, hovering expands the sidebar, leaving the top Overview, Analytics, and Settings buttons click-safe in their collapsed states.
+*   **Lockable Settings Panel:** A secure Settings tab (password-protected with `4444`) provides administrative control to **Start** or **Stop** the quantitative trading engine process tree directly from the dashboard, leaving the web server alive in read-only mode.
+
+---
+
+## 📊 4. Institutional Bento Analytics Tab
 
 The refactored presentation layer introduces an ultra-premium, dark-obsidian bento-style **Analytics Tab** (`presentation/dashboard/frontend/src/components/Analytics.jsx`) that extracts advanced mathematical metrics directly from the live trading states:
 

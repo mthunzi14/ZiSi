@@ -43,6 +43,45 @@ app.use('/api/signal-queue',  signalQueueRouter);
 app.use('/api/events',        eventsRouter);
 app.use('/api/performance',   performanceRouter);
 
+// Start / Stop Bot Engine API endpoints for Settings Tab
+app.get('/api/control/system/status', (req, res) => {
+  try {
+    const isRunning = botProcess && !botProcess.killed;
+    res.json({
+      isRunning: !!isRunning,
+      botStopped: botStopped,
+      pid: botProcess ? botProcess.pid : null
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/control/system/start', (req, res) => {
+  try {
+    if (botProcess && !botProcess.killed) {
+      return res.json({ status: 'running', message: 'Bot engine is already running.' });
+    }
+    botStopped = false;
+    startBot();
+    res.json({ status: 'running', message: 'Bot engine started successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/control/system/stop', (req, res) => {
+  try {
+    if (!botProcess || botProcess.killed) {
+      return res.json({ status: 'stopped', message: 'Bot engine is already stopped.' });
+    }
+    stopBot();
+    res.json({ status: 'stopped', message: 'Bot engine stopped successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.use((err, req, res, next) => {
   console.error('Error:', err);
   res.status(500).json({ error: 'Internal server error', details: err.message });
