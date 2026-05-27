@@ -558,3 +558,59 @@
   font-weight: 900;
   animation: floatCalm 45s infinite ease-in-out alternate;
 }
+
+/* Premium Loading Screen Overlay */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: #0c0c0e;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justifyContent: center;
+  transition: opacity 500ms cubic-bezier(0.16, 1, 0.3, 1), visibility 500ms;
+}
+
+.loading-fade-in {
+  opacity: 1;
+  visibility: visible;
+}
+
+.loading-fade-out {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.liquid-metal-text {
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 48px;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  user-select: none;
+  animation: liquidGlow 2.5s ease-in-out infinite;
+}
+
+.progress-fill {
+  animation: progressFill 2.2s ease-in-out forwards;
+}
+
+@keyframes liquidGlow {
+  0%, 100% {
+    text-shadow: 0 0 20px rgba(197, 155, 39, 0.3), 0 0 40px rgba(197, 155, 39, 0.1);
+    color: #ffffff;
+  }
+  50% {
+    text-shadow: 0 0 35px rgba(197, 155, 39, 0.8), 0 0 70px rgba(197, 155, 39, 0.4);
+    color: #c59b27;
+  }
+}
+
+@keyframes progressFill {
+  0% { width: 0%; }
+  40% { width: 35%; }
+  70% { width: 75%; }
+  100% { width: 100%; }
+}
+

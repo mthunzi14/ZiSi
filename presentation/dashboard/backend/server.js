@@ -271,4 +271,18 @@ app.listen(PORT, () => {
 
   // Small delay so the server is fully ready before the bot starts writing files
   setTimeout(startBot, 1_000);
+
+  // Automatically open default browser pointing to local host on startup (Windows)
+  if (process.platform === 'win32') {
+    import('child_process').then(({ exec }) => {
+      setTimeout(() => {
+        try {
+          exec('start http://localhost:5000');
+          console.log('🚀  Automatically launched default browser at http://localhost:5000');
+        } catch (e) {
+          console.error('⚠️  Failed to auto-launch browser:', e.message);
+        }
+      }, 1500);
+    });
+  }
 });

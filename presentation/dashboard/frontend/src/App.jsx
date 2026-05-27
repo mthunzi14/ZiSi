@@ -29,7 +29,25 @@ export default function App() {
   const [uptime, setUptime] = useState('00:00:00');
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
   const [isHovered, setIsHovered] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [fadeClass, setFadeClass] = useState('loading-fade-in');
   const esRef = useRef(null);
+
+  useEffect(() => {
+    // Elegant fade out after 2.4s and complete unmount at 2.9s
+    const fadeTimer = setTimeout(() => {
+      setFadeClass('loading-fade-out');
+    }, 2400);
+
+    const removeTimer = setTimeout(() => {
+      setIsLoading(false);
+    }, 2900);
+
+    return () => {
+      clearTimeout(fadeTimer);
+      clearTimeout(removeTimer);
+    };
+  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -116,6 +134,20 @@ export default function App() {
 
   return (
     <div className="dashboard-container relative overflow-x-hidden min-h-screen">
+      {isLoading && (
+        <div className={`loading-overlay ${fadeClass}`}>
+          <div style={{ textAlign: 'center' }}>
+            <h1 className="liquid-metal-text">Welcome to ZiSi.</h1>
+            <p style={{ fontFamily: 'var(--font-primary)', fontSize: '13px', color: 'var(--color-iron)', marginTop: '8px', letterSpacing: '0.05em' }}>
+              intuitive investing.
+            </p>
+            <div style={{ width: '200px', height: '3px', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '99px', overflow: 'hidden', margin: '24px auto 0 auto', position: 'relative' }}>
+              <div className="progress-fill" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, background: 'var(--color-accent)', borderRadius: '99px', boxShadow: '0 0 8px var(--color-accent)' }}></div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <GhostCursor />
       
       {/* Background drifting symbols */}
