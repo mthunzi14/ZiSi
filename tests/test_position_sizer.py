@@ -68,8 +68,8 @@ class TestPositionSizer(unittest.TestCase):
         }
         
         size = sizer.calculate(signal, market, category_weight=1.0)
-        # Sizing should factor in account balance * 0.005 * sig_mult (1.5) * mkt_mult (1.0) * kelly_mult (1.0) * wr_mult (1.2) = 0.90
-        self.assertAlmostEqual(size, 0.90)
+        # Sizing now uses the half-Kelly adaptive formula capped at _MAX_POSITION_USD (5.00)
+        self.assertAlmostEqual(size, 5.00)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1162,6 +1162,13 @@ def execute_exit(order_id: str, current_price: float, exit_reason: str = "UNKNOW
     except Exception as exc:
         log.debug("[EXIT] Engine outcome notify failed: %s", exc)
 
+    # Feed outcome to Edge Orchestrator (for anti-fragile recovery)
+    try:
+        from core.engine.edge_orchestrator import edge_orchestrator
+        edge_orchestrator.record_trade_outcome(profit, new_balance)
+    except Exception as exc:
+        log.debug("[EXIT] EdgeOrchestrator outcome notify failed: %s", exc)
+
     # Feed every closed trade into the ML pipeline immediately
     try:
         from core.ml.ml_pipeline import link_trade_outcomes as _ml_link

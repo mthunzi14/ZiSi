@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from polytope_solver import PolytopeSolver, kl_divergence, kl_gradient, project_simplex
+from core.engine.polytope_solver import PolytopeSolver, kl_divergence, kl_gradient, project_simplex
 
 class TestPolytopeSolver(unittest.TestCase):
     def test_kl_divergence(self):

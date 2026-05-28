@@ -174,7 +174,7 @@ def _record_history(balance: float, pnl: float) -> None:
         from pathlib import Path
         root = Path(__file__).parent.parent.parent
         sys.path.insert(0, str(root))
-        from balance_history import record_balance
+        from infrastructure.state.balance_history import record_balance
         trades = _get_trades_count()
         record_balance(balance, pnl, trades)
     except Exception as e:

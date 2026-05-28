@@ -34,45 +34,16 @@ export default function App() {
   const esRef = useRef(null);
 
   const [isPrivate, setIsPrivate] = useState(false);
-  const [isHoveredCanvas, setIsHoveredCanvas] = useState(true);
-  const [manualLock, setManualLock] = useState(false);
-
-  // Inactivity detection: 60 seconds (1 minute) of idle triggers the privacy screen
-  useEffect(() => {
-    let idleTimer;
-    const resetTimer = () => {
-      clearTimeout(idleTimer);
-      if (!manualLock && isHoveredCanvas) {
-        setIsPrivate(false);
-      }
-      idleTimer = setTimeout(() => {
-        setIsPrivate(true);
-      }, 60000); // 60 seconds
-    };
-
-    window.addEventListener('mousemove', resetTimer);
-    window.addEventListener('keypress', resetTimer);
-    window.addEventListener('click', resetTimer);
-
-    resetTimer();
-
-    return () => {
-      clearTimeout(idleTimer);
-      window.removeEventListener('mousemove', resetTimer);
-      window.removeEventListener('keypress', resetTimer);
-      window.removeEventListener('click', resetTimer);
-    };
-  }, [manualLock, isHoveredCanvas]);
 
   useEffect(() => {
-    // Elegant fade out after 2.4s and complete unmount at 2.9s
+    // Elegant fade out after 0.4s and complete unmount at 0.6s (lightning fast)
     const fadeTimer = setTimeout(() => {
       setFadeClass('loading-fade-out');
-    }, 2400);
+    }, 400);
 
     const removeTimer = setTimeout(() => {
       setIsLoading(false);
-    }, 2900);
+    }, 600);
 
     return () => {
       clearTimeout(fadeTimer);
@@ -167,13 +138,14 @@ export default function App() {
     <div className="dashboard-container relative overflow-x-hidden min-h-screen">
       {isLoading && (
         <div className={`loading-overlay ${fadeClass}`}>
-          <div style={{ textAlign: 'center' }}>
-            <h1 className="liquid-metal-text">Welcome to ZiSi.</h1>
-            <p style={{ fontFamily: 'var(--font-primary)', fontSize: '13px', color: 'var(--color-iron)', marginTop: '8px', letterSpacing: '0.05em' }}>
-              intuitive investing.
-            </p>
-            <div style={{ width: '200px', height: '3px', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '99px', overflow: 'hidden', margin: '24px auto 0 auto', position: 'relative' }}>
-              <div className="progress-fill" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, background: 'var(--color-accent)', borderRadius: '99px', boxShadow: '0 0 8px var(--color-accent)' }}></div>
+          <div className="loading-content">
+            <div className="premium-logo-glow-wrapper">
+              <h1 className="premium-logo-text">ZiSi.</h1>
+              <div className="premium-logo-glow"></div>
+            </div>
+            <p className="premium-subtitle-text">intuitive investing.</p>
+            <div className="premium-loader-line">
+              <div className="premium-loader-sweep"></div>
             </div>
           </div>
         </div>
@@ -292,11 +264,8 @@ export default function App() {
 
           {/* Manual Privacy Screen Lock */}
           <button
-            onClick={() => {
-              setManualLock(l => !l);
-              setIsPrivate(true);
-            }}
-            className={`nav-item ${manualLock ? 'nav-item-active nav-active-glow' : ''}`}
+            onClick={() => setIsPrivate(p => !p)}
+            className={`nav-item ${isPrivate ? 'nav-item-active nav-active-glow' : ''}`}
             style={{
               border: 'none',
               background: 'transparent',
@@ -311,14 +280,23 @@ export default function App() {
               transition: 'all 180ms cubic-bezier(0.16, 1, 0.3, 1)',
               marginTop: 'auto'
             }}
-            title={manualLock ? "Unlock Dashboard" : "Lock Dashboard"}
+            title={isPrivate ? "Unlock Dashboard" : "Lock Dashboard"}
           >
-            <svg style={{ width: '16px', height: '16px', color: 'var(--color-accent)' }} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-            </svg>
+            {isPrivate ? (
+              // Eye Slash SVG (represents hidden / privacy mode active)
+              <svg style={{ width: '16px', height: '16px', color: isPrivate ? '#0c0c0e' : 'var(--color-accent)' }} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />
+              </svg>
+            ) : (
+              // Eye SVG (represents visible / privacy mode inactive)
+              <svg style={{ width: '16px', height: '16px', color: isPrivate ? '#0c0c0e' : 'var(--color-accent)' }} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            )}
             {isVisuallyExpanded && (
               <span style={{ fontSize: '13px', fontWeight: '500' }}>
-                {manualLock ? 'Unlock view' : 'Lock view'}
+                {isPrivate ? 'Unlock view' : 'Lock view'}
               </span>
             )}
           </button>
@@ -390,34 +368,30 @@ export default function App() {
       {/* RIGHT PANE: Main Content Canvas */}
       <main className="main-canvas page-fade-enter canvas-collapsed" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
         {activeTab === 'overview' && (
-          <div 
-            onMouseEnter={() => {
-              setIsHoveredCanvas(true);
-              if (!manualLock) setIsPrivate(false);
-            }}
-            onMouseLeave={() => {
-              setIsHoveredCanvas(false);
-              setIsPrivate(true);
-            }}
-            style={{ display: 'flex', flexDirection: 'column', gap: '20px', position: 'relative' }}
-          >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', position: 'relative' }}>
             {/* Smooth Motion Privacy Screen Overlay */}
-            <div 
-              className={`privacy-overlay ${(isPrivate || manualLock || !isHoveredCanvas) ? 'privacy-overlay-active' : ''}`}
-            >
+            <div className={`privacy-overlay ${isPrivate ? 'privacy-overlay-active' : ''}`}>
               <div className="privacy-card">
-                <div className="rotating-gold-border-container">
+                <div className="premium-lock-container" onClick={() => setIsPrivate(false)}>
                   <div className="rotating-gold-border"></div>
-                  <div className="privacy-lock-icon" onClick={() => {
-                    setManualLock(false);
-                    setIsPrivate(false);
-                  }}>
-                    {(isPrivate || manualLock || !isHoveredCanvas) ? '🔒' : '🔓'}
+                  <div className="premium-lock-body">
+                    <svg className="premium-lock-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="5" y="11" width="14" height="11" rx="2" ry="2" />
+                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                      <circle cx="12" cy="16" r="1.5" />
+                    </svg>
                   </div>
+                  {/* Opaque moving symbols around the lock */}
+                  <div className="orbiting-symbol symbol-1">ZiSi</div>
+                  <div className="orbiting-symbol symbol-2">%</div>
+                  <div className="orbiting-symbol symbol-3">$</div>
+                  <div className="orbiting-symbol symbol-4">⊕</div>
+                  <div className="orbiting-symbol symbol-5">ML</div>
+                  <div className="orbiting-symbol symbol-6">RSI</div>
                 </div>
                 <h2 className="privacy-title">ZiSi QUANTITATIVE WORKSTATION</h2>
                 <p className="privacy-subtitle">Financial Overview Protected</p>
-                <p className="privacy-instructions">Hover cursor inside canvas or click lock to restore view</p>
+                <p className="privacy-instructions">Click gold lock or sidebar icon to restore view</p>
               </div>
             </div>
 

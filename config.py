@@ -8,17 +8,17 @@ import re
 import logging
 from dotenv import load_dotenv
 
-ASSETS: list = ["BTC", "ETH", "SOL", "XRP", "ADA", "LINK", "DOGE", "AVAX", "SUI"]
+# Core active trading assets that have live markets on Polymarket
+ASSETS: list = ["BTC", "ETH", "SOL", "XRP"]
+
+# Inactive/Future altcoins supported by indicators but dormant to prevent rate-limit congestion
+FUTURE_ASSETS: list = ["ADA", "LINK", "DOGE", "AVAX", "SUI"]
+
 TIMEFRAMES: dict = {
     "BTC": ["5m", "15m"],
     "ETH": ["5m", "15m"],
     "SOL": ["5m", "15m"],
     "XRP": ["5m", "15m"],
-    "ADA": ["5m"],
-    "LINK": ["5m"],
-    "DOGE": ["5m"],
-    "AVAX": ["5m"],
-    "SUI": ["5m"],
 }
 
 # Active trading window (UTC hours, inclusive start/exclusive end) - set to 24/7

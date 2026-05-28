@@ -15,7 +15,7 @@ from infrastructure.state.state_manager import get_current_balance, update_balan
 from infrastructure.exchange.trader import place_order, execute_exit
 from infrastructure.state.diagnostics import global_diagnostics
 from core.engine.updown_engine import _fetch_klines_async
-from polytope_solver import PolytopeSolver
+from core.engine.polytope_solver import PolytopeSolver
 from core.engine.block_bundler import BlockBundler
 
 log = logging.getLogger("zisi.arbitrage")

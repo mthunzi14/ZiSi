@@ -236,6 +236,7 @@ class UpDownEngine:
         self._recent_outcomes:  list = []   # True=win, False=loss; rolling 40
         self._prefetched_market: Optional[dict] = None
         self._prefetched_boundary: int = 0
+        self.last_edge_context: Optional[dict] = None
 
     # ── Circuit breaker ───────────────────────────────────────────────────────
 
@@ -455,6 +456,38 @@ class UpDownEngine:
         except Exception as e:
             log.error("[ENGINE] AI Predictor failed: %s", e)
 
+        # ── Edge Architecture Integration (Advancements A-M) ──
+        edge_ctx = {}
+        try:
+            from core.engine.edge_orchestrator import edge_orchestrator
+            sig_dict = {
+                "signal_type": "TYPE_A_HIGH" if (score >= 0.75) else "TYPE_A_LOW",
+                "score": score,
+                "affected_cryptos": [self.asset],
+                "entry_price": up_price if direction == "UP" else dn_price,
+            }
+            edge_ctx = await edge_orchestrator.get_trade_context(
+                session=session,
+                asset=self.asset,
+                direction=direction,
+                signal=sig_dict,
+                market=market,
+                current_price=closes[-1]
+            )
+            self.last_edge_context = edge_ctx
+            
+            boost = edge_ctx.get("combined_confidence_boost", 0.0)
+            if boost != 0.0:
+                old_score = score
+                score = max(0.10, min(1.0, score + boost))
+                log.info("[EDGE] %s/%s Score adjusted by boost: %.2f -> %.2f (boost=%+.2f)", self.asset, self.timeframe, old_score, score, boost)
+            
+            regime = edge_ctx.get("regime_name", regime)
+            
+        except Exception as e:
+            log.warning("[EDGE] Failed to query EdgeOrchestrator in generate_signal: %s", e)
+            self.last_edge_context = None
+
         score = round(score, 4)
 
         if score < 0.50 and not is_dual_eligible:
@@ -477,6 +510,7 @@ class UpDownEngine:
             "momentum":  round(mom, 4),
             "market":    market,
             "is_dual_eligible": is_dual_eligible,
+            "edge_context": edge_ctx,
         }
 
     async def _resolve_l2_prices(
@@ -501,7 +535,8 @@ class UpDownEngine:
 
         up_price, dn_price = None, None
         for attempt in range(4):
-            await asyncio.sleep(0.35 if attempt == 0 else 0.25)
+            # Stretch sleep window (1.0s then 1.5s) to allow Polymarket order books to populate naturally
+            await asyncio.sleep(1.0 if attempt == 0 else 1.5)
             up_price, up_spread = polymarket_l2_gateway.get_price(up_tk)
             dn_price, dn_spread = polymarket_l2_gateway.get_price(dn_tk)
             
@@ -525,31 +560,31 @@ class UpDownEngine:
                 if spread <= effective_max_spread:
                     return derived_up, dn_price, spread
 
-            # REST fallback per token
-            up_book = await _fetch_clob_book_async(session, up_tk)
-            dn_book = await _fetch_clob_book_async(session, dn_tk)
-            up_p, up_s = _parse_clob_book(up_book)
-            dn_p, dn_s = _parse_clob_book(dn_book)
-            
-            # REST 1. Both valid
-            if up_p and dn_p and 0.03 < up_p < 0.97 and 0.03 < dn_p < 0.97:
-                spread = (up_s or 0.03) + (dn_s or 0.03)
-                if spread <= effective_max_spread:
-                    return up_p, dn_p, spread
-            
-            # REST 2. Derive REST DOWN from REST UP
-            if up_p and 0.03 < up_p < 0.97 and (not dn_p or dn_p <= 0.03 or dn_p >= 0.97):
-                derived_dn = round(1.0 - up_p, 4)
-                spread = (up_s or 0.03) + 0.03
-                if spread <= effective_max_spread:
-                    return up_p, derived_dn, spread
-                    
-            # REST 3. Derive REST UP from REST DOWN
-            if dn_p and 0.03 < dn_p < 0.97 and (not up_p or up_p <= 0.03 or up_p >= 0.97):
-                derived_up = round(1.0 - dn_p, 4)
-                spread = (dn_s or 0.03) + 0.03
-                if spread <= effective_max_spread:
-                    return derived_up, dn_p, spread
+        # Single REST fallback check executed exactly once if all WebSocket attempts failed
+        up_book = await _fetch_clob_book_async(session, up_tk)
+        dn_book = await _fetch_clob_book_async(session, dn_tk)
+        up_p, up_s = _parse_clob_book(up_book)
+        dn_p, dn_s = _parse_clob_book(dn_book)
+        
+        # REST 1. Both valid
+        if up_p and dn_p and 0.03 < up_p < 0.97 and 0.03 < dn_p < 0.97:
+            spread = (up_s or 0.03) + (dn_s or 0.03)
+            if spread <= effective_max_spread:
+                return up_p, dn_p, spread
+        
+        # REST 2. Derive REST DOWN from REST UP
+        if up_p and 0.03 < up_p < 0.97 and (not dn_p or dn_p <= 0.03 or dn_p >= 0.97):
+            derived_dn = round(1.0 - up_p, 4)
+            spread = (up_s or 0.03) + 0.03
+            if spread <= effective_max_spread:
+                return up_p, derived_dn, spread
+                
+        # REST 3. Derive REST UP from REST DOWN
+        if dn_p and 0.03 < dn_p < 0.97 and (not up_p or up_p <= 0.03 or up_p >= 0.97):
+            derived_up = round(1.0 - dn_p, 4)
+            spread = (dn_s or 0.03) + 0.03
+            if spread <= effective_max_spread:
+                return derived_up, dn_p, spread
 
         # Hard skip — no live book means no trade. PAPER-FALLBACK removed.
         # This bot simulates live capital. RSI-derived fake prices produce blind bets.
@@ -754,6 +789,43 @@ class UpDownEngine:
 
     def compute_size(self, score: float, price: float, balance: float) -> float:
         """Return USD amount to bet based on AI confidence (Dynamic Kelly) scaled by regime volatility and price bands."""
+        # ── Edge Architecture Adaptive Kelly Sizer (Advancement D) ──
+        if getattr(self, "last_edge_context", None):
+            try:
+                from core.risk.position_sizer import PositionSizer
+                sizer = PositionSizer(account_balance=balance, max_cycle_capital=balance)
+                
+                sig_dict = {
+                    "signal_type": "TYPE_A_HIGH" if (score >= 0.75) else "TYPE_A_LOW",
+                    "score": score,
+                    "affected_cryptos": [self.asset],
+                    "entry_price": price,
+                }
+                mkt_dict = {
+                    "market_type": "UP_DOWN",
+                }
+                
+                ctx = self.last_edge_context
+                usd_size = sizer.calculate_adaptive(
+                    signal=sig_dict,
+                    market=mkt_dict,
+                    regime_kelly=ctx.get("regime_kelly", 1.0),
+                    confluence_boost=ctx.get("confluence_boost", 0.0),
+                    antifragile_mult=ctx.get("antifragile_mult", 1.0),
+                    heat_mult=ctx.get("heat_mult", 1.0),
+                    sentiment_modifier=ctx.get("sentiment_modifier", 0.0),
+                    whale_mult=ctx.get("whale_mult", 1.0),
+                    category_weight=1.0
+                )
+                
+                shares = round(usd_size / price) if price > 0 else 0
+                actual_cost = shares * price
+                log.info("[SIZE] Adaptive Kelly calculated actual cost: $%.2f (shares=%d)", actual_cost, shares)
+                return actual_cost
+            except Exception as e:
+                log.warning("[SIZE] Failed to compute adaptive Kelly size, falling back: %s", e)
+
+        # ── Legacy Sizer Fallback ──
         # Base multiplier from 1.0% to 5.0% depending on score
         if score >= 0.90:
             kelly_pct = 0.05

@@ -10,29 +10,36 @@ export default function RegimeRadarHUD({ state = {} }) {
   const regime = regimeStr.toUpperCase();
   
   const regimeMeta = {
-    NORMAL: {
+    TRENDING: {
       color: 'var(--color-profit)',
-      desc: 'Predictive gates open. Regular volatility thresholds.',
-      limit: '3 positions max',
+      desc: 'Directional momentum detected; lower entry hurdles, trailing exits, aggressive sizing.',
+      limit: 'Lower entry hurdles (0.85x)',
+      ratio: '85%',
+    },
+    MEAN_REVERTING: {
+      color: 'var(--color-accent)',
+      desc: 'Price oscillating around a mean; tighter hurdles, fixed-target exits, baseline sizing.',
+      limit: 'Tighter entry hurdles (1.15x)',
       ratio: '60%',
     },
-    RANGE: {
-      color: 'var(--color-accent)',
-      desc: 'Consolidation regime. Increased trade limits active.',
-      limit: '4 positions max',
-      ratio: '80%',
-    },
-    VOLATILE: {
-      color: 'var(--color-amber)',
-      desc: 'High velocity volatility. Conservative risk controls.',
-      limit: '2 positions max',
-      ratio: '45%',
-    },
-    SHOCK: {
+    VOLATILE_CHAOS: {
       color: 'var(--color-loss)',
-      desc: 'Extreme market event. Minimum exposure gate.',
-      limit: '1 position max',
+      desc: 'Extreme unpredictable chaotic swings; very tight hurdles, tight stops, minimal sizing.',
+      limit: 'Very tight entry hurdles (1.40x)',
       ratio: '20%',
+    },
+    COMPRESSION: {
+      color: 'var(--color-amber)',
+      desc: 'Low-volatility squeeze; slightly reduced hurdles, hold-through-breakout exits, moderate sizing.',
+      limit: 'Reduced entry hurdles (0.90x)',
+      ratio: '75%',
+    },
+    // Keep backward compatibility fallbacks just in case
+    NORMAL: {
+      color: 'var(--color-profit)',
+      desc: 'Normal predictive gates active.',
+      limit: 'Standard entry hurdles',
+      ratio: '60%',
     },
   };
 

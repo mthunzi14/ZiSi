@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router    = express.Router();
 
 const BOT_ROOT    = path.join(__dirname, '../../../../');
-const HISTORY_FILE = path.join(BOT_ROOT, 'balance_history.jsonl');
+const HISTORY_FILE = path.join(BOT_ROOT, 'infrastructure', 'state', 'balance_history.jsonl');
 
 /** GET /api/equity — time-series [{timestamp, balance, pnl, trades}] */
 router.get('/', (req, res) => {

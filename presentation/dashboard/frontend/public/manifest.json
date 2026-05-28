@@ -1,0 +1,16 @@
+{
+  "short_name": "ZiSi",
+  "name": "ZiSi Workstation",
+  "icons": [
+    {
+      "src": "/zisi_desktop_icon.png",
+      "type": "image/png",
+      "sizes": "256x256"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#08080a",
+  "theme_color": "#08080a",
+  "display": "standalone",
+  "orientation": "portrait"
+}
