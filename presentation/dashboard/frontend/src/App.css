@@ -614,3 +614,120 @@
   100% { width: 100%; }
 }
 
+
+/* ── 11. PREMIUM PRIVACY SCREEN OVERLAY ────────────────────────────────────── */
+.privacy-overlay {
+  position: absolute;
+  inset: -12px;
+  background: rgba(12, 12, 14, 0.78);
+  backdrop-filter: blur(25px) saturate(140%);
+  -webkit-backdrop-filter: blur(25px) saturate(140%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xl);
+  border: 1px solid rgba(197, 155, 39, 0.08);
+  transition: opacity 500ms cubic-bezier(0.16, 1, 0.3, 1), visibility 500ms;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.privacy-overlay-active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: all;
+}
+
+.privacy-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 40px;
+  background: rgba(9, 9, 11, 0.6);
+  border: 1px solid rgba(197, 155, 39, 0.15);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), inset 0 0 15px rgba(197, 155, 39, 0.05);
+  max-width: 420px;
+  user-select: none;
+  animation: floatCalm 30s infinite ease-in-out alternate;
+}
+
+.rotating-gold-border-container {
+  position: relative;
+  width: 90px;
+  height: 90px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 24px;
+}
+
+.rotating-gold-border {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: conic-gradient(from 0deg, var(--color-gold) 0%, transparent 60%, var(--color-gold) 100%);
+  animation: rotateBorder 4s infinite linear;
+  filter: blur(1.5px);
+  opacity: 0.85;
+}
+
+.rotating-gold-border-container::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 999px;
+  background: #0c0c0e;
+  z-index: 1;
+}
+
+.privacy-lock-icon {
+  position: relative;
+  z-index: 2;
+  font-size: 32px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 300ms cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+.privacy-lock-icon:hover {
+  transform: scale(1.15);
+}
+
+.privacy-title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 18px;
+  letter-spacing: 0.08em;
+  color: var(--color-gold);
+  margin-bottom: 8px;
+  text-shadow: 0 0 10px rgba(197, 155, 39, 0.2);
+}
+
+.privacy-subtitle {
+  font-family: 'DM Sans', sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  color: #ffffff;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 12px;
+  opacity: 0.9;
+}
+
+.privacy-instructions {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-iron);
+  opacity: 0.7;
+}
+
+@keyframes rotateBorder {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}

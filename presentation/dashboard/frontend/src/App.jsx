@@ -33,6 +33,37 @@ export default function App() {
   const [fadeClass, setFadeClass] = useState('loading-fade-in');
   const esRef = useRef(null);
 
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [isHoveredCanvas, setIsHoveredCanvas] = useState(true);
+  const [manualLock, setManualLock] = useState(false);
+
+  // Inactivity detection: 60 seconds (1 minute) of idle triggers the privacy screen
+  useEffect(() => {
+    let idleTimer;
+    const resetTimer = () => {
+      clearTimeout(idleTimer);
+      if (!manualLock && isHoveredCanvas) {
+        setIsPrivate(false);
+      }
+      idleTimer = setTimeout(() => {
+        setIsPrivate(true);
+      }, 60000); // 60 seconds
+    };
+
+    window.addEventListener('mousemove', resetTimer);
+    window.addEventListener('keypress', resetTimer);
+    window.addEventListener('click', resetTimer);
+
+    resetTimer();
+
+    return () => {
+      clearTimeout(idleTimer);
+      window.removeEventListener('mousemove', resetTimer);
+      window.removeEventListener('keypress', resetTimer);
+      window.removeEventListener('click', resetTimer);
+    };
+  }, [manualLock, isHoveredCanvas]);
+
   useEffect(() => {
     // Elegant fade out after 2.4s and complete unmount at 2.9s
     const fadeTimer = setTimeout(() => {
@@ -259,6 +290,39 @@ export default function App() {
             {isVisuallyExpanded && <span style={{ marginLeft: '10px' }}>Settings</span>}
           </button>
 
+          {/* Manual Privacy Screen Lock */}
+          <button
+            onClick={() => {
+              setManualLock(l => !l);
+              setIsPrivate(true);
+            }}
+            className={`nav-item ${manualLock ? 'nav-item-active nav-active-glow' : ''}`}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: isVisuallyExpanded ? 'flex-start' : 'center',
+              gap: '12px',
+              padding: isVisuallyExpanded ? '10px 14px' : '12px 0',
+              width: '100%',
+              cursor: 'pointer',
+              color: 'var(--color-iron)',
+              transition: 'all 180ms cubic-bezier(0.16, 1, 0.3, 1)',
+              marginTop: 'auto'
+            }}
+            title={manualLock ? "Unlock Dashboard" : "Lock Dashboard"}
+          >
+            <svg style={{ width: '16px', height: '16px', color: 'var(--color-accent)' }} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+            </svg>
+            {isVisuallyExpanded && (
+              <span style={{ fontSize: '13px', fontWeight: '500' }}>
+                {manualLock ? 'Unlock view' : 'Lock view'}
+              </span>
+            )}
+          </button>
+
           {/* Theme Toggle Button */}
           <button
             onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
@@ -275,7 +339,7 @@ export default function App() {
               cursor: 'pointer',
               color: 'var(--color-iron)',
               transition: 'all 180ms cubic-bezier(0.16, 1, 0.3, 1)',
-              marginTop: 'auto'
+              marginTop: '8px'
             }}
             title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
           >
@@ -326,7 +390,37 @@ export default function App() {
       {/* RIGHT PANE: Main Content Canvas */}
       <main className="main-canvas page-fade-enter canvas-collapsed" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
         {activeTab === 'overview' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div 
+            onMouseEnter={() => {
+              setIsHoveredCanvas(true);
+              if (!manualLock) setIsPrivate(false);
+            }}
+            onMouseLeave={() => {
+              setIsHoveredCanvas(false);
+              setIsPrivate(true);
+            }}
+            style={{ display: 'flex', flexDirection: 'column', gap: '20px', position: 'relative' }}
+          >
+            {/* Smooth Motion Privacy Screen Overlay */}
+            <div 
+              className={`privacy-overlay ${(isPrivate || manualLock || !isHoveredCanvas) ? 'privacy-overlay-active' : ''}`}
+            >
+              <div className="privacy-card">
+                <div className="rotating-gold-border-container">
+                  <div className="rotating-gold-border"></div>
+                  <div className="privacy-lock-icon" onClick={() => {
+                    setManualLock(false);
+                    setIsPrivate(false);
+                  }}>
+                    {(isPrivate || manualLock || !isHoveredCanvas) ? '🔒' : '🔓'}
+                  </div>
+                </div>
+                <h2 className="privacy-title">ZiSi QUANTITATIVE WORKSTATION</h2>
+                <p className="privacy-subtitle">Financial Overview Protected</p>
+                <p className="privacy-instructions">Hover cursor inside canvas or click lock to restore view</p>
+              </div>
+            </div>
+
             <AssetCards positions={positions} candles={candles} state={state} />
             
             {/* Row 2: Performance + Health */}

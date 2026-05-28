@@ -147,20 +147,31 @@ async def _evaluate_market_signals(
 
     start_time = time.time()
     signal = None
-    retry_count = 0
-    max_retries = 2
 
-    while retry_count < max_retries:
+    while True:
         now_ts = datetime.now(timezone.utc).timestamp()
         candle_start = (int(now_ts) // (interval_minutes * 60)) * (interval_minutes * 60)
         elapsed = now_ts - candle_start
         
-        # Execution Gate: 12s window (was 8s) — gives staggered assets enough runway
-        # 12s is still only 4% of a 300-second 5m candle; slippage risk is negligible
-        if elapsed > 12.0:
+        # Volatility-Adaptive Entry Gate: 10s for VOLATILE/SHOCK, 15s for NORMAL/RANGE
+        gate_limit = 12.0 # baseline fallback
+        try:
+            import json
+            regime_path = Path("regime_status.json")
+            if regime_path.exists():
+                data = json.loads(regime_path.read_text(encoding="utf-8"))
+                regime = data.get("regime", "NORMAL")
+                if regime in ("VOLATILE", "SHOCK"):
+                    gate_limit = 10.0
+                else:
+                    gate_limit = 15.0
+        except Exception as e:
+            pass
+
+        if elapsed > gate_limit:
             log.warning(
-                "[MAIN] %s/%s LATE_ENTRY_ABORT: elapsed time %.1fs exceeds 12.0s execution gate. Skipping candle.",
-                asset, timeframe, elapsed
+                "[MAIN] %s/%s LATE_ENTRY_ABORT: elapsed time %.1fs exceeds %.1fs adaptive execution gate. Skipping candle.",
+                asset, timeframe, elapsed, gate_limit
             )
             return None
 
@@ -170,19 +181,18 @@ async def _evaluate_market_signals(
 
         now_ts_after = datetime.now(timezone.utc).timestamp()
         elapsed_after = now_ts_after - candle_start
-        if elapsed_after > 12.0:
+        if elapsed_after > gate_limit:
             log.warning(
-                "[MAIN] %s/%s LATE_ENTRY_ABORT: post-evaluation elapsed time %.1fs exceeds 12.0s gate.",
-                asset, timeframe, elapsed_after
+                "[MAIN] %s/%s LATE_ENTRY_ABORT: post-evaluation elapsed time %.1fs exceeds %.1fs gate.",
+                asset, timeframe, elapsed_after, gate_limit
             )
             return None
 
         log.info(
-            "[MAIN] %s/%s: No L2 book/signal at %.1fs — retry %d/%d",
-            asset, timeframe, elapsed_after, retry_count + 1, max_retries,
+            "[MAIN] %s/%s: No L2 book/signal at %.1fs — retrying within %.1fs gate...",
+            asset, timeframe, elapsed_after, gate_limit
         )
-        await asyncio.sleep(2.5)
-        retry_count += 1
+        await asyncio.sleep(2.0)
 
     signal_gen_ms = (time.time() - start_time) * 1000
     if signal is not None:
