@@ -806,6 +806,12 @@ class UpDownEngine:
                 }
                 
                 ctx = self.last_edge_context
+                # Unified sizing bounds — IDENTICAL to the legacy fallback path
+                # below, so position size no longer depends on whether the edge
+                # context happened to load. Floor = MIN_USD ($1), ceiling = the
+                # same score-based sliding cap ($5–$20), bankroll fraction = 15%
+                # (matches the downstream safety cap in main._validate_trade_slot).
+                unified_max_cap = max(5.00, min(20.00, 5.00 + (score - 0.50) * 40.0))
                 usd_size = sizer.calculate_adaptive(
                     signal=sig_dict,
                     market=mkt_dict,
@@ -815,9 +821,12 @@ class UpDownEngine:
                     heat_mult=ctx.get("heat_mult", 1.0),
                     sentiment_modifier=ctx.get("sentiment_modifier", 0.0),
                     whale_mult=ctx.get("whale_mult", 1.0),
-                    category_weight=1.0
+                    category_weight=1.0,
+                    min_position_usd=MIN_USD,
+                    max_position_usd=unified_max_cap,
+                    max_bankroll_fraction=0.15,
                 )
-                
+
                 shares = round(usd_size / price) if price > 0 else 0
                 actual_cost = shares * price
                 log.info("[SIZE] Adaptive Kelly calculated actual cost: $%.2f (shares=%d)", actual_cost, shares)
@@ -844,15 +853,21 @@ class UpDownEngine:
             regime_path = Path(__file__).parent.parent.parent / "regime_status.json"
             if regime_path.exists():
                 data = json.loads(regime_path.read_text(encoding="utf-8"))
-                regime = data.get("regime", "NORMAL")
-                if regime == "RANGE":
-                    regime_mult = 1.3
-                elif regime == "NORMAL":
-                    regime_mult = 1.0
-                elif regime == "VOLATILE":
-                    regime_mult = 0.6
-                elif regime == "SHOCK":
-                    regime_mult = 0.2
+                # Canonical regimes from RegimeDetector + legacy aliases for
+                # backward compat with any stale regime_status.json on disk.
+                REGIME_SIZE_MULT = {
+                    "TRENDING":      1.30,  # directional momentum → size up
+                    "COMPRESSION":   1.10,  # low-vol squeeze → slight size up
+                    "MEAN_REVERTING": 0.85, # chop → size down
+                    "VOLATILE_CHAOS": 0.30, # unpredictable → size way down
+                    # legacy aliases
+                    "RANGE":   1.30,
+                    "NORMAL":  1.00,
+                    "VOLATILE": 0.60,
+                    "SHOCK":   0.20,
+                }
+                regime = str(data.get("regime", "COMPRESSION")).upper()
+                regime_mult = REGIME_SIZE_MULT.get(regime, 1.0)
                 log.info("[SIZE] Active regime is %s -> applying multiplier %.2fx", regime, regime_mult)
         except Exception as e:
             log.warning("[SIZE] Failed to read regime multiplier: %s", e)

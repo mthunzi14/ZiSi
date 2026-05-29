@@ -111,6 +111,9 @@ class PositionSizer:
         sentiment_modifier: float = 0.0,
         whale_mult: float = 1.0,
         category_weight: float = 1.0,
+        min_position_usd: Optional[float] = None,
+        max_position_usd: Optional[float] = None,
+        max_bankroll_fraction: Optional[float] = None,
     ) -> float:
         """
         Compute position size using half-Kelly with all edge module inputs.
@@ -193,12 +196,20 @@ class PositionSizer:
         raw_usd *= category_weight
 
         # Step 11: Enforce guards
+        # Bounds may be overridden by the caller so a single canonical sizer
+        # (UpDownEngine.compute_size) can apply ONE consistent floor/ceiling
+        # across its adaptive and fallback paths. Defaults preserve the original
+        # behaviour for any other caller (e.g. cycle_manager and unit tests).
+        _floor = min_position_usd if min_position_usd is not None else _MIN_POSITION_USD
+        _ceiling = max_position_usd if max_position_usd is not None else _MAX_POSITION_USD
+        _frac = max_bankroll_fraction if max_bankroll_fraction is not None else _MAX_BANKROLL_FRACTION
+
         # Never exceed max bankroll fraction
-        max_from_bankroll = self.account_balance * _MAX_BANKROLL_FRACTION
+        max_from_bankroll = self.account_balance * _frac
         raw_usd = min(raw_usd, max_from_bankroll)
 
         # Enforce floor and ceiling
-        size = max(_MIN_POSITION_USD, min(raw_usd, _MAX_POSITION_USD))
+        size = max(_floor, min(raw_usd, _ceiling))
 
         # Respect remaining cycle capital
         remaining = self.max_cycle_capital - self._capital_used

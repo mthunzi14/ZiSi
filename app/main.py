@@ -160,11 +160,15 @@ async def _evaluate_market_signals(
             regime_path = Path("regime_status.json")
             if regime_path.exists():
                 data = json.loads(regime_path.read_text(encoding="utf-8"))
-                regime = data.get("regime", "NORMAL")
-                if regime in ("VOLATILE", "SHOCK"):
-                    gate_limit = 10.0
-                else:
-                    gate_limit = 15.0
+                # Read the canonical regime (kept for future per-regime tuning),
+                # but hold the entry window FLAT at 15s across all regimes.
+                # Rationale: the 8W/2L track record was earned at a 15s gate, and
+                # PnL in chaos is already protected by the 0.30x regime size
+                # multiplier (floored at MIN_USD). Tightening the gate in
+                # VOLATILE_CHAOS would only shave trade volume — disallowed by
+                # the mandate that no change may lower volume/win-rate/PnL.
+                regime = str(data.get("regime", "NORMAL")).upper()
+                gate_limit = 15.0
         except Exception as e:
             pass
 

@@ -12,6 +12,7 @@ env/
 .env
 .env.local
 .env.*
+!.env.example
 
 # ML artifacts
 *.pkl
