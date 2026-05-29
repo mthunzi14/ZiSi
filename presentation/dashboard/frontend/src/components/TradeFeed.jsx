@@ -50,6 +50,28 @@ function fmtLocal(ts) {
   return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
 }
 
+// Entry timestamp with date prepended: "05/29 10:30"
+function fmtLocalDT(ts) {
+  if (!ts) return '--/-- --:--';
+  const d = new Date(ts);
+  const mm = (d.getMonth() + 1).toString().padStart(2,'0');
+  const dd = d.getDate().toString().padStart(2,'0');
+  const hh = d.getHours().toString().padStart(2,'0');
+  const mi = d.getMinutes().toString().padStart(2,'0');
+  return `${mm}/${dd} ${hh}:${mi}`;
+}
+
+// Wilson score 95% CI for a binomial proportion -> [low%, high%].
+// Honest small-sample band on the win rate (matches dashboard/backend performance.js).
+function wilson95(wins, n) {
+  if (n <= 0) return [0, 0];
+  const z = 1.96, p = wins / n;
+  const denom  = 1 + (z * z) / n;
+  const center = (p + (z * z) / (2 * n)) / denom;
+  const margin = (z / denom) * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n));
+  return [Math.max(0, (center - margin) * 100), Math.min(100, (center + margin) * 100)];
+}
+
 function fmtHold(hours) {
   if (hours == null || isNaN(hours)) return '—';
   const mins = Math.round(hours * 60);
@@ -98,8 +120,8 @@ function CountdownTimer({ expiry_ts }) {
 
 // ── Column configs ─────────────────────────────────────────────────────────
 
-const CLOSED_COLS  = ['In (Local)', 'Asset', 'TF', 'Dir', 'Type', 'Entry¢', 'Exit¢', 'Hold', 'Reason', 'P&L', 'P&L%', 'Exit (Local)', 'Result'];
-const CLOSED_GRID  = '56px 65px 48px 56px 50px 50px 50px 48px 64px 58px 48px 52px 44px';
+const CLOSED_COLS  = ['In (Local)', 'Asset', 'TF', 'Dir', 'Size ($)', 'Entry¢', 'Exit¢', 'Hold', 'Reason', 'P&L / %', 'Exit (Local)', 'Result'];
+const CLOSED_GRID  = '75px 65px 48px 56px 52px 50px 50px 48px 64px 92px 64px 44px';
 
 const OPEN_COLS    = ['In (Local)', 'Asset', 'TF', 'Dir', 'Type', 'Entry¢', 'Cur¢', 'Target¢', 'Stop¢', 'Unr P&L', 'Hold', 'Closes In'];
 const OPEN_GRID    = '56px 65px 48px 56px 50px 50px 50px 54px 50px 68px 48px 80px';
@@ -111,9 +133,11 @@ function ClosedRow({ p }) {
   const dir    = dirStr(p.direction);
   const pnl    = parseFloat(p.realized_pnl ?? 0);
   const pct    = parseFloat(p.realized_pnl_pct ?? 0);
+  const size   = parseFloat(p.size ?? 0);
   const result = pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'EVEN';
   const rColor = result === 'WIN' ? 'var(--color-profit)' : result === 'LOSS' ? 'var(--color-loss)' : 'rgba(9,9,11,0.25)';
   const rb     = reasonBadge(p.exit_reason);
+  const pnlColor = pnl > 0 ? 'var(--color-profit)' : pnl < 0 ? 'var(--color-loss)' : 'var(--color-text-muted)';
 
   return (
     <div style={{
@@ -123,27 +147,23 @@ function ClosedRow({ p }) {
       borderBottom: '1px solid var(--color-border-subtle)',
       fontSize: 11,
     }}>
-      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtLocal(p.entry_time)}</span>
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtLocalDT(p.entry_time)}</span>
       <span style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: 13, color: 'var(--color-text-primary)' }}>{meta.asset}</span>
       <span style={{ color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)' }}>{meta.timeframe}</span>
       <span style={{ fontWeight: 600, color: dir === 'UP' ? 'var(--color-profit)' : 'var(--color-loss)' }}>
         {dir === 'UP' ? '↑ UP' : '↓ DN'}
       </span>
-      <span style={{ color: 'var(--color-text-muted)' }}>{meta.type}</span>
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)' }}>${size.toFixed(2)}</span>
       <span style={{ fontFamily: 'var(--font-mono)' }}>{(parseFloat(p.entry_price) * 100).toFixed(0)}¢</span>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>
         {p.exit_price ? `${(parseFloat(p.exit_price) * 100).toFixed(0)}¢` : '—'}
       </span>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtHold(p.hold_hours)}</span>
       <span style={{ fontWeight: 700, fontSize: 10, letterSpacing: '0.04em', color: rb.color }}>{rb.label}</span>
-      <span style={{
-        fontFamily: 'var(--font-mono)', fontWeight: 700,
-        color: pnl > 0 ? 'var(--color-profit)' : pnl < 0 ? 'var(--color-loss)' : 'var(--color-text-muted)',
-      }}>{pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</span>
-      <span style={{
-        fontFamily: 'var(--font-mono)', fontSize: 10,
-        color: pct > 0 ? 'var(--color-profit)' : pct < 0 ? 'var(--color-loss)' : 'var(--color-text-muted)',
-      }}>{pct >= 0 ? '+' : ''}{pct.toFixed(1)}%</span>
+      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: pnlColor }}>
+        {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+        <span style={{ fontSize: 9, opacity: 0.85 }}> [{pct >= 0 ? '+' : ''}{pct.toFixed(1)}%]</span>
+      </span>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtLocal(p.exit_time)}</span>
       <span style={{ fontWeight: 800, fontSize: 10, letterSpacing: '0.06em', color: rColor }}>{result}</span>
     </div>
@@ -246,7 +266,9 @@ function ClosedSummary({ closed }) {
   const losses = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0).length;
   const evens  = closed.length - wins - losses;
   const totalPnl = closed.reduce((s, p) => s + parseFloat(p.realized_pnl ?? 0), 0);
-  const wr = (wins + losses) > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : '—';
+  const wrN = wins + losses;
+  const wr = wrN > 0 ? ((wins / wrN) * 100).toFixed(1) : '—';
+  const [ciLo, ciHi] = wilson95(wins, wrN);
   const gross = closed.reduce((s, p) => {
     const pnl = parseFloat(p.realized_pnl ?? 0);
     return { w: s.w + (pnl > 0 ? pnl : 0), l: s.l + (pnl < 0 ? Math.abs(pnl) : 0) };
@@ -261,7 +283,13 @@ function ClosedSummary({ closed }) {
     }}>
       {[
         { label: 'Trades', val: closed.length, color: 'var(--color-text-primary)' },
-        { label: 'Win Rate', val: `${wr}%`, color: parseFloat(wr) >= 62 ? 'var(--color-profit)' : parseFloat(wr) >= 45 ? 'var(--color-amber)' : 'var(--color-loss)' },
+        { label: 'Win Rate', val: (
+            <>{wr}%{wrN > 0 && (
+              <span style={{ fontSize: 9, fontWeight: 500, color: 'var(--color-text-muted)', marginLeft: 4 }}>
+                95% CI {ciLo.toFixed(0)}–{ciHi.toFixed(0)}%
+              </span>
+            )}</>
+          ), color: parseFloat(wr) >= 62 ? 'var(--color-profit)' : parseFloat(wr) >= 45 ? 'var(--color-amber)' : 'var(--color-loss)' },
         { label: 'W / L / E', val: `${wins} / ${losses} / ${evens}`, color: 'var(--color-text-secondary)' },
         { label: 'Total P&L', val: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)' },
         { label: 'Profit Factor', val: pf, color: parseFloat(pf) >= 1.5 ? 'var(--color-profit)' : parseFloat(pf) >= 1 ? 'var(--color-amber)' : 'var(--color-loss)' },
