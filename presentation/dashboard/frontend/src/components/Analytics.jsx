@@ -1,6 +1,7 @@
 // Analytics.jsx — Deep Institutional-Grade Quantitative Insights, Confluence Radar & Hourly Heatmap
 import { useState } from 'react';
 import CountUpStats from './common/CountUpStats';
+import BacktestHeatmap from './BacktestHeatmap';
 
 export default function Analytics({ state = {} }) {
   const safeState = state || {};
@@ -315,7 +316,10 @@ export default function Analytics({ state = {} }) {
 
       </div>
 
-      {/* Row 3: Machine Learning Retraining Progress */}
+      {/* Row 3: Backtest Parameter Heatmap */}
+      <BacktestHeatmap />
+
+      {/* Row 4: Machine Learning Retraining Progress */}
       <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
         <div>
           <h3 style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: '15px', color: 'var(--color-obsidian)', marginBottom: '2px' }}>

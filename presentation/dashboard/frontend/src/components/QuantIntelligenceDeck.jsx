@@ -81,12 +81,7 @@ export default function QuantIntelligenceDeck({ state = {}, positions = {}, upti
     XRP:  { BTC: 0.71, ETH: 0.68, SOL: 0.62, XRP: 1.00 }
   };
 
-  // Polymarket Whales tracking data
-  const whales = [
-    { name: 'pbot-6', status: 'FLAT CYCLE', winRate: '78.4%', pnl: '+$203,140', color: 'var(--color-profit)' },
-    { name: '0x_Punisher', status: 'ACTIVE UP', winRate: '81.2%', pnl: '+$514,200', color: 'var(--color-profit)' },
-    { name: 'ruuj_hft', status: 'ACTIVE DOWN', winRate: '74.8%', pnl: '+$128,450', color: 'var(--color-profit)' }
-  ];
+  // No competitor data — external leaderboard data is not available from any connected API source.
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }} className="page-fade-enter">
