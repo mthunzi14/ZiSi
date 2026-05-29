@@ -26,6 +26,65 @@ DEFAULT_SIGNAL_PARAMS = {
     "ofi_block_15m": 0.20,
 }
 
+# Regime-specific RSI and momentum thresholds (Sprint 3 checklist)
+REGIME_RSI_PARAMS = {
+    "TRENDING": {
+        "rsi_up": 60.0,
+        "mom_up": 0.02,
+        "rsi_up_soft": 54.0,
+        "mom_up_soft": 0.01,
+        "ofi_confirm_up": 0.45,
+        "rsi_dn": 40.0,
+        "mom_dn": -0.02,
+        "rsi_dn_soft": 46.0,
+        "mom_dn_soft": -0.01,
+        "ofi_confirm_dn": -0.45,
+        "reversal_lo": 15.0, # tightened reversal threshold in TRENDING to avoid falling knives
+        "reversal_hi": 85.0, # tightened reversal threshold in TRENDING to avoid falling knives
+        "reversal_score": 0.70,
+        "ofi_block_neutral": 0.35,
+        "ofi_block_5m": 0.28,
+        "ofi_block_15m": 0.20,
+    },
+    "MEAN_REVERTING": DEFAULT_SIGNAL_PARAMS,
+    "VOLATILE_CHAOS": {
+        "rsi_up": 65.0, # tightened RSI triggers to reduce noise-signal entries in choppy markets
+        "mom_up": 0.02,
+        "rsi_up_soft": 65.0, # disabled soft triggers in chaos regime
+        "mom_up_soft": 0.02,
+        "ofi_confirm_up": 0.45,
+        "rsi_dn": 35.0, # tightened RSI triggers to reduce noise-signal entries in choppy markets
+        "mom_dn": -0.02,
+        "rsi_dn_soft": 35.0, # disabled soft triggers in chaos regime
+        "mom_dn_soft": -0.02,
+        "ofi_confirm_dn": -0.45,
+        "reversal_lo": 18.0,
+        "reversal_hi": 82.0,
+        "reversal_score": 0.70,
+        "ofi_block_neutral": 0.35,
+        "ofi_block_5m": 0.28,
+        "ofi_block_15m": 0.20,
+    },
+    "COMPRESSION": {
+        "rsi_up": 60.0,
+        "mom_up": 0.02,
+        "rsi_up_soft": 52.0, # loosened soft threshold to generate more breakout entries
+        "mom_up_soft": 0.01,
+        "ofi_confirm_up": 0.35, # loosened soft threshold to generate more breakout entries
+        "rsi_dn": 40.0,
+        "mom_dn": -0.02,
+        "rsi_dn_soft": 48.0, # loosened soft threshold to generate more breakout entries
+        "mom_dn_soft": -0.01,
+        "ofi_confirm_dn": -0.35, # loosened soft threshold to generate more breakout entries
+        "reversal_lo": 20.0,
+        "reversal_hi": 80.0,
+        "reversal_score": 0.70,
+        "ofi_block_neutral": 0.35,
+        "ofi_block_5m": 0.28,
+        "ofi_block_15m": 0.20,
+    },
+}
+
 
 def _block_magnitude(rsi: float, timeframe: str, p: dict) -> float:
     if 45.0 <= rsi <= 55.0:
@@ -33,9 +92,20 @@ def _block_magnitude(rsi: float, timeframe: str, p: dict) -> float:
     return p["ofi_block_5m"] if timeframe == "5m" else p["ofi_block_15m"]
 
 
-def decide_signal(rsi, mom: float, ofi: float, timeframe: str, params: Optional[dict] = None) -> dict:
+def decide_signal(rsi, mom: float, ofi: float, timeframe: str, params: Optional[dict] = None, regime: Optional[str] = None) -> dict:
     """Return {"direction": "UP"|"DOWN"|None, "score": float, "is_reversal": bool, "blocked": bool}."""
-    p = params or DEFAULT_SIGNAL_PARAMS
+    if params is None:
+        if regime:
+            regime_upper = regime.upper()
+            if regime_upper in REGIME_RSI_PARAMS:
+                p = REGIME_RSI_PARAMS[regime_upper]
+            else:
+                p = DEFAULT_SIGNAL_PARAMS
+        else:
+            p = DEFAULT_SIGNAL_PARAMS
+    else:
+        p = params
+
     res = {"direction": None, "score": 0.0, "is_reversal": False, "blocked": False}
     if rsi is None:
         return res

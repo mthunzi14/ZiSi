@@ -47,3 +47,12 @@ class TestDecideSignal(unittest.TestCase):
         p = dict(DEFAULT_SIGNAL_PARAMS, rsi_up=45.0)
         r = decide_signal(50.0, 0.03, 0.0, "5m", params=p)
         self.assertEqual(r["direction"], "UP")
+
+    def test_regime_adaptive_params(self):
+        # In VOLATILE_CHAOS, rsi_up is tightened to 65.0 (instead of 60.0). So RSI=62.0, mom=0.03, ofi=0.5 should be NEUTRAL/None.
+        r = decide_signal(62.0, 0.03, 0.5, "5m", regime="VOLATILE_CHAOS")
+        self.assertIsNone(r["direction"])
+
+        # In COMPRESSION, rsi_up_soft is loosened to 52.0 and ofi_confirm_up is 0.35. So RSI=53.0, mom=0.015, ofi=0.4 should trigger UP.
+        r = decide_signal(53.0, 0.015, 0.4, "5m", regime="COMPRESSION")
+        self.assertEqual(r["direction"], "UP")
