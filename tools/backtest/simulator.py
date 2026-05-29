@@ -8,6 +8,36 @@ from tools.backtest.klines import Candle, ofi_proxy, atr
 from tools.backtest.pricing import PricingParams, entry_price, price_path_exit
 
 
+def sized_bet(score: float, price: float, balance: float, regime_mult: float = 1.0) -> float:
+    """Mirror of updown_engine.compute_size legacy path: score->kelly tier, price scalar,
+    $1 floor, score-based $5-$20 cap, 15% bankroll cap. Returns USD to bet."""
+    # Kelly fraction tier
+    if score >= 0.90:
+        kelly_pct = 0.05
+    elif score >= 0.80:
+        kelly_pct = 0.03
+    elif score >= 0.65:
+        kelly_pct = 0.015
+    else:
+        kelly_pct = 0.01
+
+    # Price scalar: less conviction when price already high
+    if 0.65 < price <= 0.78:
+        price_scalar = 0.40
+    elif price > 0.78:
+        price_scalar = 0.25
+    else:
+        price_scalar = 1.0
+
+    # Score-based cap: $5 at score=0.50, linearly up to $20
+    max_usd_cap = max(5.0, min(20.0, 5.0 + (score - 0.50) * 40.0))
+
+    raw = kelly_pct * balance * regime_mult * price_scalar
+    usd = max(1.0, min(raw, max_usd_cap))
+    usd = min(usd, balance * 0.15)
+    return round(usd, 2)
+
+
 def pnl(size: float, entry: float, exit: float) -> float:
     """Realized P&L exactly as execute_exit computes it: (size/entry)*(exit-entry)."""
     if entry <= 0:
@@ -60,7 +90,8 @@ class SimConfig:
     pricing: PricingParams = field(default_factory=PricingParams)
     max_per_asset: int = 2
     max_total: int = 6
-    bet_usd: float = 5.0  # flat sizing for v1 replay; sweep can vary later
+    bet_usd: float = 5.0       # fallback flat sizing (used if start_balance <= 0)
+    start_balance: float = 100.0  # running-balance starting point for sized_bet
 
 
 def _intra_candle_spot(c: Candle, steps: int = 10) -> List[float]:
@@ -89,6 +120,7 @@ def simulate(candles_by_asset: Dict[str, List[Candle]], timeframe: str,
 
     gate = ConcurrencyGate(cfg.max_per_asset, cfg.max_total)
     trades: List[SimTrade] = []
+    balance = cfg.start_balance if cfg.start_balance > 0 else cfg.bet_usd
     for t in times:
         for asset, hist in by_time.get(t, []):
             closes = [c.close for c in hist]
@@ -104,13 +136,17 @@ def simulate(candles_by_asset: Dict[str, List[Candle]], timeframe: str,
             sigma_frac = (atr(hist, 14) / cur.open) if cur.open else 0.01
             ep = entry_price(dec["direction"], dec["is_reversal"], rsi, sigma_frac,
                              cfg.pricing, regime_atr_frac=sigma_frac)
+            # Use sized_bet with current running balance; fall back to bet_usd if balance tiny
+            bet = sized_bet(dec["score"], ep, max(balance, 1.0)) if balance > 0 else cfg.bet_usd
             spot_path = _intra_candle_spot(cur, grid_steps)
             xp, reason = price_path_exit(dec["direction"], cur.open, ep, spot_path,
                                          minutes, sigma_frac, total_min, cfg.pricing)
+            trade_pnl = pnl(bet, ep, xp)
             trades.append(SimTrade(
                 asset=asset, timeframe=timeframe, entry_time=cur.open_time,
-                direction=dec["direction"], size=cfg.bet_usd, entry_price=ep,
-                exit_price=xp, exit_reason=reason, realized_pnl=pnl(cfg.bet_usd, ep, xp),
+                direction=dec["direction"], size=bet, entry_price=ep,
+                exit_price=xp, exit_reason=reason, realized_pnl=trade_pnl,
                 is_reversal=dec["is_reversal"]))
+            balance += trade_pnl  # update running balance after each closed trade
             gate.close(asset)  # short-TF trade resolves within its candle
     return trades

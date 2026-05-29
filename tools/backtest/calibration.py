@@ -46,3 +46,47 @@ def load_real_trades(path: str = _POSITIONS) -> List[dict]:
 
 def real_win_loss(trades: List[dict]) -> List[bool]:
     return [float(t.get("realized_pnl", 0)) > 0 for t in trades]
+
+
+def match_trades(real: list, sim: list) -> list:
+    """Match each real closed trade to the nearest simulated trade of the SAME asset
+    and timeframe by entry-time proximity.  Returns a list of (real_trade, sim_trade)
+    pairs (only matched pairs; unmatched real trades are skipped).
+
+    real  — list of dicts from positions_state.json "closed" list; expected fields:
+            asset (str), timeframe (str), entry_time (int/float ms),
+            entry_price (float), realized_pnl (float).
+    sim   — list of SimTrade dataclass instances; expected fields:
+            asset, timeframe, entry_time (int ms), entry_price, realized_pnl.
+    """
+    from dataclasses import fields as dc_fields
+
+    def _is_dataclass(obj) -> bool:
+        try:
+            dc_fields(obj)
+            return True
+        except TypeError:
+            return False
+
+    def _get(obj, key, default=None):
+        """Unified attribute access for both dicts and dataclass instances."""
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    # Group sim trades by (asset, timeframe) for fast lookup
+    sim_by_key: dict = {}
+    for s in sim:
+        key = (_get(s, "asset", ""), _get(s, "timeframe", ""))
+        sim_by_key.setdefault(key, []).append(s)
+
+    pairs = []
+    for r in real:
+        key = (_get(r, "asset", ""), _get(r, "timeframe", ""))
+        candidates = sim_by_key.get(key)
+        if not candidates:
+            continue
+        r_time = int(_get(r, "entry_time", 0) or 0)
+        best = min(candidates, key=lambda s: abs(int(_get(s, "entry_time", 0) or 0) - r_time))
+        pairs.append((r, best))
+    return pairs

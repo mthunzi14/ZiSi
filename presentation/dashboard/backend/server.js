@@ -16,6 +16,7 @@ import systemHealthRouter from './routes/systemHealth.js';
 import signalQueueRouter from './routes/signalQueue.js';
 import eventsRouter from './routes/events.js';
 import performanceRouter from './routes/performance.js';
+import backtestRouter from './routes/backtest.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -42,6 +43,7 @@ app.use('/api/system-health', systemHealthRouter);
 app.use('/api/signal-queue',  signalQueueRouter);
 app.use('/api/events',        eventsRouter);
 app.use('/api/performance',   performanceRouter);
+app.use('/api/backtest',      backtestRouter);
 
 // Start / Stop Bot Engine API endpoints for Settings Tab
 app.get('/api/control/system/status', (req, res) => {

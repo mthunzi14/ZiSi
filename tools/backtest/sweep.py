@@ -1,5 +1,6 @@
 """Advisory parameter sweep. Computes metrics per cell and ranks them.
 NEVER writes config.py — output is for human review only."""
+import itertools
 from statistics import mean, pstdev
 from typing import Dict, List
 
@@ -27,6 +28,28 @@ def cell_metrics(pnls: List[float]) -> Dict[str, float]:
         "sharpe": round((mean(pnls) / sd), 4) if sd > 0 else 0.0,
         "max_drawdown": round(mdd, 4),
     }
+
+
+def build_grid() -> List[dict]:
+    """Return a list of signal_params override dicts spanning the sweep.
+
+    Grid dimensions:
+        rsi_up             in {58, 60, 62}
+        rsi_dn             in {38, 40, 42}
+        target_threshold   in {0.85, 0.88, 0.90}
+
+    Each cell is a flat dict like:
+        {"rsi_up": 58, "rsi_dn": 40, "target_threshold": 0.88}
+
+    Total cells: 3 * 3 * 3 = 27
+    """
+    rsi_ups = [58, 60, 62]
+    rsi_dns = [38, 40, 42]
+    thresholds = [0.85, 0.88, 0.90]
+    return [
+        {"rsi_up": up, "rsi_dn": dn, "target_threshold": thr}
+        for up, dn, thr in itertools.product(rsi_ups, rsi_dns, thresholds)
+    ]
 
 
 def rank_cells(cells: List[dict], baseline_trades: int,
