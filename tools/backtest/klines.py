@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import List
 
 _BINANCE = "https://api.binance.com/api/v3/klines"
-_SYMBOL = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "XRP": "XRPUSDT"}
+_SYMBOL = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "XRP": "XRPUSDT", "DOGE": "DOGEUSDT", "HYPE": "HYPEUSDT", "BNB": "BNBUSDT"}
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 
 

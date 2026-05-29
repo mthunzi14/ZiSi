@@ -48,7 +48,7 @@ KELLY = {
     "LOW":  (0.015, 0.050),   # score 0.62-0.75: 1.5% Kelly, 5% cap
 }
 MIN_USD = 1.00
-VOLUME_GATE_FLOORS = {"BTC": 2.0, "ETH": 10.0, "SOL": 75.0, "XRP": 5000.0}
+VOLUME_GATE_FLOORS = {"BTC": 2.0, "ETH": 10.0, "SOL": 75.0, "XRP": 5000.0, "DOGE": 10000.0, "HYPE": 100.0, "BNB": 10.0}
 UPDOWN_MIN_LIQUIDITY = 0.0
 
 SCORE_TO_WR = [
@@ -98,8 +98,8 @@ def _fetch_clob_price(token_id: str) -> Optional[float]:
             data = r.json()
             bids = data.get("bids", [])
             asks = data.get("asks", [])
-            bb = float(bids[0].get("price", 0)) if bids else 0.0
-            ba = float(asks[0].get("price", 0)) if asks else 0.0
+            bb = max([float(b.get("price", 0)) for b in bids]) if bids else 0.0
+            ba = min([float(a.get("price", 0)) for a in asks]) if asks else 0.0
             if bb > 0 and ba > 0:
                 return round((bb + ba) / 2, 4)
             return ba or bb or None
@@ -117,8 +117,8 @@ def _fetch_spread(token_id: str) -> Optional[float]:
             data = r.json()
             bids = data.get("bids", [])
             asks = data.get("asks", [])
-            bb = float(bids[0].get("price", 0)) if bids else 0.0
-            ba = float(asks[0].get("price", 0)) if asks else 0.0
+            bb = max([float(b.get("price", 0)) for b in bids]) if bids else 0.0
+            ba = min([float(a.get("price", 0)) for a in asks]) if asks else 0.0
             if bb > 0 and ba > 0:
                 return round(ba - bb, 4)
     except Exception:
@@ -170,8 +170,8 @@ def _parse_clob_book(book: Optional[dict]) -> tuple[Optional[float], Optional[fl
         return None, None
     bids = book.get("bids", [])
     asks = book.get("asks", [])
-    bb = float(bids[0].get("price", 0)) if bids else 0.0
-    ba = float(asks[0].get("price", 0)) if asks else 0.0
+    bb = max([float(b.get("price", 0)) for b in bids]) if bids else 0.0
+    ba = min([float(a.get("price", 0)) for a in asks]) if asks else 0.0
     price = None
     spread = None
     if bb > 0 and ba > 0:
