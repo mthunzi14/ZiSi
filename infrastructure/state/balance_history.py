@@ -14,6 +14,7 @@ from pathlib import Path
 log = logging.getLogger("zisi.balance_history")
 
 _HISTORY_FILE = Path(__file__).parent / "balance_history.jsonl"
+_ROOT_HISTORY_FILE = Path(__file__).parent.parent.parent / "balance_history.jsonl"
 
 # Minimum time (seconds) between appends — prevents duplicate points
 # when sync_balance_to_state() is called multiple times per cycle.
@@ -38,37 +39,44 @@ def record_balance(balance: float, pnl: float, trades: int) -> None:
             "pnl":       round(float(pnl), 4),
             "trades":    int(trades),
         }
-        try:
-            with open(_HISTORY_FILE, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record) + "\n")
-            _last_append_ts = now_ts
-            _last_trades = trades
-            log.debug("[EQUITY] Snapshot: $%.2f | P&L: $%+.2f | trades: %d", balance, pnl, trades)
-        except Exception as exc:
-            log.warning("[EQUITY] Failed to write balance snapshot: %s", exc)
+        
+        # Write to both state file and root file to prevent dashboard data gaps
+        for filepath in (_HISTORY_FILE, _ROOT_HISTORY_FILE):
+            try:
+                with open(filepath, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(record) + "\n")
+            except Exception as exc:
+                log.warning("[EQUITY] Failed to write balance snapshot to %s: %s", filepath.name, exc)
+                
+        _last_append_ts = now_ts
+        _last_trades = trades
+        log.debug("[EQUITY] Snapshot: $%.2f | P&L: $%+.2f | trades: %d", balance, pnl, trades)
 
 
 def load_history() -> list:
-    """Return all historical snapshots as a list of dicts."""
-    if not _HISTORY_FILE.exists():
-        return []
-    records = []
-    try:
-        with open(_HISTORY_FILE, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    try:
-                        records.append(json.loads(line))
-                    except Exception:
-                        pass
-    except Exception as exc:
-        log.warning("[EQUITY] Failed to read history: %s", exc)
-    return records
+    """Return all historical snapshots as a list of dicts from whichever file is available."""
+    for filepath in (_HISTORY_FILE, _ROOT_HISTORY_FILE):
+        if not filepath.exists():
+            continue
+        records = []
+        try:
+            with open(filepath, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        try:
+                            records.append(json.loads(line))
+                        except Exception:
+                            pass
+            if records:
+                return records
+        except Exception as exc:
+            log.warning("[EQUITY] Failed to read history from %s: %s", filepath.name, exc)
+    return []
 
 
 def prune_history(max_days: int = 30) -> None:
-    """Remove entries older than max_days to keep the file trim."""
+    """Remove entries older than max_days to keep both files trim."""
     records = load_history()
     if not records:
         return
@@ -78,13 +86,14 @@ def prune_history(max_days: int = 30) -> None:
         if _parse_ts(r.get("timestamp", "")) >= cutoff_ts
     ]
     if len(kept) < len(records):
-        try:
-            with open(_HISTORY_FILE, "w", encoding="utf-8") as fh:
-                for r in kept:
-                    fh.write(json.dumps(r) + "\n")
-            log.info("[EQUITY] Pruned %d old entries (kept %d)", len(records) - len(kept), len(kept))
-        except Exception as exc:
-            log.warning("[EQUITY] Prune failed: %s", exc)
+        for filepath in (_HISTORY_FILE, _ROOT_HISTORY_FILE):
+            try:
+                with open(filepath, "w", encoding="utf-8") as fh:
+                    for r in kept:
+                        fh.write(json.dumps(r) + "\n")
+                log.info("[EQUITY] Pruned %d old entries in %s (kept %d)", len(records) - len(kept), filepath.name, len(kept))
+            except Exception as exc:
+                log.warning("[EQUITY] Prune failed for %s: %s", filepath.name, exc)
 
 
 def _parse_ts(iso: str) -> float:
