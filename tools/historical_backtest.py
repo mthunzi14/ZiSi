@@ -4,8 +4,8 @@ Pipeline: ingest klines -> simulate -> calibrate (gate) -> (if passed) sweep ->
 write tools/backtest/results/<ts>.json + print report. ADVISORY ONLY: never
 writes config.py.
 
-Usage:
-    python tools/historical_backtest.py --days 7
+Usage (run as a module from the repo root so `tools.*` imports resolve):
+    python -m tools.historical_backtest --days 7
 """
 import argparse
 import json

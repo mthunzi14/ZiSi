@@ -14,6 +14,10 @@ env/
 .env.*
 !.env.example
 
+# Backtester runtime artifacts (keep the dirs via .gitkeep)
+tools/backtest/cache/*.json
+tools/backtest/results/*.json
+
 # ML artifacts
 *.pkl
 *.joblib
