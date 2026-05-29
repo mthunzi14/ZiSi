@@ -345,42 +345,18 @@ class UpDownEngine:
         # Retrieve real-time Spot Order Flow Imbalance (OFI)
         ofi = await get_current_ofi(self.asset)
 
-        # Raw direction from RSI & OFI Confluence (Tighter indicators to ensure high win rate)
-        if (rsi > 60 and mom >= 0.02) or (rsi > 54 and mom >= 0.01 and ofi > 0.45):
-            # OFI divergence gate: loosen to 0.28 for 5m (noisy), 0.20 for 15m (stable)
-            ofi_up_block_threshold = -0.35 if (45 <= rsi <= 55) else (-0.28 if self.timeframe == "5m" else -0.20)
-            if ofi < ofi_up_block_threshold:
-                log.info("[ENGINE] %s/%s: Spot OFI divergence/selling pressure (OFI = %.4f). Blocking UP trade entry (threshold %.2f).", self.asset, self.timeframe, ofi, ofi_up_block_threshold)
-                return None
-            raw_dir = "UP"
-            rsi_eff = max(rsi, 60)
-            score_base = min(0.85, 0.50 + (rsi_eff - 60) / 40 * 0.35)
-        elif (rsi < 40 and mom <= -0.02) or (rsi < 46 and mom <= -0.01 and ofi < -0.45):
-            # OFI divergence gate: loosen to 0.28 for 5m (noisy), 0.20 for 15m (stable)
-            ofi_dn_block_threshold = 0.35 if (45 <= rsi <= 55) else (0.28 if self.timeframe == "5m" else 0.20)
-            if ofi > ofi_dn_block_threshold:
-                log.info("[ENGINE] %s/%s: Spot OFI divergence/buying pressure (OFI = %.4f). Blocking DOWN trade entry (threshold %.2f).", self.asset, self.timeframe, ofi, ofi_dn_block_threshold)
-                return None
-            raw_dir = "DOWN"
-            rsi_eff = min(rsi, 40)
-            score_base = min(0.85, 0.50 + (40 - rsi_eff) / 40 * 0.35)
-        else:
-            # ── Fix B: Pre-Momentum Reversal Sniping ──
-            if rsi < 20:
-                raw_dir = "UP"
-                score_base = 0.70
-                log.warning("[REVERSAL] OVERSOLD WICK DETECTED on %s/%s: RSI=%.2f. Triggering cheap UP entry.", self.asset, self.timeframe, rsi)
-            elif rsi > 80:
-                raw_dir = "DOWN"
-                score_base = 0.70
-                log.warning("[REVERSAL] OVERBOUGHT WICK DETECTED on %s/%s: RSI=%.2f. Triggering cheap DOWN entry.", self.asset, self.timeframe, rsi)
-            else:
-                log.info(
-                    "[ENGINE] %s/%s: RSI=%.2f Mom=%.4f%% -> NEUTRAL (checking dual-only path)",
-                    self.asset, self.timeframe, rsi, mom,
-                )
-                raw_dir = None
-                score_base = 0.0
+        # Raw direction from the shared signal core (single source of truth)
+        from core.engine.signal_core import decide_signal
+        _dec = decide_signal(rsi, mom, ofi, self.timeframe)
+        if _dec["blocked"]:
+            log.info("[ENGINE] %s/%s: Spot OFI divergence — blocking entry.", self.asset, self.timeframe)
+            return None
+        raw_dir = _dec["direction"]
+        score_base = _dec["score"]
+        if _dec["is_reversal"]:
+            log.warning("[REVERSAL] %s/%s RSI=%.2f reversal-snipe %s.", self.asset, self.timeframe, rsi, raw_dir)
+        elif raw_dir is None:
+            log.info("[ENGINE] %s/%s: RSI=%.2f Mom=%.4f -> NEUTRAL (dual-only path).", self.asset, self.timeframe, rsi, mom)
 
         # Market + real L2 prices (no 50c fallback)
         market = await self._fetch_market(session)
