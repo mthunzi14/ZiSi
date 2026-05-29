@@ -113,8 +113,8 @@ class ExtraterrestrialWSGateway:
             self.l2_cache[asset_id] = {"bid": p, "ask": p, "ts": time.time()}
             return
             
-        bb = float(bids[0].get("price", 0)) if bids else self.l2_cache.get(asset_id, {}).get("bid", 0.0)
-        ba = float(asks[0].get("price", 0)) if asks else self.l2_cache.get(asset_id, {}).get("ask", 0.0)
+        bb = max([float(b.get("price", 0)) for b in bids]) if bids else self.l2_cache.get(asset_id, {}).get("bid", 0.0)
+        ba = min([float(a.get("price", 0)) for a in asks]) if asks else self.l2_cache.get(asset_id, {}).get("ask", 0.0)
         
         self.l2_cache[asset_id] = {"bid": bb, "ask": ba, "ts": time.time()}
         
