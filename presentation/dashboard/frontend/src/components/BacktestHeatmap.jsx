@@ -101,8 +101,16 @@ export default function BacktestHeatmap() {
             fontSize: '15px',
             color: 'var(--color-obsidian)',
             marginBottom: '2px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
           }}>
             Backtest Parameter Heatmap
+            {data?.isGenerating && (
+              <span className="alert-pulse" style={{ fontSize: '9px', background: 'rgba(197, 155, 39, 0.15)', color: 'var(--color-accent)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(197, 155, 39, 0.3)' }}>
+                REFRESHING...
+              </span>
+            )}
           </h3>
           <p style={{ fontSize: '11px', color: 'var(--color-iron)' }}>
             RSI thresholds vs target confidence — coloured by {metricLabel.toLowerCase()}. Polls every 30s.
@@ -182,27 +190,33 @@ export default function BacktestHeatmap() {
           borderRadius: '12px',
           border: '1px dashed var(--color-border)',
         }}>
-          <div style={{ fontSize: '28px', marginBottom: '12px', opacity: 0.5 }}>📊</div>
+          <div style={{ fontSize: '28px', marginBottom: '12px', opacity: 0.5 }}>
+            {data?.isGenerating ? '⏳' : '📊'}
+          </div>
           <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '8px' }}>
-            No backtest data available yet
+            {data?.isGenerating ? 'Generating backtest heatmap in background...' : 'No backtest data available yet'}
           </div>
           <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono, monospace)', lineHeight: 1.6 }}>
-            Run the backtester to populate the heatmap:
+            {data?.isGenerating 
+              ? 'The quantitative parameter sweep is running a simulation over the last 7 days of historical candles. This typically takes 30-60 seconds. This panel will automatically update.'
+              : 'Run the backtester to populate the heatmap:'}
           </div>
-          <div style={{
-            marginTop: '10px',
-            display: 'inline-block',
-            padding: '6px 14px',
-            background: 'rgba(0,0,0,0.35)',
-            borderRadius: '6px',
-            border: '1px solid var(--color-border)',
-            fontSize: '11px',
-            fontFamily: 'var(--font-mono, monospace)',
-            color: '#10b981',
-            letterSpacing: '0.03em',
-          }}>
-            python -m tools.historical_backtest --days 7
-          </div>
+          {!data?.isGenerating && (
+            <div style={{
+              marginTop: '10px',
+              display: 'inline-block',
+              padding: '6px 14px',
+              background: 'rgba(0,0,0,0.35)',
+              borderRadius: '6px',
+              border: '1px solid var(--color-border)',
+              fontSize: '11px',
+              fontFamily: 'var(--font-mono, monospace)',
+              color: '#10b981',
+              letterSpacing: '0.03em',
+            }}>
+              python -m tools.historical_backtest --days 7
+            </div>
+          )}
         </div>
       )}
 

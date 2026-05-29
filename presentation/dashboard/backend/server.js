@@ -45,8 +45,40 @@ app.use('/api/events',        eventsRouter);
 app.use('/api/performance',   performanceRouter);
 app.use('/api/backtest',      backtestRouter);
 
-// Start / Stop Bot Engine API endpoints for Settings Tab
-app.get('/api/control/system/status', (req, res) => {
+// Secure control middleware
+const systemAuthMiddleware = (req, res, next) => {
+  const apiKey = process.env.DASHBOARD_API_KEY || process.env.ZISI_API_KEY || process.env.API_KEY || '4444';
+  
+  let providedKey = null;
+  
+  // 1. Authorization: Bearer <token>
+  if (req.headers.authorization) {
+    const parts = req.headers.authorization.split(' ');
+    if (parts.length === 2 && parts[0].toLowerCase() === 'bearer') {
+      providedKey = parts[1];
+    }
+  }
+  
+  // 2. X-API-Key header
+  if (!providedKey && req.headers['x-api-key']) {
+    providedKey = req.headers['x-api-key'];
+  }
+  
+  // 3. Query string parameter
+  if (!providedKey && req.query.apiKey) {
+    providedKey = req.query.apiKey;
+  }
+  
+  if (providedKey === apiKey) {
+    next();
+  } else {
+    console.warn(`[AUTH] Unauthorized control attempt to ${req.originalUrl} from ${req.ip}`);
+    res.status(401).json({ error: 'Unauthorized', message: 'Invalid or missing API key.' });
+  }
+};
+
+// Start / Stop Bot Engine API endpoints for Settings Tab (AUTHENTICATED)
+app.get('/api/control/system/status', systemAuthMiddleware, (req, res) => {
   try {
     const isRunning = botProcess && !botProcess.killed;
     res.json({
@@ -59,7 +91,7 @@ app.get('/api/control/system/status', (req, res) => {
   }
 });
 
-app.post('/api/control/system/start', (req, res) => {
+app.post('/api/control/system/start', systemAuthMiddleware, (req, res) => {
   try {
     if (botProcess && !botProcess.killed) {
       return res.json({ status: 'running', message: 'Bot engine is already running.' });
@@ -72,7 +104,7 @@ app.post('/api/control/system/start', (req, res) => {
   }
 });
 
-app.post('/api/control/system/stop', (req, res) => {
+app.post('/api/control/system/stop', systemAuthMiddleware, (req, res) => {
   try {
     if (!botProcess || botProcess.killed) {
       return res.json({ status: 'stopped', message: 'Bot engine is already stopped.' });

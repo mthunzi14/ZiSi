@@ -10,37 +10,83 @@ export default function Settings() {
 
   // Fetch bot engine status from Express API
   const fetchStatus = async () => {
+    const token = sessionStorage.getItem('zisi_admin_token');
+    if (!token) return;
     try {
-      const r = await fetch('/api/control/system/status');
-      const d = await r.json();
-      setSystemStatus(d);
+      const r = await fetch('/api/control/system/status', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (r.status === 200) {
+        const d = await r.json();
+        setSystemStatus(d);
+      }
     } catch (err) {
       console.error('Failed to fetch system status:', err);
     }
   };
 
   useEffect(() => {
-    fetchStatus();
-    const id = setInterval(fetchStatus, 3000);
+    const token = sessionStorage.getItem('zisi_admin_token');
+    if (token) {
+      setIsUnlocked(true);
+      fetch('/api/control/system/status', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      }).then(r => {
+        if (r.status === 200) {
+          r.json().then(d => setSystemStatus(d));
+        } else {
+          sessionStorage.removeItem('zisi_admin_token');
+          setIsUnlocked(false);
+        }
+      }).catch(() => {});
+    }
+
+    const id = setInterval(() => {
+      const activeToken = sessionStorage.getItem('zisi_admin_token');
+      if (activeToken) {
+        fetchStatus();
+      }
+    }, 3000);
     return () => clearInterval(id);
   }, []);
 
-  const handleUnlock = (e) => {
+  const handleUnlock = async (e) => {
     e.preventDefault();
-    if (password === '4444') {
-      setIsUnlocked(true);
-      setError('');
-    } else {
-      setError('Invalid Access Key. Access Denied.');
-      setPassword('');
+    setLoading(true);
+    setError('');
+    try {
+      const r = await fetch('/api/control/system/status', {
+        headers: { 'Authorization': `Bearer ${password}` }
+      });
+      if (r.status === 200) {
+        setIsUnlocked(true);
+        sessionStorage.setItem('zisi_admin_token', password);
+        setError('');
+        const d = await r.json();
+        setSystemStatus(d);
+      } else if (r.status === 401) {
+        setError('Invalid Access Key. Access Denied.');
+        setPassword('');
+      } else {
+        setError(`Access Denied (HTTP ${r.status})`);
+        setPassword('');
+      }
+    } catch (err) {
+      setError(`Auth Connection Error: ${err.message}`);
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleStart = async () => {
     setLoading(true);
     setMessage('');
+    const token = sessionStorage.getItem('zisi_admin_token') || password;
     try {
-      const r = await fetch('/api/control/system/start', { method: 'POST' });
+      const r = await fetch('/api/control/system/start', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const d = await r.json();
       if (d.status === 'running') {
         setMessage('System Engine started successfully.');
@@ -58,8 +104,12 @@ export default function Settings() {
   const handleStop = async () => {
     setLoading(true);
     setMessage('');
+    const token = sessionStorage.getItem('zisi_admin_token') || password;
     try {
-      const r = await fetch('/api/control/system/stop', { method: 'POST' });
+      const r = await fetch('/api/control/system/stop', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const d = await r.json();
       if (d.status === 'stopped') {
         setMessage('System Engine stopped forcefully.');
