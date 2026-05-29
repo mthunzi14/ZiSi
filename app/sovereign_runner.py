@@ -220,7 +220,7 @@ def main():
     backend_dir = Path(__file__).parent.parent / "presentation" / "dashboard" / "backend"
     
     print(f"\n{C_CYAN}[SYSTEM] Launching Dashboard API Server and Bot Core...{C_RESET}")
-    print(f"{C_DARK}         (Running 'node server.js' inside dashboard/backend/){C_RESET}\n")
+    print(f"{C_DARK}         (Running 'node server.js' inside presentation/dashboard/backend/){C_RESET}\n")
     
     # Spawn Express API server (which automatically spawns main.py in turn)
     try:

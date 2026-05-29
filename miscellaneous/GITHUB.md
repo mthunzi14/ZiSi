@@ -105,7 +105,7 @@ Live-refreshing dashboard at `http://localhost:5000` with balance, P&L, win rate
 ```bash
 pip install -r requirements.txt
 pip install vaderSentiment
-cd dashboard/backend && npm install && cd ../..
+npm run install:all
 ```
 
 ### 2. Configure `.env`
@@ -125,10 +125,11 @@ ACCOUNT_BALANCE=100
 ### 3. Start
 
 ```bash
-cd dashboard/backend && npm start
+npm start
 ```
 
-Open **http://localhost:5000** — the dashboard auto-spawns `python main.py`.
+Open **http://localhost:5000** — the dashboard (presentation/dashboard/backend)
+builds the frontend, then auto-spawns `python app/main.py`.
 
 ---
 
