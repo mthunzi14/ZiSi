@@ -345,9 +345,12 @@ class UpDownEngine:
         # Retrieve real-time Spot Order Flow Imbalance (OFI)
         ofi = await get_current_ofi(self.asset)
 
+        from core.engine.regime_filter import get_regime_mode
+        regime = get_regime_mode(self.timeframe)
+
         # Raw direction from the shared signal core (single source of truth)
         from core.engine.signal_core import decide_signal
-        _dec = decide_signal(rsi, mom, ofi, self.timeframe)
+        _dec = decide_signal(rsi, mom, ofi, self.timeframe, regime=regime)
         if _dec["blocked"]:
             log.info("[ENGINE] %s/%s: Spot OFI divergence — blocking entry.", self.asset, self.timeframe)
             return None
@@ -379,7 +382,6 @@ class UpDownEngine:
                 return None
 
         # Apply regime
-        regime = get_regime_mode(self.timeframe)
         direction = apply_regime(raw_dir, regime)
         if self.invert_signal:
             direction = "DOWN" if direction == "UP" else "UP"
@@ -405,6 +407,39 @@ class UpDownEngine:
                 "[ENGINE] %s/%s: Dual boost — combined=%.2fc",
                 self.asset, self.timeframe, up_price + dn_price,
             )
+
+        # Polymarket CLOB OBI (Proposal 1)
+        clob_obi = 0.0
+        try:
+            from infrastructure.websocket.extraterrestrial_ws_gateway import polymarket_l2_gateway
+            up_tk = market.get("up_market", {}).get("id")
+            dn_tk = market.get("dn_market", {}).get("id")
+            if direction == "UP" and up_tk:
+                clob_obi = polymarket_l2_gateway.get_obi(up_tk)
+                if clob_obi < -0.60:
+                    log.info("[ENGINE] %s/%s: Polymarket YES OBI extreme selling pressure (%.2f < -0.60) — blocking entry.",
+                             self.asset, self.timeframe, clob_obi)
+                    return None
+                elif clob_obi > 0.0:
+                    score = min(1.0, score + 0.04)
+                    log.info("[ENGINE] %s/%s: YES OBI confirms direction (%.2f > 0.0) -> boost +0.04", self.asset, self.timeframe, clob_obi)
+                elif clob_obi < 0.0:
+                    score = max(0.10, score - 0.03)
+                    log.info("[ENGINE] %s/%s: YES OBI conflicts direction (%.2f < 0.0) -> penalty -0.03", self.asset, self.timeframe, clob_obi)
+            elif direction == "DOWN" and dn_tk:
+                clob_obi = polymarket_l2_gateway.get_obi(dn_tk)
+                if clob_obi < -0.60:
+                    log.info("[ENGINE] %s/%s: Polymarket NO OBI extreme selling pressure (%.2f < -0.60) — blocking entry.",
+                             self.asset, self.timeframe, clob_obi)
+                    return None
+                elif clob_obi > 0.0:
+                    score = min(1.0, score + 0.04)
+                    log.info("[ENGINE] %s/%s: NO OBI confirms direction (%.2f > 0.0) -> boost +0.04", self.asset, self.timeframe, clob_obi)
+                elif clob_obi < 0.0:
+                    score = max(0.10, score - 0.03)
+                    log.info("[ENGINE] %s/%s: NO OBI conflicts direction (%.2f < 0.0) -> penalty -0.03", self.asset, self.timeframe, clob_obi)
+        except Exception as e:
+            log.warning("[ENGINE] Failed to read or apply Polymarket CLOB OBI: %s", e)
 
         # ── PyTorch AI Predictor Injection (trained model only) ──
         try:

@@ -150,3 +150,154 @@ class CycleManager:
     def feedback_summary(self) -> Dict:
         """Return win-rate breakdown by signal_type × category."""
         return self.feedback.summary()
+
+async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: dict) -> None:
+    """
+    Background daemon task running a T-15s candle close scanner to exploit the Pyth-vs-Polymarket latency edge.
+    """
+    log.info("[LATENCY-ARB] Starting T-15s latency arbitrage scanner daemon...")
+    last_scanned_close = {}  # (asset, timeframe) -> next_close_ts
+    
+    while True:
+        try:
+            now = time.time()
+            # Loop over all registered engines
+            for key, engine in engines.items():
+                asset = engine.asset
+                timeframe = engine.timeframe
+                interval_minutes = int(timeframe.rstrip("m"))
+                interval_secs = interval_minutes * 60
+                
+                next_close = ((int(now) // interval_secs) + 1) * interval_secs
+                time_left = next_close - now
+                
+                # We target the window T-15s to T-8s
+                if 8.0 <= time_left <= 15.5:
+                    if last_scanned_close.get((asset, timeframe)) == next_close:
+                        continue  # Already scanned this candle
+                        
+                    # Let's perform the latency check
+                    last_scanned_close[(asset, timeframe)] = next_close
+                    log.info("[LATENCY-ARB] Scanning %s/%s at T-%.1fs before close", asset, timeframe, time_left)
+                    
+                    # 1. Fetch Pyth Price
+                    from scratch.pyth_oracle_service import GLOBAL_ORACLE_CACHE
+                    pyth_price = GLOBAL_ORACLE_CACHE.get(asset, {}).get("price", 0.0)
+                    if pyth_price <= 0.0:
+                        log.warning("[LATENCY-ARB] No Pyth price available for %s", asset)
+                        continue
+                        
+                    # 2. Fetch candle open price (klines[-1][1])
+                    from core.engine.updown_engine import _fetch_klines_async
+                    tf_map = {"5m": ("5m", 30), "15m": ("15m", 30)}
+                    interval, limit = tf_map.get(timeframe, ("5m", 30))
+                    klines = await _fetch_klines_async(session, asset, interval, limit)
+                    if len(klines) < 2:
+                        log.warning("[LATENCY-ARB] Insufficient klines for %s/%s", asset, timeframe)
+                        continue
+                        
+                    open_price = float(klines[-1][1])
+                    pct_move = (pyth_price - open_price) / open_price
+                    
+                    # Check threshold (0.2%)
+                    if abs(pct_move) < 0.002:
+                        continue  # Move is too small
+                        
+                    direction = "UP" if pct_move > 0.002 else "DOWN"
+                    log.info("[LATENCY-ARB] Potential %s move detected for %s/%s (move: %.4f%%, Pyth: %.4f, Open: %.4f)",
+                             direction, asset, timeframe, pct_move * 100, pyth_price, open_price)
+                    
+                    # 3. Check if we already have an active position for this candle
+                    import infrastructure.state.state_manager as state_mgr
+                    open_positions = state_mgr.get_open_positions()
+                    
+                    market = await engine._fetch_market(session)
+                    if not market:
+                        log.warning("[LATENCY-ARB] Active market not found for %s/%s", asset, timeframe)
+                        continue
+                        
+                    already_entered = False
+                    for pos in open_positions:
+                        if pos.get("event_id") == market["event_id"]:
+                            already_entered = True
+                            break
+                            
+                    if already_entered:
+                        log.info("[LATENCY-ARB] Already entered market for %s/%s in this candle, skipping.", asset, timeframe)
+                        continue
+                        
+                    # 4. Check prices and implied probability
+                    abs_move = abs(pct_move)
+                    if abs_move >= 0.004:
+                        implied_prob = 0.99
+                    elif abs_move >= 0.003:
+                        implied_prob = 0.97
+                    else:
+                        implied_prob = 0.95
+                        
+                    up_price = market["up_price"]
+                    dn_price = market["dn_price"]
+                    
+                    if direction == "UP":
+                        entry_price = up_price
+                        market_id = market["up_market"]["id"]
+                    else:
+                        entry_price = dn_price
+                        market_id = market["dn_market"]["id"]
+                        
+                    # Arbitrage entry discount gate check
+                    if entry_price >= (implied_prob - 0.06):
+                        log.info("[LATENCY-ARB] %s/%s %s price %.2f does not offer enough discount vs implied prob %.2f (requires < %.2f)",
+                                 asset, timeframe, direction, entry_price, implied_prob, implied_prob - 0.06)
+                        continue
+                        
+                    # 5. Position sizing (half Kelly)
+                    from infrastructure.state.state_manager import get_current_balance
+                    current_balance = get_current_balance()
+                    
+                    normal_usd = engine.compute_size(0.85, entry_price, current_balance)
+                    usd_size = max(1.0, normal_usd * 0.5)
+                    
+                    # Apply Altcoin Sizing Gates
+                    if asset in ["SOL", "XRP"]:
+                        usd_size *= 0.60
+                    elif asset in ["ADA", "LINK", "DOGE", "AVAX", "SUI"]:
+                        usd_size = min(usd_size * 0.35, 35.0)
+                        
+                    # Safety cap
+                    max_safety_size = current_balance * 0.15
+                    if usd_size > max_safety_size:
+                        usd_size = max_safety_size
+                        
+                    if usd_size < 1.00:
+                        log.info("[LATENCY-ARB] Position size $%.2f too small, skipping.", usd_size)
+                        continue
+                        
+                    # 6. Execute order
+                    from infrastructure.exchange.trader import place_order
+                    from core.engine.session_governor import commit_trade_slot
+                    
+                    order = place_order(
+                        event_id=market["event_id"],
+                        market_id=market_id,
+                        amount_dollars=usd_size,
+                        direction="YES" if direction == "UP" else "NO",
+                        entry_price=entry_price,
+                        event_title=f"[UPDOWN][{asset}][{timeframe}][LATENCY_ARB] {market['event_title']}",
+                        expiry_ts=market["expiry_ts"],
+                    )
+                    
+                    if order:
+                        await commit_trade_slot(asset, timeframe, 0.85, interval_minutes, is_dual=False, direction=direction)
+                        log.info("[LATENCY-ARB SUCCESSFULLY ENTERED] Entered %s/%s %s: $%.2f at %.0f¢ (implied prob: %.2f)",
+                                 asset, timeframe, direction, usd_size, entry_price * 100, implied_prob)
+                        try:
+                            from app.telegram_bot import send_alert
+                            send_alert(f"LATENCY ARB {asset}/{timeframe} {direction} | ${usd_size:.2f} @ {entry_price*100:.0f}c")
+                        except Exception:
+                            pass
+                            
+        except Exception as e:
+            log.error("[LATENCY-ARB] Scanner loop error: %s", e, exc_info=True)
+            
+        await asyncio.sleep(1.0)

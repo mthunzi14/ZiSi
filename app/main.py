@@ -571,6 +571,14 @@ async def main() -> None:
             tasks.append(arbitrage_scanner_loop(_try_telegram))
             tasks.append(heartbeat_daemon())
 
+            # Start latency edge arbitrage scanner (Sprint 3)
+            try:
+                from core.engine.cycle_manager import start_latency_edge_scanner
+                tasks.append(start_latency_edge_scanner(session, context.engines))
+                log.info("[MAIN] Latency edge scanner background task registered.")
+            except Exception as e:
+                log.error("[MAIN] Failed to import start_latency_edge_scanner: %s", e)
+
             log.info("[MAIN] Launching %d asyncio tasks (Dynamic asset loops + reconciliation + arbitrage scanner)", len(tasks))
             await asyncio.gather(*tasks)
     finally:

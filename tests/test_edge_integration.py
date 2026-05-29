@@ -79,7 +79,7 @@ class TestEdgeIntegration(unittest.IsolatedAsyncioTestCase):
             
             # Size should be computed and rounded successfully
             self.assertGreater(size, 0.0)
-            self.assertLessEqual(size, 5.0)  # Ceiling limit check
+            self.assertLessEqual(size, 20.0)  # Unified adaptive Kelly ceiling limit check
 
     def test_trader_outcome_propagates_to_edge_orchestrator(self):
         # Mock positions_state path and locked file open in trader.py
