@@ -47,9 +47,11 @@ edge_dn = (1 - fair_prob_up)  - dn_price
 - **Remove** the 0.88 `TARGET_HIT` cap and the **salvage-sell-at-~8¢** logic (it locks coin-flip losses). Winners ride to ~100¢, losers to ~0¢; the edge plays out over volume.
 - Optional **aggressive stop on clear losers** is configurable and **OFF by default** (short windows often do better with no stop) — to be A/B-tested in the backtester, never assumed.
 
-### 4.4 15m-BTC-first + volume
-- Lead with **15m BTC + ETH**; de-emphasise 5m. Keep multi-asset but 15m-weighted.
-- **Volume comes from removing the redundant blocking gates** (volume-climax gate, OFI-divergence block, score<0.50 reject, multi-gate cascade), NOT from loosening quality — the single `EDGE_MARGIN` gate becomes the quality control. Trade *every* window that clears the margin.
+### 4.4 15m-BTC-first + maximum volume
+- Lead with **15m BTC + ETH**; keep multi-asset but **15m-weighted** (still want strong volume on 5m and all assets — just bias quality/size toward 15m).
+- **Volume comes from removing redundant blocking gates** (volume-climax gate, OFI-divergence block, score<0.50 reject, the multi-gate cascade), NOT from loosening quality — the single `EDGE_MARGIN` gate becomes the quality control. Trade *every* window that clears the margin.
+- **Remove the concurrency caps entirely.** `MAX_TOTAL_OPEN=6` / `MAX_OPEN_PER_ASSET=2` structurally forbid PBot/Bone-Reaper-level volume (they hold dozens of simultaneous positions). Remove (or set extremely high) both caps; control risk via **small per-trade size**, not a position-count ceiling. Capital preservation is enforced by sizing, not by refusing trades.
+- **Expand the market universe** to every liquid Up/Down window the margin gate qualifies — more assets and (optionally) more window lengths — to maximise the number of margin-clearing opportunities.
 
 ### 4.5 Sizing
 - Keep **shares-first** (already correct ✓). Small, consistent, **chunked** bets scaled by `edge_margin × balance`; optional DCA-into-winners; **capital preservation over perfect entries**; never all-in. Respect existing bankroll caps.
@@ -61,7 +63,10 @@ Reversal-snipe archetype ✓ (proven cheap-entry edge), silent-fill reconciliati
 1. Implement the fair-value signal + `EDGE_MARGIN` gate as a **mode in `signal_core`** (alongside, not destroying, the current logic).
 2. Run it through the **existing backtester** over historical 15m BTC/ETH (it already calibrates within 4.1¢): measure WR, expectancy (net of modeled fee/slippage), trade count, max drawdown, and WR-minus-breakeven margin.
 3. **Promotion gate:** only wire it as the live paper primary if backtest shows **positive expectancy**, **WR exceeds entry-implied breakeven by ≥ ~3–5%**, and **trade count ≫ current**. If not, iterate the signal — do not deploy hope.
-4. Future phases (separate specs): **shadow mode** (zero-balance real orders) → **live 10% size** → execution-latency layer + **Ireland VPS**.
+4. Promotion path in plain **demo → live** terms (no jargon):
+   - **Demo (PC)** — what we run now: simulated fills on live market data. Proves the *logic*.
+   - **Demo (Ireland VPS)** — identical demo logic, but running on the Hetzner Ireland box with *real* FIFO-queue latency and real execution timing, still zero capital. Proves the edge survives real speed. (Owner already has this VPS — available whenever.)
+   - **Live** — real capital, small size first (~10%), then scale. This is also where the Type-2 execution layer + liquidity manufacturing (§10.5) come online.
 
 ## 6. Success criteria (the owner's objectives)
 - **Trade volume:** materially higher than today (every margin-clearing window, not a few/day).
@@ -79,3 +84,38 @@ The repo has evolved since the backtester build (`signal_core.py` now has `Tradi
 - **Adverse selection:** in live, resting below ask disproportionately fills the losing side. Modeled only crudely in v1; flagged for the shadow-mode phase.
 - **Fair-value model is an approximation** (driftless N(d₂), kline-proxy vol); the calibration gate bounds—but does not eliminate—model error. Re-validate as the live sample grows.
 - **n is still small.** Backtest tolerances are loose at current sample size; tighten as data accumulates.
+
+---
+
+## 10. Folded-in decisions (post-review) — comprehensive
+
+### 10.1 Resolution source = Pyth (signal/oracle alignment)
+PBot's public guidance states these Up/Down markets resolve on **Pyth** — which is exactly why ZiSi already streams Pyth. **The fair-value signal (§4.1) must read spot from the SAME Pyth feed/asset/timestamp that resolves the market**, so `S_0` (strike = window open) and `S_t` (live) are measured on the resolving oracle, not a mismatched exchange. This eliminates the "1¢ magic flip" basis risk. *(Owner to double-check the exact resolution text on a live market; if a market ever resolves on Binance/Coinbase instead, the signal source for that market must switch to match.)* Cross-check Pyth vs Binance/Coinbase on suspicious resolutions and pause that timeframe if they diverge.
+
+### 10.2 Session-adaptive, profitable in EVERY session
+Per PBot, behaviour differs sharply by **weekday vs weekend** and **Asian vs EU vs US** hours. The existing `core/shared/session_manager.py` (`TradingSessionManager`) is the foundation — **integrate it into the margin gate**, do not bypass it. Concretely:
+- Each session carries its own tuned `EDGE_MARGIN`, sizing, and (optionally) which assets/windows are active.
+- Goal: the bot **prints in every session** by demanding a *larger* edge in thin/low-edge sessions and trading more freely in high-edge sessions — never going dark.
+- Day-of-week edges (a named PBot edge) are first-class inputs, sourced from the accumulating trade history + backtest.
+
+### 10.3 Backtest realism = fees + slippage + adverse selection
+The validate-first promotion gate (§5) is only trustworthy if the backtester models real costs, or it reproduces the "70% backtest → 52% live" trap. Harden the backtester to model: Polymarket spread/fees, slippage from book depth (not midpoint), fill probability, and a crude **adverse-selection** penalty (resting below ask disproportionately fills the losing side). Calibrate toward "backtest within ~3% of live."
+
+### 10.4 Inventory-before-cutting + hunt & amplify the reversal snipe
+- **Pre-implementation inventory (mandatory first plan task):** map every gate/indicator in the *current, post-sprints* signal path (`signal_core.py`, `updown_engine.py`, `cycle_manager.py`, `session_manager.py`, regime/edge layers) and tag each **KEEP / REDUNDANT / FIX**. Remove ONLY confirmed redundancy. Honor "don't remove what works."
+- **Reversal-snipe hunt:** locate *every* reversal-snipe code path (RSI<20→UP / >80→DOWN cheap-discount entries), preserve them, and **give them more opportunities** (it's a proven high-edge archetype). Ensure the pivot does not starve them.
+
+### 10.5 Liquidity manufacturing (Type-2 seed, live phase)
+For live entries when the book is thin: GTC limit at mid+1 tick, or naked-sell the opposite side, or pre-split shares and rest GTC on the other side as a synthetic position. Build behind the same `signal_core`/execution boundary so it slots in for Type-2 without touching the signal. Not built in demo v1; designed-for now.
+
+### 10.6 Build for Type-2 from day one
+Everything additive and behind clean interfaces so the Type-2 market-making/laddering execution layer + the latency hot-path can slot in on the Ireland VPS later. The owner's explicit end-goal is Bone-Reaper-tier (Type-2) → live capital.
+
+### 10.7 Baseline hygiene (before implementation)
+Commit the other tooling's in-progress work (785 lines, tests green: `session_manager`, threaded persistence, dormancy gates, retrained LSTM) as the clean baseline; **git-ignore binary/runtime artifacts** (`core/ml/trained_model.pt`, `oi_history.json`, training metrics). Build the pivot additively on this baseline — clobber nothing.
+
+### 10.8 Targets & expected results (honest, bounded)
+- **Win rate:** directional core ~**55%**; **blended book ~58–62%** (lifted by reversal snipes + near-certainty ≥90¢ entries + session edges). 60%+ is a *blend* outcome, not a directional guarantee.
+- **Volume:** from a few/day → **dozens/day** (every margin-clearing window across assets, caps removed).
+- **Equity:** bleeding stops; **gentle, low-variance up-drift** once the backtest validates. The smooth diagonal is a *multi-week / hundreds-of-trades* result, not a single session.
+- **Hard caveat:** demo proves the *brain*, not the *speed*; live PnL also needs the VPS execution stage (the FIFO-latency edge isn't capturable in PC demo). We deploy live only after demo-on-VPS confirms the edge survives real latency.
