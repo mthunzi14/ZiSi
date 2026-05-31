@@ -119,3 +119,18 @@ Commit the other tooling's in-progress work (785 lines, tests green: `session_ma
 - **Volume:** from a few/day → **dozens/day** (every margin-clearing window across assets, caps removed).
 - **Equity:** bleeding stops; **gentle, low-variance up-drift** once the backtest validates. The smooth diagonal is a *multi-week / hundreds-of-trades* result, not a single session.
 - **Hard caveat:** demo proves the *brain*, not the *speed*; live PnL also needs the VPS execution stage (the FIFO-latency edge isn't capturable in PC demo). We deploy live only after demo-on-VPS confirms the edge survives real latency.
+
+### 10.9 Risk model AFTER removing position caps (mandatory replacement control)
+Removing `MAX_TOTAL_OPEN` / `MAX_OPEN_PER_ASSET` (§4.4) without a replacement would let the bot deploy the whole bankroll at once. Replace the *count* cap with **capital** controls:
+- **Portfolio deployment cap:** total USD across all open positions ≤ ~**60–70% of bankroll** (tunable). Unlimited number of positions, bounded total capital.
+- **Small per-trade size:** ~**1–3% of bankroll** each (chunked), scaled by edge margin. Many small bets = the low-variance grind.
+- **Per-asset $ exposure soft-cap:** avoid ending up 100% one-directional on a single asset (concentration risk) — generous, not a volume choke.
+- Net effect: **unlimited trade count, bounded capital** → maximum volume without all-in risk. This is PBot's "capital preservation beats perfect entries / bet in chunks."
+
+### 10.10 Entry archetypes & decision cadence (the three shots)
+The fair-value + margin engine naturally yields three entry archetypes — all gated by `EDGE_MARGIN`, all held to resolution:
+1. **Moderate-divergence (early window):** spot has moved, contract lags → enter ~40–60¢ when `fair_prob − price ≥ margin`.
+2. **Cheap reversal-snipe:** existing proven archetype (RSI<20→UP / >80→DOWN) at deep discount — preserved and given more opportunities (§10.4).
+3. **Near-certainty (final ~60s):** when time-left is small and |S_t − S_0| is large, `fair_prob → ~0.95`; if the contract still trades <~0.90, buy it (pay ~90¢ to win ~10¢ at ~95% WR). High-frequency, ultra-low-variance — a primary contributor to the smooth equity line. Removes the old 80¢ ceiling for this case (gated by margin, not price).
+
+**Decision cadence per window:** evaluate at **open**, at **+60s**, then **scan continuously**, with a dedicated **final-60s pass** for the near-certainty archetype. One window can fire more than one archetype over its life.
