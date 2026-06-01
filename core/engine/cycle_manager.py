@@ -232,7 +232,13 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             else:
                 entry_price = dn_price
                 market_id = market["dn_market"]["id"]
-                
+
+            # 5m ATM gate — coin-flip zone is edge-negative regardless of Pyth signal
+            if timeframe == "5m" and 0.47 <= entry_price <= 0.53:
+                log.info("[LATENCY-ARB] %s/5m ATM_BLOCK: %.0f¢ in coin-flip zone, skipping.",
+                         asset, entry_price * 100)
+                return
+
             # Retrieve active session discount hurdle (Sprint 11)
             discount_hurdle = 0.06
             try:
