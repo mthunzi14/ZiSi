@@ -382,9 +382,12 @@ export default function App() {
                 const pnlPositive = pnl >= 0;
 
                 const closed = positions.closed || [];
-                const wins = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).length;
+                const wins  = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).length;
+                const losses = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0).length;
+                const evens = closed.filter(p => parseFloat(p.realized_pnl ?? 0) === 0).length;
                 const totalClosed = closed.length || state.trades_executed || 0;
-                const wr = totalClosed > 0 ? (wins / totalClosed) * 100 : 0;
+                const decisive = wins + losses;
+                const wr = decisive > 0 ? (wins / decisive) * 100 : 0;
                 const active = positions.active?.length || 0;
 
                 const cellStyle = (borderRight = true) => ({
@@ -450,7 +453,7 @@ export default function App() {
                           {wr.toFixed(1)}%
                         </span>
                       </div>
-                      <span style={subStyle}>{wins}W · {totalClosed - wins}L · {totalClosed} total</span>
+                      <span style={subStyle}>{wins}W · {losses}L · {evens}E · {totalClosed} trades</span>
                     </div>
 
                     <div style={cellStyle(false)}>
