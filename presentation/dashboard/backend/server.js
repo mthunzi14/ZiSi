@@ -45,8 +45,8 @@ app.post('/api/control/reset', (req, res) => {
     // 2. Wait 2 seconds for complete process teardown
     setTimeout(() => {
       import('child_process').then(({ exec }) => {
-        const pythonCmd = process.platform === 'win32' ? 'C:\\Python313\\python.exe' : 'python3';
-        
+        const pythonCmd = process.platform === 'win32' ? 'C:\\Python313\\python.exe' : '/root/ZiSi/venv/bin/python';
+
         // 3. Execute clean_slate.py with --nuke and --archive flags
         const cmd = `${pythonCmd} miscellaneous/clean_slate.py --archive --force --balance 100 --nuke`;
         console.log(`[CONTROL] Running reset: ${cmd}`);
@@ -191,7 +191,7 @@ let botStopped = false;   // set true on intentional shutdown so we don't restar
 function startBot() {
   if (botStopped) return;
 
-  const pythonCmd = process.platform === 'win32' ? 'C:\\Python313\\python.exe' : 'python3';
+  const pythonCmd = process.platform === 'win32' ? 'C:\\Python313\\python.exe' : '/root/ZiSi/venv/bin/python';
 
   if (!fs.existsSync(path.join(BOT_ROOT, 'app', 'main.py'))) {
     console.error('❌  app/main.py not found at', path.join(BOT_ROOT, 'app'), '— bot not started');
