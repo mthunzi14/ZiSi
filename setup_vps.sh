@@ -8,6 +8,8 @@ BOT_MODE=paper_trading
 GMAIL_ENABLED=false
 LOG_TO_DRIVE=false
 DAILY_REPORT_EMAIL=false
+RISK_PER_TRADE_PERCENT=2
+MAX_SIMULTANEOUS_TRADES=6
 ENVEOF
 chmod 600 .env
 
@@ -18,8 +20,8 @@ npm --prefix presentation/dashboard/backend install --silent
 echo "=== [3/6] Building frontend ==="
 npm --prefix presentation/dashboard/frontend run build
 
-echo "=== [4/6] Clean slate — resetting to \$100 ==="
-venv/bin/python3 miscellaneous/clean_slate.py
+echo "=== [4/6] Clean slate — resetting to \$50 ==="
+venv/bin/python3 miscellaneous/clean_slate.py --balance 50 --force
 
 echo "=== [5/6] Creating PM2 ecosystem ==="
 cat > ecosystem.config.js << 'EOF'

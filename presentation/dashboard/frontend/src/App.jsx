@@ -364,86 +364,105 @@ export default function App() {
 
             {/* Overview Stats Strip */}
             <div className="glass-panel reveal-up" style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
+              display: 'grid',
+              gridTemplateColumns: 'repeat(4, 1fr)',
               width: '100%',
-              padding: '14px 24px',
+              padding: 0,
               marginBottom: '4px',
-              gap: '16px',
-              flexWrap: 'wrap'
+              overflow: 'hidden',
+              borderTop: '2px solid rgba(197,155,39,0.65)',
             }}>
-              {/* Stat 1: Current Account Balance */}
-              <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: '150px' }}>
-                <span style={{ fontSize: '10.5px', color: 'var(--color-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
-                  Account Balance
-                </span>
-                <span style={{ fontSize: '22px', fontWeight: 800, color: 'var(--color-obsidian)', fontFamily: 'var(--font-display)', marginTop: '2px' }}>
-                  ${parseFloat(state.balance || 207.82).toFixed(2)}
-                </span>
-              </div>
+              {/* Stat 1: Balance */}
+              {(() => {
+                const bal = parseFloat(state.balance ?? 50);
+                const pnl = parseFloat(state.pnl ?? 0);
+                const start = bal - pnl;
+                const pnlPct = start > 0 ? (pnl / start) * 100 : 0;
+                const pnlPositive = pnl >= 0;
 
-              <div className="hidden md:block" style={{ width: '1px', height: '32px', background: 'var(--color-card-border)', opacity: 0.5 }} />
+                const closed = positions.closed || [];
+                const wins = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).length;
+                const totalClosed = closed.length || state.trades_executed || 0;
+                const wr = totalClosed > 0 ? (wins / totalClosed) * 100 : 0;
+                const active = positions.active?.length || 0;
 
-              {/* Stat 2: Realized P&L */}
-              <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: '150px' }}>
-                <span style={{ fontSize: '10.5px', color: 'var(--color-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
-                  Net Profit / Loss
-                </span>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginTop: '2px' }}>
-                  <span style={{ fontSize: '22px', fontWeight: 800, color: 'var(--color-profit)', fontFamily: 'var(--font-display)' }}>
-                    +${parseFloat(state.pnl || 107.82).toFixed(2)}
-                  </span>
-                  <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--color-profit)', background: 'rgba(16, 185, 129, 0.12)', padding: '1px 6px', borderRadius: '4px' }}>
-                    +{( (parseFloat(state.pnl || 107.82) / (parseFloat(state.balance || 207.82) - parseFloat(state.pnl || 107.82))) * 100 ).toFixed(1)}%
-                  </span>
-                </div>
-              </div>
+                const cellStyle = (borderRight = true) => ({
+                  display: 'flex',
+                  flexDirection: 'column',
+                  padding: '22px 28px',
+                  gap: '4px',
+                  borderRight: borderRight ? '1px solid var(--color-card-border)' : 'none',
+                });
+                const labelStyle = {
+                  fontSize: '9.5px',
+                  fontFamily: 'var(--font-primary)',
+                  color: 'var(--color-text-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.13em',
+                  fontWeight: 700,
+                };
+                const numStyle = (color = 'var(--color-obsidian)') => ({
+                  fontSize: '28px',
+                  fontWeight: 800,
+                  color,
+                  fontFamily: 'var(--font-display)',
+                  lineHeight: 1.05,
+                  letterSpacing: '-0.02em',
+                });
+                const subStyle = {
+                  fontSize: '10.5px',
+                  color: 'var(--color-text-muted)',
+                  fontWeight: 500,
+                  marginTop: '1px',
+                };
 
-              <div className="hidden md:block" style={{ width: '1px', height: '32px', background: 'var(--color-card-border)', opacity: 0.5 }} />
+                return (
+                  <>
+                    <div style={cellStyle()}>
+                      <span style={labelStyle}>Balance</span>
+                      <span style={numStyle()}>${bal.toFixed(2)}</span>
+                      <span style={subStyle}>Paper account</span>
+                    </div>
 
-              {/* Stat 3: Win Rate */}
-              <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: '180px' }}>
-                <span style={{ fontSize: '10.5px', color: 'var(--color-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
-                  Win Rate / Count
-                </span>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginTop: '2px' }}>
-                  {(() => {
-                    const closed = positions.closed || [];
-                    const wins = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).length;
-                    const total = closed.length || state.trades_executed || 16;
-                    const w = total === 16 ? 14 : wins;
-                    const pct = total > 0 ? (w / total) * 100 : 0.0;
-                    return (
-                      <>
-                        <span style={{ fontSize: '22px', fontWeight: 800, color: 'var(--color-obsidian)', fontFamily: 'var(--font-display)' }}>
-                          {pct.toFixed(1)}%
+                    <div style={cellStyle()}>
+                      <span style={labelStyle}>Net P&amp;L</span>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '9px' }}>
+                        <span style={numStyle(pnlPositive ? 'var(--color-profit)' : 'var(--color-loss)')}>
+                          {pnlPositive ? '+' : ''}{pnl.toFixed(2)}
                         </span>
-                        <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--color-text-muted)' }}>
-                          ({w}W - {total - w}L)
+                        <span style={{
+                          fontSize: '11px', fontWeight: 700,
+                          color: pnlPositive ? 'var(--color-profit)' : 'var(--color-loss)',
+                          background: pnlPositive ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+                          padding: '2px 7px', borderRadius: '5px',
+                        }}>
+                          {pnlPositive ? '+' : ''}{pnlPct.toFixed(1)}%
                         </span>
-                      </>
-                    );
-                  })()}
-                </div>
-              </div>
+                      </div>
+                      <span style={subStyle}>vs starting balance</span>
+                    </div>
 
-              <div className="hidden md:block" style={{ width: '1px', height: '32px', background: 'var(--color-card-border)', opacity: 0.5 }} />
+                    <div style={cellStyle()}>
+                      <span style={labelStyle}>Win Rate</span>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                        <span style={numStyle(wr >= 55 ? 'var(--color-profit)' : wr >= 45 ? 'var(--color-obsidian)' : 'var(--color-loss)')}>
+                          {wr.toFixed(1)}%
+                        </span>
+                      </div>
+                      <span style={subStyle}>{wins}W · {totalClosed - wins}L · {totalClosed} total</span>
+                    </div>
 
-              {/* Stat 4: Active / Closed Trades */}
-              <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: '150px' }}>
-                <span style={{ fontSize: '10.5px', color: 'var(--color-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
-                  Active / Closed
-                </span>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginTop: '2px' }}>
-                  <span style={{ fontSize: '22px', fontWeight: 800, color: 'var(--color-obsidian)', fontFamily: 'var(--font-display)' }}>
-                    {positions.active?.length || 0}
-                  </span>
-                  <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--color-text-muted)' }}>
-                    / {positions.closed?.length || state.trades_executed || 16} Closed
-                  </span>
-                </div>
-              </div>
+                    <div style={cellStyle(false)}>
+                      <span style={labelStyle}>Positions</span>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+                        <span style={numStyle()}>{active}</span>
+                        <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--color-text-muted)', alignSelf: 'center' }}>open</span>
+                      </div>
+                      <span style={subStyle}>{totalClosed} closed lifetime</span>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
 
             <AssetCards positions={positions} candles={candles} state={state} />
