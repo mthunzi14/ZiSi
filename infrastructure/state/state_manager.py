@@ -16,15 +16,26 @@ _POSITIONS_FILE   = Path(__file__).parent.parent / "exchange" / "positions_state
 _DEFAULT_BALANCE  = 100.0
 _lock             = threading.Lock()
 GLOBAL_POSITIONS_LOCK = threading.Lock()
-_balance: float   = _DEFAULT_BALANCE
+_balance: float          = _DEFAULT_BALANCE
+_starting_balance: float = _DEFAULT_BALANCE
+
+
+def _read_starting_balance() -> float:
+    """Read starting_balance from account_state.json, fall back to _DEFAULT_BALANCE."""
+    try:
+        if _STATE_FILE.exists():
+            data = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+            return float(data.get("starting_balance", _DEFAULT_BALANCE))
+    except Exception:
+        pass
+    return _DEFAULT_BALANCE
 
 
 def _balance_from_positions() -> float | None:
     """
     Derive the correct account balance from positions_state.json.
     Returns None if the file is missing or unreadable.
-    This is the single source of truth — avoids accumulated drift from
-    Kalshi or any other market that was later removed.
+    Uses starting_balance from account_state.json so clean_slate resets are respected.
     """
     if not _POSITIONS_FILE.exists():
         return None
@@ -33,7 +44,7 @@ def _balance_from_positions() -> float | None:
             pos     = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
         summary = pos.get("summary") or {}
         realized_pnl = float(summary.get("realized_pnl", 0) or 0)
-        return round(_DEFAULT_BALANCE + realized_pnl, 2)
+        return round(_starting_balance + realized_pnl, 2)
     except Exception:
         return None
 
@@ -41,13 +52,14 @@ def _balance_from_positions() -> float | None:
 
 def initialize_state() -> float:
     """Load account balance from disk, then reconcile with positions_state.json."""
-    global _balance
+    global _balance, _starting_balance
     with _lock:
         disk_balance = _DEFAULT_BALANCE
         if _STATE_FILE.exists():
             try:
                 data = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
                 disk_balance = float(data["balance"])
+                _starting_balance = float(data.get("starting_balance", _DEFAULT_BALANCE))
             except (KeyError, ValueError, json.JSONDecodeError, OSError) as exc:
                 log.warning(
                     "Corrupted state file (%s) — resetting to default $%.2f",
@@ -190,7 +202,7 @@ def _write_state(reason: str = "") -> None:
             existing = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
         except Exception:
             pass
-    starting = float(existing.get("starting_balance", _DEFAULT_BALANCE))
+    starting = float(existing.get("starting_balance", _starting_balance))
 
     # Derive balance from positions_state.json (single source of truth).
     # Keeps disk in sync even if _balance drifted due to a removed market.
