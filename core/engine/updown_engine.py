@@ -277,6 +277,29 @@ class UpDownEngine:
             )
             log.info("[ENGINE] %s/%s: WR=%.0f%% — inversion REVERTED", self.asset, self.timeframe, rolling_wr * 100)
 
+    # ── Fair-value entry helper ───────────────────────────────────────────────
+
+    def _fair_value_entry(self, klines, spot, up_price, dn_price, elapsed_min):
+        """Fair-value (spot-distance) margin decision at the REAL live quotes.
+        Returns decide_value_entry's dict plus fp_up/sigma_frac for logging."""
+        from core.engine.fair_value import fair_prob_up, decide_value_entry
+        try:
+            s_0 = float(klines[-1][1])          # current window open = strike
+        except (IndexError, ValueError, TypeError):
+            return {"direction": None, "edge": 0.0, "archetype": None, "fp_up": 0.5, "sigma_frac": 0.0}
+        total_min = float(int(self.timeframe.rstrip("m")))
+        trs = []
+        for i in range(max(1, len(klines) - 14), len(klines)):
+            h, l, pc = float(klines[i][2]), float(klines[i][3]), float(klines[i - 1][4])
+            trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+        atr = (sum(trs) / len(trs)) if trs else 0.0
+        sigma_frac = (atr / s_0) if s_0 else 0.01
+        fp_up = fair_prob_up(spot, s_0, sigma_frac, elapsed_min, total_min)
+        dec = decide_value_entry(fp_up, up_price, dn_price, elapsed_min, total_min)
+        dec["fp_up"] = round(fp_up, 4)
+        dec["sigma_frac"] = round(sigma_frac, 6)
+        return dec
+
     # ── Signal generation ─────────────────────────────────────────────────────
 
     async def generate_signal(self, session: aiohttp.ClientSession) -> Optional[dict]:
