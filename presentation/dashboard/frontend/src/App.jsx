@@ -483,7 +483,7 @@ export default function App() {
         )}
 
         {activeTab === 'analytics' && (
-          <Analytics state={state} />
+          <Analytics state={state} positions={positions} />
         )}
 
         {activeTab === 'settings' && (

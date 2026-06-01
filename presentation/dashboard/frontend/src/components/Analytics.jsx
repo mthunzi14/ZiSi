@@ -1,222 +1,314 @@
-// Analytics.jsx — Deep Institutional-Grade Quantitative Insights, Confluence Radar & Hourly Heatmap
-import { useState } from 'react';
-import CountUpStats from './common/CountUpStats';
-import BacktestHeatmap from './BacktestHeatmap';
+// Analytics.jsx — Trader-facing performance breakdown (6 panels)
+import {
+  BarChart, Bar, LineChart, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, ReferenceLine, Cell,
+} from 'recharts';
 
-export default function Analytics({ state = {} }) {
-  const safeState = state || {};
-  const byUTC = safeState.byUTC || [];
-  
-  const profitFactor = parseFloat(safeState.profitFactor ?? 0);
-  const expectancy = parseFloat(safeState.expectancy ?? 0);
-  const maxDrawdown = parseFloat(safeState.maxDrawdown ?? 0);
-  const currentDrawdown = parseFloat(safeState.currentDrawdown ?? 0);
-  const consecutiveLosses = parseInt(safeState.consecutiveLosses ?? 0, 10);
-  const riskOfRuin = safeState.riskOfRuin || 'Low';
-  
-  const regime = safeState.regime || { regime: 'NORMAL', label: 'Normal', atr_pct: 0, kelly_multiplier: 1.0 };
-  const atrPct = parseFloat(regime.atr_pct ?? 0);
-  const kellyMultiplier = parseFloat(regime.kelly_multiplier ?? 1.0);
-  
-  const mlProgress = safeState.ml_progress || { cycles_collected: 0, cycles_needed: 50, progress_percent: 0 };
-  const mlCollected = parseInt(mlProgress.cycles_collected ?? 0, 10);
-  const mlNeeded = parseInt(mlProgress.cycles_needed ?? 50, 10);
-  const mlPercent = parseFloat(mlProgress.progress_percent ?? 0);
+const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'HYPE', 'BNB'];
 
-  // Generate complete 24-hour UTC grid list
-  const hoursGrid = Array.from({ length: 24 }, (_, h) => {
-    const data = byUTC.find(item => item.hour === h) || { trades: 0, winRate: 0 };
-    return { hour: h, ...data };
+const ASSET_COLOR = {
+  BTC:  '#2b7fff',
+  ETH:  '#00d4a3',
+  SOL:  '#9945ff',
+  XRP:  '#ff9500',
+  DOGE: '#f1b90d',
+  HYPE: '#ff007a',
+  BNB:  '#f3ba2f',
+};
+
+const EXIT_META = {
+  TARGET_HIT:     { label: 'Target Hit',    color: '#00d4a3' },
+  MARKET_EXPIRED: { label: 'Market Expired', color: '#f59e0b' },
+  STOP_HIT:       { label: 'Stop Hit',       color: '#ef4444' },
+};
+
+function assetFromTitle(title = '') {
+  if (/bitcoin/i.test(title))  return 'BTC';
+  if (/ethereum/i.test(title)) return 'ETH';
+  if (/solana/i.test(title))   return 'SOL';
+  if (/\bxrp\b/i.test(title))  return 'XRP';
+  if (/doge/i.test(title))     return 'DOGE';
+  if (/hype/i.test(title))     return 'HYPE';
+  if (/bnb/i.test(title) || /binance/i.test(title)) return 'BNB';
+  const tag = title.match(/\[(BTC|ETH|SOL|XRP|DOGE|HYPE|BNB)\]/);
+  return tag ? tag[1] : null;
+}
+
+// ── data derivation helpers ───────────────────────────────────────────────────
+
+function buildAssetStats(closed) {
+  const byAsset = {};
+  for (const t of closed) {
+    const asset = assetFromTitle(t.event_title);
+    if (!asset) continue;
+    if (!byAsset[asset]) byAsset[asset] = { wins: 0, total: 0, pnl: 0 };
+    byAsset[asset].total += 1;
+    byAsset[asset].pnl   += parseFloat(t.realized_pnl || 0);
+    if (parseFloat(t.realized_pnl || 0) > 0) byAsset[asset].wins += 1;
+  }
+  return ASSETS
+    .filter(a => byAsset[a] && byAsset[a].total > 0)
+    .map(a => ({
+      asset: a,
+      wr:    Math.round((byAsset[a].wins / byAsset[a].total) * 100),
+      pnl:   Math.round(byAsset[a].pnl * 100) / 100,
+      count: byAsset[a].total,
+    }));
+}
+
+function buildExitBreakdown(closed) {
+  const counts = {};
+  for (const t of closed) {
+    const r = t.exit_reason || 'UNKNOWN';
+    counts[r] = (counts[r] || 0) + 1;
+  }
+  return Object.entries(counts).map(([reason, count]) => ({
+    reason,
+    count,
+    meta: EXIT_META[reason] || { label: reason, color: 'var(--color-iron)' },
+  }));
+}
+
+function buildVolumeSeries(closed) {
+  const days = {};
+  const now = Date.now();
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now - i * 86400000);
+    days[d.toISOString().slice(0, 10)] = { date: d.toISOString().slice(5, 10), ...Object.fromEntries(ASSETS.map(a => [a, 0])) };
+  }
+  for (const t of closed) {
+    if (!t.entry_time) continue;
+    const day = t.entry_time.slice(0, 10);
+    if (!days[day]) continue;
+    const asset = assetFromTitle(t.event_title);
+    if (asset && days[day][asset] !== undefined) days[day][asset] += 1;
+  }
+  return Object.values(days);
+}
+
+function buildHourlyPnl(closed) {
+  const hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, label: `${h}h`, pnl: null, count: 0 }));
+  for (const t of closed) {
+    if (!t.entry_time) continue;
+    const h = new Date(t.entry_time).getUTCHours();
+    hours[h].pnl = (hours[h].pnl ?? 0) + parseFloat(t.realized_pnl || 0);
+    hours[h].count += 1;
+  }
+  return hours.map(h => ({
+    ...h,
+    pnl: h.count > 0 ? Math.round((h.pnl / h.count) * 100) / 100 : null,
+  }));
+}
+
+function buildRunningEv(closed) {
+  let sum = 0;
+  return closed.map((t, i) => {
+    sum += parseFloat(t.realized_pnl || 0);
+    return { n: i + 1, ev: Math.round((sum / (i + 1)) * 1000) / 1000 };
   });
+}
 
-  const getHeatmapColor = (winRate, count) => {
-    if (count === 0) return 'rgba(255, 255, 255, 0.02)'; // empty square
-    if (winRate >= 0.70) return 'rgba(16, 185, 129, 0.35)'; // high emerald green
-    if (winRate >= 0.55) return 'rgba(16, 185, 129, 0.18)'; // light green
-    if (winRate >= 0.45) return 'rgba(249, 115, 22, 0.15)'; // light amber orange
-    return 'rgba(239, 68, 68, 0.2)'; // light ruby red
-  };
+// ── shared style constants ────────────────────────────────────────────────────
 
-  const getHourLabel = (h) => {
-    const ampm = h >= 12 ? 'PM' : 'AM';
-    const displayH = h % 12 === 0 ? 12 : h % 12;
-    return `${displayH}${ampm} UTC`;
-  };
+const S = {
+  card:    { padding: '20px 24px' },
+  title:   { fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: '14px', color: 'var(--color-obsidian)', marginBottom: '4px' },
+  sub:     { fontSize: '11px', color: 'var(--color-iron)', marginBottom: '16px' },
+  axisTick: { fontSize: 10, fill: 'var(--color-iron)' },
+};
 
-  const assetsRadar = [
-    { name: 'BTC/5m',  rsi: 62.4, mom: '+0.03%', ofi: '+0.48', vol: '1.2x', ai: '78.2%', status: 'UP',  score: '4/5', pass: true },
-    { name: 'BTC/15m', rsi: 58.1, mom: '+0.01%', ofi: '+0.15', vol: '0.8x', ai: '60.1%', status: 'WAIT',score: '3/5', pass: false },
-    { name: 'ETH/5m',  rsi: 61.2, mom: '+0.02%', ofi: '+0.52', vol: '1.4x', ai: '81.4%', status: 'UP',  score: '5/5', pass: true },
-    { name: 'ETH/15m', rsi: 54.3, mom: '+0.00%', ofi: '+0.12', vol: '0.9x', ai: '55.3%', status: 'WAIT',score: '3/5', pass: false },
-    { name: 'SOL/5m',  rsi: 48.3, mom: '-0.01%', ofi: '-0.04', vol: '0.7x', ai: '48.9%', status: 'WAIT',score: '1/5', pass: false },
-    { name: 'SOL/15m', rsi: 52.1, mom: '+0.01%', ofi: '+0.23', vol: '1.1x', ai: '65.2%', status: 'UP',  score: '4/5', pass: true },
-    { name: 'XRP/5m',  rsi: 39.4, mom: '-0.03%', ofi: '-0.56', vol: '2.1x', ai: '24.1%', status: 'DOWN',score: '4/5', pass: true },
-    { name: 'XRP/15m', rsi: 41.2, mom: '-0.01%', ofi: '-0.32', vol: '1.5x', ai: '35.4%', status: 'WAIT',score: '2/5', pass: false },
-    { name: 'DOGE/5m', rsi: 45.2, mom: '+0.00%', ofi: '+0.02', vol: '0.6x', ai: '51.2%', status: 'WAIT',score: '2/5', pass: false },
-    { name: 'DOGE/15m', rsi: 48.1, mom: '+0.01%', ofi: '+0.11', vol: '0.9x', ai: '56.4%', status: 'WAIT',score: '3/5', pass: false },
-    { name: 'HYPE/5m', rsi: 66.5, mom: '+0.12%', ofi: '+0.74', vol: '2.8x', ai: '89.1%', status: 'UP',  score: '5/5', pass: true },
-    { name: 'HYPE/15m', rsi: 61.2, mom: '+0.05%', ofi: '+0.48', vol: '1.9x', ai: '78.5%', status: 'UP',  score: '4/5', pass: true },
-    { name: 'BNB/5m',  rsi: 52.4, mom: '+0.01%', ofi: '+0.08', vol: '1.1x', ai: '64.2%', status: 'WAIT',score: '3/5', pass: false },
-    { name: 'BNB/15m', rsi: 50.1, mom: '+0.00%', ofi: '+0.03', vol: '0.7x', ai: '51.2%', status: 'WAIT',score: '2/5', pass: false },
-  ];
+function PanelCard({ title, sub, children, style = {} }) {
+  return (
+    <div className="card" style={{ ...S.card, ...style }}>
+      <div style={S.title}>{title}</div>
+      {sub && <div style={S.sub}>{sub}</div>}
+      {children}
+    </div>
+  );
+}
+
+function CustomBar(props) {
+  const { x, y, width, height, value } = props;
+  if (!height || height <= 0) return null;
+  return <rect x={x} y={y} width={width} height={height} fill={value >= 0 ? '#00d4a3' : '#ef4444'} rx={3} />;
+}
+
+// ── main component ────────────────────────────────────────────────────────────
+
+export default function Analytics({ state = {}, positions = {} }) {
+  const closed = positions.closed || [];
+
+  const assetStats   = buildAssetStats(closed);
+  const exitBreakdown = buildExitBreakdown(closed);
+  const volumeSeries  = buildVolumeSeries(closed);
+  const hourlyPnl     = buildHourlyPnl(closed);
+  const runningEv     = buildRunningEv(closed);
+
+  const totalTrades = closed.length;
+  const totalPnl    = Math.round(closed.reduce((s, t) => s + parseFloat(t.realized_pnl || 0), 0) * 100) / 100;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }} className="page-fade-enter">
-      
-      {/* Analytics Page Title */}
-      <div className="card" style={{ padding: '16px 24px' }}>
-        <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '20px', color: 'var(--color-obsidian)', letterSpacing: '-0.02em' }}>
-          ZiSi. Professional Portfolio Analytics
-        </h2>
-        <div style={{ fontSize: '11px', color: 'var(--color-iron)', marginTop: '2px' }}>
-          Real-time confirmation gates for active trade assets and volatility regime metrics.
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }} className="page-fade-enter">
+
+      {/* Page header */}
+      <div className="card" style={{ padding: '14px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '19px', color: 'var(--color-obsidian)', letterSpacing: '-0.02em' }}>
+            ZiSi. Portfolio Analytics
+          </h2>
+          <div style={{ fontSize: '11px', color: 'var(--color-iron)', marginTop: '2px' }}>
+            Performance breakdown across {totalTrades} closed trades
+          </div>
+        </div>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '20px', fontWeight: 700, color: totalPnl >= 0 ? '#00d4a3' : '#ef4444' }}>
+          {totalPnl >= 0 ? '+' : ''}{totalPnl.toFixed(2)}
         </div>
       </div>
 
-      {/* Row 1: Confluence Radar & Volatility Regime */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: '24px' }}>
-        
-        {/* Confluence Radar checklist card */}
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '12px', height: '100%' }}>
-          <div>
-            <h3 style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: '15px', color: 'var(--color-obsidian)', marginBottom: '2px' }}>
-              Technical Signal Confluence Radar
-            </h3>
-            <p style={{ fontSize: '11px', color: 'var(--color-iron)' }}>
-              Real-time gated confirmation checklist per asset prior to executing orders.
-            </p>
+      {/* Row 1: Per-asset WR + Per-asset P&L */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+
+        <PanelCard title="Win Rate by Asset" sub="Decisive trades only (win % of wins+losses)">
+          {assetStats.length === 0 ? (
+            <div style={{ color: 'var(--color-iron)', fontSize: '12px', textAlign: 'center', paddingTop: '40px' }}>No closed trades yet</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={assetStats} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+                <CartesianGrid vertical={false} stroke="rgba(255,255,255,0.05)" />
+                <XAxis dataKey="asset" tick={S.axisTick} />
+                <YAxis domain={[0, 100]} tick={S.axisTick} tickFormatter={v => `${v}%`} />
+                <Tooltip
+                  formatter={(v, _, p) => [`${v}% (${p.payload.count} trades)`, 'Win Rate']}
+                  contentStyle={{ background: 'var(--color-cream-deep)', border: '1px solid var(--color-border-subtle)', borderRadius: 8, fontSize: 11 }}
+                />
+                <ReferenceLine y={65} stroke="#f59e0b" strokeDasharray="4 2" />
+                <Bar dataKey="wr" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                  {assetStats.map(d => (
+                    <Cell key={d.asset} fill={ASSET_COLOR[d.asset] || '#888'} fillOpacity={0.85} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+          <div style={{ fontSize: '10px', color: 'var(--color-iron)', marginTop: '6px' }}>
+            — Dashed line = 65% mandate
           </div>
+        </PanelCard>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '280px', overflowY: 'auto', paddingRight: '4px' }}>
-            {assetsRadar.map((asset) => (
-              <div 
-                key={asset.name} 
-                style={{ 
-                  display: 'grid', 
-                  gridTemplateColumns: '1fr 1fr 1.2fr 1fr 1fr 1fr 1.4fr',
-                  alignItems: 'center',
-                  padding: '6px 12px',
-                  background: 'var(--color-cream-deep)',
-                  border: '1px solid rgba(255,255,255,0.03)',
-                  borderRadius: '8px',
-                  fontSize: '11.5px'
-                }}
-              >
-                <span style={{ fontWeight: 700, color: 'var(--color-obsidian)', fontFamily: 'var(--font-mono)' }}>{asset.name}</span>
-                
-                <span style={{ color: asset.rsi > 60 || asset.rsi < 40 ? '#00d4a3' : 'var(--color-iron)' }}>
-                  RSI: <span style={{ fontWeight: '500' }}>{asset.rsi}</span>
-                </span>
-                
-                <span style={{ color: asset.mom !== '+0.00%' && asset.mom !== '0.00%' ? '#00d4a3' : 'var(--color-iron)' }}>
-                  Mom: <span style={{ fontWeight: '500' }}>{asset.mom}</span>
-                </span>
-                
-                <span style={{ color: Math.abs(parseFloat(asset.ofi)) > 0.40 ? '#00d4a3' : 'var(--color-iron)' }}>
-                  OFI: <span style={{ fontWeight: '500' }}>{asset.ofi}</span>
-                </span>
-                
-                <span style={{ color: '#00d4a3' }}>
-                  Vol: <span style={{ fontWeight: '500' }}>{asset.vol}</span>
-                </span>
+        <PanelCard title="Realized P&L by Asset" sub="Cumulative closed P&L per asset">
+          {assetStats.length === 0 ? (
+            <div style={{ color: 'var(--color-iron)', fontSize: '12px', textAlign: 'center', paddingTop: '40px' }}>No closed trades yet</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={assetStats} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
+                <CartesianGrid vertical={false} stroke="rgba(255,255,255,0.05)" />
+                <XAxis dataKey="asset" tick={S.axisTick} />
+                <YAxis tick={S.axisTick} tickFormatter={v => `$${v}`} />
+                <Tooltip
+                  formatter={v => [`$${v.toFixed(2)}`, 'P&L']}
+                  contentStyle={{ background: 'var(--color-cream-deep)', border: '1px solid var(--color-border-subtle)', borderRadius: 8, fontSize: 11 }}
+                />
+                <ReferenceLine y={0} stroke="rgba(255,255,255,0.15)" />
+                <Bar dataKey="pnl" radius={[4, 4, 0, 0]} isAnimationActive={false} shape={<CustomBar />} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </PanelCard>
+      </div>
 
-                <span style={{ color: '#00d4a3' }}>
-                  AI: <span style={{ fontWeight: '500' }}>{asset.ai}</span>
-                </span>
-                
-                <div style={{ justifySelf: 'end', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ 
-                    fontFamily: 'var(--font-mono)', 
-                    fontWeight: 700, 
-                    fontSize: '9.5px',
-                    padding: '2px 6px',
-                    borderRadius: '4px',
-                    background: asset.pass ? 'rgba(0, 212, 163, 0.1)' : 'rgba(234, 88, 12, 0.1)',
-                    color: asset.pass ? '#00d4a3' : '#ea580c'
-                  }}>
-                    {asset.status} ({asset.score})
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* Row 2: Exit reasons + Volume timeline */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.6fr', gap: '20px' }}>
 
-        {/* Volatility Regime Radar Card */}
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%' }}>
-          <div>
-            <h3 style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: '15px', color: 'var(--color-obsidian)', marginBottom: '2px' }}>
-              Market Volatility Regime Radar
-            </h3>
-            <p style={{ fontSize: '11px', color: 'var(--color-iron)' }}>
-              Adaptive indicator thresholds and dynamic bet sizing variables.
-            </p>
-          </div>
+        <PanelCard title="Exit Reason Breakdown" sub="How trades are closed">
+          {exitBreakdown.length === 0 ? (
+            <div style={{ color: 'var(--color-iron)', fontSize: '12px', textAlign: 'center', paddingTop: '40px' }}>No closed trades yet</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '4px' }}>
+              {exitBreakdown.sort((a, b) => b.count - a.count).map(({ reason, count, meta }) => {
+                const pct = Math.round((count / totalTrades) * 100);
+                return (
+                  <div key={reason}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 600, color: meta.color }}>{meta.label}</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--color-obsidian)' }}>
+                        {count} <span style={{ color: 'var(--color-iron)', fontWeight: 400 }}>({pct}%)</span>
+                      </span>
+                    </div>
+                    <div style={{ height: '6px', background: 'var(--color-cream-deep)', borderRadius: '3px', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${pct}%`, background: meta.color, borderRadius: '3px', opacity: 0.8 }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </PanelCard>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', flex: 1, justifyContent: 'center' }}>
-            
-            {/* Active Volatility Indicator Box */}
-            <div style={{ 
-              padding: '12px 16px', 
-              background: 'var(--color-cream-deep)', 
-              borderRadius: '10px',
-              border: '1px solid var(--color-border-subtle)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between'
-            }}>
-              <div>
-                <span style={{ fontSize: '9px', color: 'var(--color-iron)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                  Current Volatility State
-                </span>
-                <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '18px', color: 'var(--color-accent)', marginTop: '2px' }}>
-                  {regime.label} Regime
-                </div>
-              </div>
-              <span 
-                className="alert-pulse animate-pulse" 
-                style={{ 
-                  width: '12px', 
-                  height: '12px', 
-                  borderRadius: '50%', 
-                  backgroundColor: regime.regime === 'HIGH_VOLATILITY' ? '#ef4444' : '#10b981',
-                  boxShadow: regime.regime === 'HIGH_VOLATILITY' ? '0 0 12px #ef4444' : '0 0 12px #10b981'
-                }} 
+        <PanelCard title="Trade Volume — Last 7 Days" sub="Entries per asset per day">
+          <ResponsiveContainer width="100%" height={190}>
+            <BarChart data={volumeSeries} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+              <CartesianGrid vertical={false} stroke="rgba(255,255,255,0.05)" />
+              <XAxis dataKey="date" tick={S.axisTick} />
+              <YAxis tick={S.axisTick} allowDecimals={false} />
+              <Tooltip
+                contentStyle={{ background: 'var(--color-cream-deep)', border: '1px solid var(--color-border-subtle)', borderRadius: 8, fontSize: 11 }}
               />
-            </div>
-
-            {/* Metric Row: ATR level */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--color-border-subtle)' }}>
-              <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)', fontWeight: 500 }}>
-                15m ATR Percentage
-              </span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12.5px', fontWeight: '700', color: 'var(--color-obsidian)' }}>
-                {(atrPct * 100).toFixed(3)}%
-              </span>
-            </div>
-
-            {/* Metric Row: Sizer multiplier */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--color-border-subtle)' }}>
-              <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)', fontWeight: 500 }}>
-                Regime Kelly Bet Sizer Modifier
-              </span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12.5px', fontWeight: '700', color: 'var(--color-accent)' }}>
-                {kellyMultiplier.toFixed(2)}x
-              </span>
-            </div>
-
-            {/* Quick explanation */}
-            <div style={{ fontSize: '10.5px', color: 'var(--color-iron)', lineHeight: 1.4, fontStyle: 'italic', paddingLeft: '4px' }}>
-              💡 During high-volatility "Turbulent" states, ZiSi applies a 0.50x Kelly modifier to protect the capital stack from sudden wick slip.
-            </div>
-
-          </div>
-        </div>
-
+              {ASSETS.map(a => (
+                <Bar key={a} dataKey={a} stackId="vol" fill={ASSET_COLOR[a] || '#888'} fillOpacity={0.85} isAnimationActive={false} />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </PanelCard>
       </div>
 
-      {/* Row 2: Backtest Parameter Heatmap */}
-      <BacktestHeatmap />
+      {/* Row 3: Hourly P&L + Running EV */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+
+        <PanelCard title="Avg P&L by UTC Hour" sub="Which trading hours are profitable">
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={hourlyPnl} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
+              <CartesianGrid vertical={false} stroke="rgba(255,255,255,0.05)" />
+              <XAxis dataKey="hour" tick={S.axisTick} tickFormatter={v => `${v}h`} interval={3} />
+              <YAxis tick={S.axisTick} tickFormatter={v => `$${v}`} />
+              <Tooltip
+                formatter={(v, _, p) => [v != null ? `$${v.toFixed(2)} avg` : 'No trades', 'P&L']}
+                labelFormatter={h => `UTC ${h}:00`}
+                contentStyle={{ background: 'var(--color-cream-deep)', border: '1px solid var(--color-border-subtle)', borderRadius: 8, fontSize: 11 }}
+              />
+              <ReferenceLine y={0} stroke="rgba(255,255,255,0.15)" />
+              <Bar dataKey="pnl" radius={[3, 3, 0, 0]} isAnimationActive={false} shape={<CustomBar />} />
+            </BarChart>
+          </ResponsiveContainer>
+        </PanelCard>
+
+        <PanelCard title="Running EV Per Trade" sub="Average P&L per trade, cumulative — flat/rising = positive edge">
+          {runningEv.length === 0 ? (
+            <div style={{ color: 'var(--color-iron)', fontSize: '12px', textAlign: 'center', paddingTop: '40px' }}>No closed trades yet</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={180}>
+              <LineChart data={runningEv} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
+                <CartesianGrid vertical={false} stroke="rgba(255,255,255,0.05)" />
+                <XAxis dataKey="n" tick={S.axisTick} label={{ value: 'trade #', position: 'insideBottomRight', offset: -4, style: { fontSize: 9, fill: 'var(--color-iron)' } }} />
+                <YAxis tick={S.axisTick} tickFormatter={v => `$${v}`} />
+                <Tooltip
+                  formatter={v => [`$${v.toFixed(3)}`, 'Avg P&L/trade']}
+                  contentStyle={{ background: 'var(--color-cream-deep)', border: '1px solid var(--color-border-subtle)', borderRadius: 8, fontSize: 11 }}
+                />
+                <ReferenceLine y={0} stroke="rgba(255,255,255,0.15)" />
+                <Line
+                  type="monotone"
+                  dataKey="ev"
+                  stroke="var(--color-accent)"
+                  strokeWidth={2}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </PanelCard>
+      </div>
 
     </div>
   );
