@@ -54,6 +54,10 @@ RECONCILE_INTERVAL: int = 30
 MAX_OPEN_PER_ASSET: int = 2
 MAX_TOTAL_OPEN: int = 6
 
+# Fair-value (Type-1) primary entry. When True, a spot-distance mispricing that
+# clears EDGE_MARGIN fires an entry at the real L2 quote BEFORE the momentum cascade.
+FAIR_VALUE_MODE: bool = True
+
 # ── Backward-compat aliases (old modules still import these) ─────────────────
 PEAK_TRADING_HOURS_UTC    = TIME_GATE_UTC  # replaced by TIME_GATE_UTC in new code
 PEAK_KELLY_MULTIPLIER     = 1.0

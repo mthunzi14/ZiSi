@@ -438,6 +438,25 @@ class UpDownEngine:
         dn_price = market["dn_price"]
         is_dual_eligible = self.should_dual_enter(up_price, dn_price)
 
+        # ── Fair-value primary entry (additive). Reversal-snipe keeps priority;
+        #    fair-value fills at the REAL L2 quote (never at fair value). ──
+        try:
+            from config import FAIR_VALUE_MODE
+        except Exception:
+            FAIR_VALUE_MODE = False
+        if FAIR_VALUE_MODE and not _dec["is_reversal"]:
+            _now_ts = datetime.now(timezone.utc).timestamp()
+            _candle_open_ts = float(klines[-1][0]) / 1000.0
+            _elapsed_min = max(0.0, (_now_ts - _candle_open_ts) / 60.0)
+            _fv = self._fair_value_entry(klines, closes[-1], up_price, dn_price, _elapsed_min)
+            if _fv["direction"] is not None:
+                raw_dir = _fv["direction"]
+                score_base = min(0.90, 0.55 + min(0.30, _fv["edge"]) +
+                                 (0.05 if _fv["archetype"] == "near_certainty" else 0.0))
+                log.info("[FAIR-VALUE] %s/%s %s | fp=%.3f quote=%.3f edge=%.3f (%s)",
+                         self.asset, self.timeframe, raw_dir, _fv["fp_up"],
+                         up_price if raw_dir == "UP" else dn_price, _fv["edge"], _fv["archetype"])
+
         if raw_dir is None:
             if is_dual_eligible and abs(ofi) >= 0.12:
                 raw_dir = "UP" if ofi >= 0 else "DOWN"
