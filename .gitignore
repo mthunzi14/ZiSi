@@ -84,3 +84,8 @@ pyth_prices.json
 metrics_*.json
 trade_journal_export.csv
 zisi_bot_console.log
+
+# ML + runtime artifacts (never commit binaries / runtime state)
+core/ml/trained_model.pt
+core/ml/training_metrics.json
+oi_history.json

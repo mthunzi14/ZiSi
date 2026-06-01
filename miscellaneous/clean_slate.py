@@ -18,8 +18,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-BASE_DIR = Path(__file__).parent
-ARCHIVE_ROOT = BASE_DIR / "archive"
+BASE_DIR = Path(__file__).parent.parent
+ARCHIVE_ROOT = BASE_DIR / "miscellaneous" / "archive"
 POSITIONS_FILE = BASE_DIR / "infrastructure" / "exchange" / "positions_state.json"
 
 # Files/dirs to copy into each session archive (relative to BASE_DIR)
@@ -282,14 +282,19 @@ def clean_slate(
     print("[RESET] regime_status.json -> NORMAL")
 
     # Always delete or truncate history/log files so the graph starts completely clean
-    for jsonl_name in ("zisi_local_trades.jsonl", "ml_labelled_outcomes.jsonl", "balance_history.jsonl"):
-        f = BASE_DIR / jsonl_name
+    history_files = [
+        BASE_DIR / "zisi_local_trades.jsonl",
+        BASE_DIR / "ml_labelled_outcomes.jsonl",
+        BASE_DIR / "balance_history.jsonl",
+        BASE_DIR / "infrastructure" / "state" / "balance_history.jsonl"
+    ]
+    for f in history_files:
         if f.exists():
             try:
                 f.unlink()
-                print(f"[RESET] Deleted history file: {jsonl_name}")
+                print(f"[RESET] Deleted history file: {f.name} ({f.relative_to(BASE_DIR)})")
             except Exception as e:
-                print(f"[WARNING] Could not delete {jsonl_name}: {e}")
+                print(f"[WARNING] Could not delete {f.name}: {e}")
 
     print()
     print("=" * 70)

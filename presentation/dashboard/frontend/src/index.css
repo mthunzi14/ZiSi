@@ -12,6 +12,11 @@
   --color-mist:         #3f3f46;   /* scrollbar thumb, dividers */
   --color-snow:         #161619;   /* card surfaces, modals */
 
+  /* Glassmorphism Variables (Dark) */
+  --color-card-bg-start:  rgba(22, 22, 25, 0.72);
+  --color-card-bg-end:    rgba(12, 12, 14, 0.82);
+  --color-card-border:    rgba(255, 255, 255, 0.08);
+
   /* Semantic Aliases */
   --color-bg:             #0c0c0e;   /* body background */
   --color-surface:        #161619;   /* card / panel surface */
@@ -73,6 +78,11 @@
   --color-iron:         #71717a;   /* Tertiary text, placeholders */
   --color-mist:         #e4e4e7;   /* Dividers, borders */
   --color-snow:         #ffffff;   /* Pure white card surface background */
+
+  /* Glassmorphism Variables (Light) */
+  --color-card-bg-start:  rgba(255, 255, 255, 0.72);
+  --color-card-bg-end:    rgba(244, 244, 235, 0.78);
+  --color-card-border:    rgba(0, 0, 0, 0.05);
 
   /* Semantic Aliases */
   --color-bg:             #fafaf7;

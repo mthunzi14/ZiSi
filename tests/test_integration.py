@@ -47,8 +47,16 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
 
         # Validate trade slot
         from unittest.mock import patch
+        from pathlib import Path
+        orig_exists = Path.exists
+        def mock_exists(self_path):
+            if "regime_status.json" in str(self_path):
+                return False
+            return orig_exists(self_path)
+
         with patch("app.main.global_diagnostics.get_risk_multiplier", return_value=1.0), \
-             patch("infrastructure.state.state_manager.get_open_positions", return_value=[]):
+             patch("infrastructure.state.state_manager.get_open_positions", return_value=[]), \
+             patch("pathlib.Path.exists", new=mock_exists):
             allowed, details = await _validate_trade_slot(
                 context=context,
                 engine=engine,

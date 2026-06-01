@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 ASSETS: list = ["BTC", "ETH", "SOL", "XRP", "DOGE", "HYPE", "BNB"]
 
 # Inactive/Future altcoins supported by indicators but dormant to prevent rate-limit congestion
-FUTURE_ASSETS: list = ["ADA", "LINK", "AVAX", "SUI"]
+FUTURE_ASSETS: list = []
 
 TIMEFRAMES: dict = {
     "BTC": ["5m", "15m"],

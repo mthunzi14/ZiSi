@@ -45,7 +45,7 @@ class TestDecideSignal(unittest.TestCase):
 
     def test_params_are_overridable(self):
         p = dict(DEFAULT_SIGNAL_PARAMS, rsi_up=45.0)
-        r = decide_signal(50.0, 0.03, 0.0, "5m", params=p)
+        r = decide_signal(50.0, 0.03, 0.5, "5m", params=p)
         self.assertEqual(r["direction"], "UP")
 
     def test_regime_adaptive_params(self):

@@ -116,68 +116,30 @@
 
 /* ── 5. BUTTONS ───────────────────────────────────────────────────────────── */
 .btn-primary {
-  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 10px 20px;
+  padding: 10px 24px;
   font-family: var(--font-primary);
-  font-weight: 500;
+  font-weight: 600;
   font-size: 14px;
-  background: transparent; /* background will be handled by ::after to avoid clipping */
-  color: var(--color-snow);
+  background: var(--color-accent);
+  color: var(--color-obsidian);
   border-radius: var(--radius-full);
-  border: none;
-  overflow: hidden;
+  border: 1px solid var(--color-accent);
   cursor: pointer;
-  z-index: 1;
   transition: all 300ms cubic-bezier(0.16, 1, 0.3, 1);
   box-shadow: var(--shadow-xs), 0 0 10px rgba(197, 155, 39, 0.05);
 }
-.btn-primary::before {
-  content: '';
-  position: absolute;
-  z-index: -2;
-  left: -50%;
-  top: -50%;
-  width: 200%;
-  height: 200%;
-  background: conic-gradient(
-    from 0deg,
-    transparent 0%,
-    transparent 35%,
-    var(--color-accent) 50%,
-    transparent 65%,
-    transparent 100%
-  );
-  animation: rotate-border 4s linear infinite;
-  opacity: 0.75;
-  transition: opacity 300ms ease;
-}
-.btn-primary::after {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  inset: 1.5px;
-  background: var(--color-obsidian);
-  border-radius: calc(var(--radius-full) - 1.5px);
-  transition: background 300ms ease;
-}
 .btn-primary:hover {
   transform: translateY(-1.5px);
+  background: #d4a92d;
+  border-color: #d4a92d;
   box-shadow: var(--shadow-sm), 0 0 15px rgba(197, 155, 39, 0.25);
-}
-.btn-primary:hover::before {
-  opacity: 1;
-  animation-duration: 2.2s;
-}
-.btn-primary:hover::after {
-  background: var(--color-ink);
 }
 
 .btn-ghost {
-  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -186,54 +148,17 @@
   font-family: var(--font-primary);
   font-weight: 500;
   font-size: 14px;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.05);
   color: var(--color-obsidian);
   border-radius: var(--radius-md);
-  border: none;
-  overflow: hidden;
+  border: 1px solid var(--color-card-border);
   cursor: pointer;
-  z-index: 1;
   transition: all 300ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-.btn-ghost::before {
-  content: '';
-  position: absolute;
-  z-index: -2;
-  left: -50%;
-  top: -50%;
-  width: 200%;
-  height: 200%;
-  background: conic-gradient(
-    from 0deg,
-    transparent 0%,
-    transparent 35%,
-    var(--color-accent) 50%,
-    transparent 65%,
-    transparent 100%
-  );
-  animation: rotate-border 4s linear infinite;
-  opacity: 0.5;
-  transition: opacity 300ms ease;
-}
-.btn-ghost::after {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  inset: 1.5px;
-  background: var(--color-snow);
-  border-radius: calc(var(--radius-md) - 1.5px);
-  transition: background 300ms ease;
 }
 .btn-ghost:hover {
   transform: translateY(-1.5px);
-  box-shadow: 0 0 15px rgba(197, 155, 39, 0.2);
-}
-.btn-ghost:hover::before {
-  opacity: 0.9;
-  animation-duration: 2.2s;
-}
-.btn-ghost:hover::after {
-  background: var(--color-cream-deep);
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 0 15px rgba(197, 155, 39, 0.1);
 }
 
 .btn-danger {
@@ -257,72 +182,33 @@
   border-color: #fca5a5;
 }
 
-/* ── 6. CARDS & GLASSMORPHISM ─────────────────────────────────────────────── */
 .card, .glass-panel {
   position: relative;
-  background: transparent; /* Changed from solid background so pseudo-elements stack perfectly */
+  background: linear-gradient(135deg, var(--color-card-bg-start) 0%, var(--color-card-bg-end) 100%);
   border-radius: var(--radius-cards);
   padding: var(--card-padding);
-  overflow: hidden; /* Crops the rotating conic-gradient border */
   z-index: 1;
+  backdrop-filter: blur(24px) saturate(170%);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
   transition: all 400ms cubic-bezier(0.16, 1, 0.3, 1);
-  border: none;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.55), 0 0 15px rgba(197, 155, 39, 0.08); /* Beautiful subtle gold ambient glow */
+  border: 1px solid var(--color-card-border);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45), 0 0 15px rgba(197, 155, 39, 0.08); /* Beautiful subtle gold ambient glow */
 }
 .card:hover, .glass-panel:hover {
   transform: translateY(-4px);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65), 0 0 35px rgba(197, 155, 39, 0.45); /* High-fidelity rich gold glow on hover */
-}
-/* Liquid Metal Border Glow - Conic rotating border */
-.card::before, .glass-panel::before {
-  content: '';
-  position: absolute;
-  z-index: -2;
-  left: -50%;
-  top: -50%;
-  width: 200%;
-  height: 200%;
-  background: conic-gradient(
-    from 0deg,
-    transparent 0%,
-    transparent 35%,
-    var(--color-accent) 50%,
-    transparent 65%,
-    transparent 100%
-  );
-  animation: rotate-border 4s linear infinite;
-  opacity: 0.9; /* Thicker and more visible baseline glow */
-  transition: opacity 300ms ease, animation-duration 300ms ease;
-}
-.card:hover::before, .glass-panel:hover::before {
-  opacity: 1;
-  animation-duration: 2.2s; /* Spins faster on hover for high-velocity response */
-}
-/* Inner card body to mask the conic rotation and leave a perfect 2.5px border */
-.card::after, .glass-panel::after {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  inset: 2.5px; /* Exact 2.5px border thickness for thick liquid metal framing */
-  background: linear-gradient(135deg, var(--color-surface) 0%, var(--color-cream-deep) 100%);
-  border-radius: calc(var(--radius-cards) - 2.5px);
-  transition: background 300ms ease;
+  border-color: var(--color-accent);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55), 0 0 25px rgba(197, 155, 39, 0.25); /* High-fidelity rich gold glow on hover */
 }
 
-@keyframes rotate-border {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
+/* Keyframes rotate-border purged */
 
 .card-sm {
-  background: linear-gradient(135deg, var(--color-surface) 0%, var(--color-cream-deep) 100%);
+  background: linear-gradient(135deg, var(--color-card-bg-start) 0%, var(--color-card-bg-end) 100%);
   border-radius: var(--radius-lg);
   padding: 16px 20px;
-  border: 1px solid var(--color-border-subtle);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--color-card-border);
   box-shadow: var(--shadow-xs);
   transition: all 300ms cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -538,49 +424,27 @@
   border: none;
   z-index: 1;
 }
-.nav-item::before {
-  content: '';
-  position: absolute;
-  z-index: -2;
-  left: -50%;
-  top: -50%;
-  width: 200%;
-  height: 200%;
-  background: conic-gradient(
-    from 0deg,
-    transparent 0%,
-    transparent 35%,
-    var(--color-accent) 50%,
-    transparent 65%,
-    transparent 100%
-  );
-  animation: rotate-border 4s linear infinite;
-  opacity: 0;
-  transition: opacity 180ms ease;
+.nav-item::before, .nav-item::after {
+  display: none !important;
 }
-.nav-item::after {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  inset: 1.5px;
+.nav-item {
+  position: relative;
+  overflow: hidden;
   background: transparent;
-  border-radius: calc(var(--radius-md) - 1.5px);
-  transition: background 180ms ease;
+  border: 1px solid transparent;
+  z-index: 1;
+  transition: all 180ms ease;
 }
-.nav-item:hover::before, .nav-item-active::before {
-  opacity: 0.75;
-}
-.nav-item:hover::after {
+.nav-item:hover {
   background: var(--color-cream-deep);
+  border-color: var(--color-card-border);
 }
-.nav-item-active::after {
-  background: var(--color-accent) !important;
-}
-
 .nav-item-active {
-  color: #0c0c0e !important;
+  background: rgba(197, 155, 39, 0.12) !important;
+  color: var(--color-accent) !important;
   font-weight: 700;
-  box-shadow: 0 0 14px rgba(197, 155, 39, 0.45);
+  border-color: var(--color-accent) !important;
+  box-shadow: 0 0 14px rgba(197, 155, 39, 0.15);
 }
 
 /* left edge glow indicator */

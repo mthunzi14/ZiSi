@@ -92,7 +92,19 @@ def _block_magnitude(rsi: float, timeframe: str, p: dict) -> float:
     return p["ofi_block_5m"] if timeframe == "5m" else p["ofi_block_15m"]
 
 
-def decide_signal(rsi, mom: float, ofi: float, timeframe: str, params: Optional[dict] = None, regime: Optional[str] = None) -> dict:
+def decide_signal(
+    rsi,
+    mom: float,
+    ofi: float,
+    timeframe: str,
+    params: Optional[dict] = None,
+    regime: Optional[str] = None,
+    trend_up_agreement: bool = False,
+    trend_dn_agreement: bool = False,
+    use_session_scaling: bool = False,
+    atr_percentile: Optional[float] = None,
+    bbw_percentile: Optional[float] = None,
+) -> dict:
     """Return {"direction": "UP"|"DOWN"|None, "score": float, "is_reversal": bool, "blocked": bool}."""
     if params is None:
         if regime:
@@ -106,35 +118,85 @@ def decide_signal(rsi, mom: float, ofi: float, timeframe: str, params: Optional[
     else:
         p = params
 
+    # Retrieve Dynamic Session Parameters (Sprint 11) - Only if explicitly enabled (live engine path)
+    session_rsi_mult = 1.0
+    if use_session_scaling:
+        try:
+            from core.shared.session_manager import TradingSessionManager
+            session_params = TradingSessionManager.get_active_session_params()
+            session_rsi_mult = session_params.get("rsi_band_multiplier", 1.0)
+        except Exception:
+            pass
+
+    # Apply moderate loosening (0.90x of distance from 50.0 center) if there is a strong trend agreement
+    up_mult = session_rsi_mult * 0.90 if trend_up_agreement else session_rsi_mult
+    dn_mult = session_rsi_mult * 0.90 if trend_dn_agreement else session_rsi_mult
+
+    # Mathematically scale the RSI trigger distances from the 50.0 baseline
+    rsi_up_eff = 50.0 + (p["rsi_up"] - 50.0) * up_mult
+    rsi_up_soft_eff = 50.0 + (p["rsi_up_soft"] - 50.0) * up_mult
+    rsi_dn_eff = 50.0 + (p["rsi_dn"] - 50.0) * dn_mult
+    rsi_dn_soft_eff = 50.0 + (p["rsi_dn_soft"] - 50.0) * dn_mult
+
     res = {"direction": None, "score": 0.0, "is_reversal": False, "blocked": False}
     if rsi is None:
         return res
 
+    # Volatility Veto (Sprint 5): block 5m mean-reversion entries under extreme volatility.
+    # PURE: percentiles are passed in by the caller (the live engine reads regime_status.json
+    # and supplies them). When absent (tests / backtester) the veto is skipped, so this
+    # function is deterministic and does NO file I/O.
+    if timeframe == "5m" and atr_percentile is not None and bbw_percentile is not None:
+        _MEAN_REVERSION_REGIMES = {"MEAN_REVERTING", "COMPRESSION", "RANGE", "NORMAL"}
+        if (regime or "").upper() in _MEAN_REVERSION_REGIMES and (
+            atr_percentile >= 80.0 or bbw_percentile >= 80.0
+        ):
+            res["blocked"] = True
+            return res
+
     up_trigger = (
-        (rsi > p["rsi_up"] and mom >= p["mom_up"])
-        or (rsi > p["rsi_up_soft"] and mom >= p["mom_up_soft"] and ofi > p["ofi_confirm_up"])
+        (rsi > rsi_up_eff and mom >= p["mom_up"])
+        or (rsi > rsi_up_soft_eff and mom >= p["mom_up_soft"] and ofi > p["ofi_confirm_up"])
     )
     dn_trigger = (
-        (rsi < p["rsi_dn"] and mom <= p["mom_dn"])
-        or (rsi < p["rsi_dn_soft"] and mom <= p["mom_dn_soft"] and ofi < p["ofi_confirm_dn"])
+        (rsi < rsi_dn_eff and mom <= p["mom_dn"])
+        or (rsi < rsi_dn_soft_eff and mom <= p["mom_dn_soft"] and ofi < p["ofi_confirm_dn"])
     )
 
     if up_trigger:
+        # Mandatory micro-OFI direction gate for 5m to filter out false breakouts
+        if timeframe == "5m" and ofi <= 0.0:
+            import logging
+            logging.getLogger("zisi.signal_core").info(
+                "[OFI-GATE] Blocking 5m UP entry due to non-positive order book micro-OFI (OFI: %.4f <= 0.0)", ofi
+            )
+            res["blocked"] = True
+            return res
+
         if ofi < -_block_magnitude(rsi, timeframe, p):
             res["blocked"] = True
             return res
-        rsi_eff = max(rsi, 60.0)
+        rsi_eff = max(rsi, rsi_up_eff)
         res["direction"] = "UP"
-        res["score"] = min(0.85, 0.50 + (rsi_eff - 60.0) / 40.0 * 0.35)
+        res["score"] = min(0.85, 0.50 + (rsi_eff - rsi_up_eff) / max(1.0, 100.0 - rsi_up_eff) * 0.35)
         return res
 
     if dn_trigger:
+        # Mandatory micro-OFI direction gate for 5m to filter out false breakouts
+        if timeframe == "5m" and ofi >= 0.0:
+            import logging
+            logging.getLogger("zisi.signal_core").info(
+                "[OFI-GATE] Blocking 5m DOWN entry due to non-negative order book micro-OFI (OFI: %.4f >= 0.0)", ofi
+            )
+            res["blocked"] = True
+            return res
+
         if ofi > _block_magnitude(rsi, timeframe, p):
             res["blocked"] = True
             return res
-        rsi_eff = min(rsi, 40.0)
+        rsi_eff = min(rsi, rsi_dn_eff)
         res["direction"] = "DOWN"
-        res["score"] = min(0.85, 0.50 + (40.0 - rsi_eff) / 40.0 * 0.35)
+        res["score"] = min(0.85, 0.50 + (rsi_dn_eff - rsi_eff) / max(1.0, rsi_dn_eff) * 0.35)
         return res
 
     # Pre-momentum reversal sniping
@@ -143,3 +205,4 @@ def decide_signal(rsi, mom: float, ofi: float, timeframe: str, params: Optional[
     elif rsi > p["reversal_hi"]:
         res.update(direction="DOWN", score=p["reversal_score"], is_reversal=True)
     return res
+

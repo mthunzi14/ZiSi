@@ -10,11 +10,12 @@ const ASSETS = [
   { asset: 'SOL', tf: '15m', color: '#9945ff', tier: 'Tier 2 (60%)' },
   { asset: 'XRP', tf: '5m',  color: '#00aae4', tier: 'Tier 2 (60%)' },
   { asset: 'XRP', tf: '15m', color: '#006097', tier: 'Tier 2 (60%)' },
-  { asset: 'ADA', tf: '5m',  color: '#3cc8ff', tier: 'Tier 3 (35%, limit)' },
-  { asset: 'LINK', tf: '5m', color: '#375bd2', tier: 'Tier 3 (35%, limit)' },
-  { asset: 'DOGE', tf: '5m', color: '#e1b303', tier: 'Tier 3 (35%, limit)' },
-  { asset: 'AVAX', tf: '5m', color: '#e84142', tier: 'Tier 3 (35%, limit)' },
-  { asset: 'SUI', tf: '5m',  color: '#4ca5ff', tier: 'Tier 3 (35%, limit)' },
+  { asset: 'DOGE', tf: '5m',  color: '#e1b303', tier: 'Tier 3 (35%)' },
+  { asset: 'DOGE', tf: '15m', color: '#cc9e02', tier: 'Tier 3 (35%)' },
+  { asset: 'HYPE', tf: '5m',  color: '#ff3cc8', tier: 'Tier 3 (35%)' },
+  { asset: 'HYPE', tf: '15m', color: '#d92ca8', tier: 'Tier 3 (35%)' },
+  { asset: 'BNB', tf: '5m',  color: '#f3ba2f', tier: 'Tier 3 (35%)' },
+  { asset: 'BNB', tf: '15m', color: '#d6a325', tier: 'Tier 3 (35%)' },
 ];
 
 function getAssetStats(key, positions) {
@@ -200,7 +201,7 @@ export default function AssetCards({ positions, candles, state }) {
         >
           <span>{isExpanded ? '🗁 Collapse Scanning Grid' : '🗀 Expand Scanning Grid'}</span>
           <span style={{ fontSize: '10px', color: 'var(--color-iron)' }}>
-            ({isExpanded ? '13' : `${displayedAssets.length} core`} assets)
+            ({isExpanded ? '14' : `${displayedAssets.length} core`} assets)
           </span>
         </button>
       </div>

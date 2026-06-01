@@ -12,9 +12,12 @@ const ASSET_COLORS = {
   'ETH/5m':  '#00d4a3',
   'SOL/5m':  '#f5f5f5',
   'XRP/5m':  '#ff9500',
+  'DOGE/5m': '#f1b90d',
+  'HYPE/5m': '#ff007a',
+  'BNB/5m':  '#f3ba2f',
 };
 
-const ASSETS = ['BTC/5m', 'BTC/15m', 'ETH/5m', 'SOL/5m', 'XRP/5m'];
+const ASSETS = ['BTC/5m', 'BTC/15m', 'ETH/5m', 'SOL/5m', 'XRP/5m', 'DOGE/5m', 'HYPE/5m', 'BNB/5m'];
 
 function buildWrSeries(trades) {
   const outcomes = {};
@@ -48,6 +51,9 @@ function assetFromTitle(title) {
   if (/ethereum/i.test(title)) return 'ETH';
   if (/solana/i.test(title))   return 'SOL';
   if (/\bxrp\b/i.test(title))  return 'XRP';
+  if (/doge/i.test(title))     return 'DOGE';
+  if (/hype/i.test(title))     return 'HYPE';
+  if (/bnb/i.test(title) || /binance/i.test(title)) return 'BNB';
   return null;
 }
 
@@ -164,7 +170,7 @@ const S = {
 
 export default function PortfolioPerformance({ positions = {}, state = {} }) {
   const [activeTab, setActiveTab] = useState('equity'); // 'equity' | 'winrate'
-  const [timeframe, setTimeframe] = useState('1D'); // Default to 1D chart view
+  const [timeframe, setTimeframe] = useState('ALL'); // Default to ALL chart view
   const [history, setHistory] = useState([]);
 
   // Fetch balance history from /api/equity
@@ -224,10 +230,22 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
     const data = filtered.length >= 2 ? filtered : history; // fallback to prevent empty plot
     
     // Inject a numeric timeMs field so Recharts can properly scale the X-axis
-    const mapped = data.map(item => ({
+    let mapped = data.map(item => ({
       ...item,
       timeMs: new Date(item.timestamp).getTime()
     }));
+
+    // Prepend a synthetic baseline point at the timeframe cutoff time if the first trade occurred after the cutoff
+    const cutoffMs = cutoff.getTime();
+    const firstTimeMs = mapped[0]?.timeMs;
+    if (firstTimeMs && firstTimeMs > cutoffMs) {
+      mapped.unshift({
+        timestamp: cutoff.toISOString(),
+        balance: mapped[0].balance,
+        pnl: mapped[0].pnl,
+        timeMs: cutoffMs
+      });
+    }
 
     // SSE Real-time instant append: if high-velocity balance differs from latest history, inject it!
     const lastItem = mapped[mapped.length - 1];
@@ -243,12 +261,22 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
     return mapped;
   };
 
+  const getChartDomain = () => {
+    if (timeframe === 'ALL') return ['dataMin', 'dataMax'];
+    const nowMs = Date.now();
+    let duration = 24 * 60 * 60 * 1000;
+    if (timeframe === '1W') duration = 7 * 24 * 60 * 60 * 1000;
+    else if (timeframe === '1M') duration = 30 * 24 * 60 * 60 * 1000;
+    else if (timeframe === '1Y') duration = 365 * 24 * 60 * 60 * 1000;
+    return [nowMs - duration, nowMs];
+  };
+
   const filteredHistory = getFilteredData();
 
   // Calculate timeframe-specific P&L
   const getPnlMetrics = () => {
     // Return live total P&L if history is empty or single point
-    if (!history || history.length < 2) {
+    if (!history || history.length < 2 || timeframe === 'ALL') {
       const totalPnl = parseFloat(state.pnl || 0);
       const balance = parseFloat(state.balance || 100);
       const start = balance - totalPnl;
@@ -278,7 +306,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
   // Generate legacy win rate chart trades
   const trades = (positions?.closed || []).map(p => ({
     asset: (() => {
-      const a = (p.event_title || '').match(/\[(BTC|ETH|SOL|XRP)\]/);
+      const a = (p.event_title || '').match(/\[(BTC|ETH|SOL|XRP|DOGE|HYPE|BNB)\]/);
       return a ? a[1] : assetFromTitle(p.event_title || '');
     })(),
     timeframe: tfFromTitle(p.event_title || ''),
@@ -383,7 +411,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
                   dataKey="timeMs" 
                   type="number"
                   scale="time"
-                  domain={['dataMin', 'dataMax']}
+                  domain={getChartDomain()}
                   tickFormatter={ts => {
                     const d = new Date(ts);
                     return timeframe === '1D' 

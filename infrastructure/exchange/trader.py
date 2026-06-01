@@ -52,8 +52,14 @@ def _get_config() -> dict:
     return load_config()
 
 
-def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float) -> tuple[Optional[float], Optional[float]]:
+def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, title: str = "") -> tuple[Optional[float], Optional[float]]:
     try:
+        _title_upper = (title or "").upper()
+        _is_short_tf = "5M" in _title_upper or "15M" in _title_upper or "UPDOWN" in _title_upper
+        if _is_short_tf:
+            log.info("[SL-CALIB] Short-TF trade detected from title '%s' -> applying static target 0.88, stop -1.0", title)
+            return 0.88, -1.0
+
         from core.risk.risk_manager import calculate_exit_targets
         res = calculate_exit_targets(entry_price, amount_spent)
         return res.get("target_price"), res.get("stop_loss")
@@ -63,6 +69,7 @@ def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float) ->
         tp = round(entry_price * cfg.get("POSITION_TARGET_MULTIPLIER", 1.50), 4)
         sl = round(entry_price * cfg.get("POSITION_STOP_LOSS_MULTIPLIER", 0.85), 4)
         return tp, sl
+
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +136,8 @@ def _reconcile_pending_orders() -> None:
             resolved_ids.append(order_id)
             price  = meta.get("entry_price", 0.5)
             amount = meta.get("amount", 0.0)
-            tp, sl = _calculate_exit_targets_fallback(price, amount)
+            tp, sl = _calculate_exit_targets_fallback(price, amount, meta.get("event_title", ""))
+
             reconstructed[order_id] = {
                 "order_id":        order_id,
                 "event_id":        meta.get("event_id", ""),
@@ -188,6 +196,7 @@ def _register_pending_order(
     direction: str,
     amount: float,
     entry_price: float,
+    event_title: str = "",
 ) -> None:
     """Mark an order for reconciliation (call when fill status is ambiguous)."""
     with _reconcile_lock:
@@ -197,9 +206,11 @@ def _register_pending_order(
             "direction":   direction,
             "amount":      amount,
             "entry_price": entry_price,
+            "event_title": event_title,
             "placed_at":   datetime.now(timezone.utc),
         }
     log.info("[RECONCILE] Registered order %s for reconciliation", order_id)
+
 
 
 def _reconciliation_loop() -> None:
@@ -393,7 +404,7 @@ def place_order(
                 **({"expiry_ts": expiry_ts} if expiry_ts else {}),
             }
 
-            tp, sl = _calculate_exit_targets_fallback(entry_price, actual_cost)
+            tp, sl = _calculate_exit_targets_fallback(entry_price, actual_cost, _display_title)
             _open_positions[order_id] = {
                 **order,
                 "target_price": tp,
@@ -428,7 +439,7 @@ def place_order(
             "market": market,
             **({"expiry_ts": expiry_ts} if expiry_ts else {}),
         }
-        tp, sl = _calculate_exit_targets_fallback(entry_price, actual_cost)
+        tp, sl = _calculate_exit_targets_fallback(entry_price, actual_cost, _display_title)
         _open_positions[order_id] = {
             **order,
             "target_price": tp,
@@ -485,16 +496,17 @@ def place_order(
         if verified_status not in ("FILLED",):
             # Still not confirmed — register for background reconciliation
             _register_pending_order(
-                resolved_id, market_id, event_id, direction, amount_dollars, entry_price,
+                resolved_id, market_id, event_id, direction, amount_dollars, entry_price, event_title
             )
 
-    tp, sl = _calculate_exit_targets_fallback(entry_price, amount_dollars)
+    tp, sl = _calculate_exit_targets_fallback(entry_price, amount_dollars, event_title)
     _open_positions[order["order_id"]] = {
         **order,
         "event_title":  event_title or event_id,
         "target_price": tp,
         "stop_loss":    sl,
         "open_time":    datetime.now(timezone.utc),
+        **({"expiry_ts": expiry_ts} if expiry_ts else {}),
     }
     persist_positions()
     log.info("Order placed: %s status=%s", order["order_id"], order["status"])
@@ -877,6 +889,14 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
 
         # Last resort: use stored current_price (honest — no fabrication)
         if exit_price is None:
+            # Safety Gate (Sprint 11): Defer exit if expired and live pricing/resolution fetch failed (likely network-down/offline wake-up)
+            if age_minutes >= effective_max_minutes:
+                log.warning(
+                    "[DORMANCY-SAFETY] Deferring exit for expired trade %s (%s). Live prices/resolution fetch failed (likely offline/sleep wake-up). Waiting for network to recover to get true settlement.",
+                    order_id, _ev_title
+                )
+                continue
+
             _stored = float(pos.get("current_price", entry_price))
             _dir = pos.get("direction", "YES").upper()
             exit_price = round(_stored, 4)
@@ -1021,6 +1041,24 @@ def check_exit_condition(
     effective_stop_loss = -1.0 if _is_short_tf else stop_loss
     effective_target_price = 0.88 if _is_short_tf else target_price
 
+    # Calculate expiry_time for short timeframes to check salvage exit
+    expiry_time = None
+    if _is_short_tf:
+        if "expiry_ts" in pos and pos["expiry_ts"]:
+            try:
+                expiry_time = datetime.fromtimestamp(pos["expiry_ts"], timezone.utc)
+            except Exception:
+                pass
+        if not expiry_time:
+            # Fallback calculation: find next candle close boundary after open_time
+            try:
+                _tf_mins = 5 if "5M" in _ev_title else 15 if "15M" in _ev_title else 5
+                mins_to_add = _tf_mins - (open_time.minute % _tf_mins)
+                expiry_time = open_time + timedelta(minutes=mins_to_add)
+                expiry_time = expiry_time.replace(second=0, microsecond=0)
+            except Exception:
+                pass
+
     if current_price >= effective_target_price:
         should_exit = True
         reason = "TARGET_HIT"
@@ -1030,6 +1068,13 @@ def check_exit_condition(
     elif hours_held >= max_hold_hours:
         should_exit = True
         reason = "TIME_EXPIRED"
+    elif _is_short_tf and expiry_time:
+        # Dynamic Contract Price Salvage (T-30s): Exit if contract price falls below 15c in the final 30s
+        time_left = (expiry_time - datetime.now(timezone.utc)).total_seconds()
+        if 0 < time_left <= 30.0:
+            if current_price < 0.15:
+                should_exit = True
+                reason = "SALVAGE_EXIT"
 
     if should_exit:
         log.info(
@@ -1080,13 +1125,16 @@ def execute_exit(order_id: str, current_price: float, exit_reason: str = "UNKNOW
     # Readable close log — shows asset, direction, result, PnL
     title = pos.get("event_title", "")
     import re as _re
-    _asset_tag = _re.search(r'\[(BTC|ETH|SOL|XRP)\]', title)
+    _asset_tag = _re.search(r'\[(BTC|ETH|SOL|XRP|DOGE|HYPE|BNB)\]', title)
     _tf_tag    = _re.search(r'\[(5m|15m)\]', title)
     _asset = _asset_tag.group(1) if _asset_tag else (
         'BTC' if 'bitcoin' in title.lower() else
         'ETH' if 'ethereum' in title.lower() else
         'SOL' if 'solana' in title.lower() else
-        'XRP' if 'xrp' in title.lower() else '?'
+        'XRP' if 'xrp' in title.lower() else
+        'DOGE' if 'doge' in title.lower() or 'dogecoin' in title.lower() else
+        'HYPE' if 'hype' in title.lower() else
+        'BNB' if 'bnb' in title.lower() or 'binance' in title.lower() else '?'
     )
     _tf    = _tf_tag.group(1) if _tf_tag else '?'
     _dir   = 'UP' if pos.get('direction') in ('YES', 'UP') else 'DOWN'
@@ -1244,181 +1292,183 @@ def persist_positions() -> None:
     Called automatically after every open/close so the dashboard always has
     fresh data without polling the Python process.
     """
-    now = datetime.now(timezone.utc)
-    active: list[dict] = []
-    closed: list[dict] = []
+    import copy
+    import threading
 
-    for order_id, pos in _open_positions.items():
-        status      = pos.get("status", "UNKNOWN")
-        entry_price = pos.get("entry_price", 0.0)
-        size        = pos.get("amount_spent", 0.0)
-        shares      = pos.get("shares_acquired", 0.0)
-        open_time   = pos.get("open_time", now)
-        hold_min    = round((now - open_time).total_seconds() / 60, 1) if isinstance(open_time, datetime) else 0
-        title       = pos.get("event_title") or pos.get("event_id", pos.get("market_id", "Unknown"))
-
-        if status in ("CLOSED", "CANCELLED"):
-            closed.append({
-                "order_id":         order_id,
-                "market":           pos.get("market", "POLYMARKET"),
-                "market_id":        pos.get("market_id", ""),
-                "event_title":      title,
-                "direction":        pos.get("direction", "?"),
-                "entry_price":      round(entry_price, 4),
-                "exit_price":       round(pos.get("exit_price", 0.0), 4),
-                "size":             round(size, 2),
-                "realized_pnl":     round(float(pos.get("profit", 0.0) or 0), 2),
-                "realized_pnl_pct": round(float(pos.get("profit_percent", 0.0) or 0), 2),
-                "exit_reason":      pos.get("exit_reason", status),
-                "hold_hours":       round(float(pos.get("hold_duration", hold_min / 60) or 0), 2),
-                "entry_time":       open_time.isoformat() if isinstance(open_time, datetime) else str(open_time),
-                "exit_time":        pos.get("exit_timestamp", ""),
-                "expiry_ts":        pos.get("expiry_ts", 0),
-            })
-        else:
-            current_price = pos.get("current_price", entry_price)
-            unrealized    = round((shares * current_price) - size, 2)
-            active.append({
-                "order_id":       order_id,
-                "market":         pos.get("market", "POLYMARKET"),
-                "market_id":      pos.get("market_id", ""),
-                "event_title":    title,
-                "direction":      pos.get("direction", "?"),
-                "entry_price":    round(entry_price, 4),
-                "current_price":  round(current_price, 4),
-                "size":           round(size, 2),
-                "shares":         round(shares, 4),
-                "entry_time":     open_time.isoformat() if isinstance(open_time, datetime) else str(open_time),
-                "hold_minutes":   hold_min,
-                "unrealized_pnl": unrealized,
-                "target_price":   pos.get("target_price"),
-                "stop_loss":      pos.get("stop_loss"),
-                "status":         status,
-                "expiry_ts":      pos.get("expiry_ts", 0),
-            })
-
-    # Newest closed trades first
-    closed.sort(key=lambda p: p.get("exit_time", ""), reverse=True)
-
-    # ── Merge with existing positions file ─────────────────────────────────────
-    # On restart _open_positions starts empty — closed trades would be lost.
-    # We preserve them by:
-    #   1. Reading Kalshi rows from the file (written by kalshi/trader.py)
-    #   2. Reading Polymarket CLOSED rows that aren't in the current in-memory set
-    #   3. Loading any JSONL closed trades that are in neither (full history recovery)
-    out_path = Path(__file__).parent / "positions_state.json"
-    kalshi_active: list[dict] = []
-    kalshi_closed: list[dict] = []
-    existing_poly_closed: list[dict] = []
-    try:
-        if out_path.exists():
-            existing = json.loads(out_path.read_text(encoding="utf-8"))
-            kalshi_active = [p for p in existing.get("active", []) if p.get("market") == "KALSHI"]
-            kalshi_closed = [p for p in existing.get("closed", []) if p.get("market") == "KALSHI"]
-            in_mem_ids = {p["order_id"] for p in closed}
-            existing_poly_closed = [
-                p for p in existing.get("closed", [])
-                if p.get("market") == "POLYMARKET" and p.get("order_id") not in in_mem_ids
-            ]
-    except Exception:
-        pass
-
-    # Also recover any JSONL-only closed trades not already represented above
-    _jsonl_path = Path(__file__).parent / "zisi_local_trades.jsonl"
-    jsonl_closed: list[dict] = []
-    try:
-        if _jsonl_path.exists():
-            known_ids = {p["order_id"] for p in closed} | {p.get("order_id") for p in existing_poly_closed}
-            for line in _jsonl_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    oid = entry.get("order_id", "")
-                    if (entry.get("status", "").upper() == "CLOSED" and oid and oid not in known_ids):
-                        known_ids.add(oid)
-                        jsonl_closed.append({
-                            "order_id":         oid,
-                            "market":           "POLYMARKET",
-                            "event_title":      entry.get("event_title", ""),
-                            "direction":        entry.get("direction", "?"),
-                            "entry_price":      round(float(entry.get("entry_price", 0)), 4),
-                            "exit_price":       round(float(entry.get("exit_price", 0)), 4),
-                            "size":             round(float(entry.get("amount_spent", entry.get("position_size", 0))), 2),
-                            "realized_pnl":     round(float(entry.get("profit", 0) or 0), 2),
-                            "realized_pnl_pct": round(float(entry.get("profit_percent", 0) or 0), 2),
-                            "exit_reason":      entry.get("exit_reason", "CLOSED"),
-                            "hold_hours":       round(float(entry.get("hold_duration", 0) or 0), 2),
-                            "entry_time":       entry.get("timestamp", ""),
-                            "exit_time":        entry.get("exit_timestamp", ""),
-                        })
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    merged_active = active + kalshi_active
-    # Merge order: in-memory first (most recent), then file-preserved, then JSONL history
-    merged_closed = closed + existing_poly_closed + jsonl_closed + kalshi_closed
-    # Sort newest-first by exit_time
-    merged_closed.sort(key=lambda p: p.get("exit_time", p.get("exit_timestamp", "")), reverse=True)
-
-    summary = {
-        "active_count":  len(merged_active),
-        "poly_active":   len(active),
-        "kalshi_active": len(kalshi_active),
-        "closed_count":  len(merged_closed),
-        "unrealized_pnl": round(sum(p.get("unrealized_pnl", 0) for p in active), 2),
-        "realized_pnl":   round(
-            sum(p.get("realized_pnl", 0) for p in merged_closed), 2
-        ),
-        "win_count":      sum(1 for p in merged_closed if (p.get("realized_pnl") or 0) > 0),
-        "loss_count":     sum(1 for p in merged_closed if (p.get("realized_pnl") or 0) < 0),
-    }
-
-    data = {
-        "last_updated": now.isoformat(),
-        "source":       "polymarket+kalshi",
-        "summary":      summary,
-        "active":       merged_active,
-        "closed":       merged_closed,
-    }
-
+    # 1. Thread-safe snapshot in-memory (instant copy, <0.1ms)
     with GLOBAL_POSITIONS_LOCK:
-        try:
-            # Cap closed list to 300 most recent to prevent unbounded file growth
-            data["closed"] = data["closed"][:300]
-            # Atomic write: write to .tmp then os.replace so the dashboard never
-            # reads a partially-written file (which causes the JSON parse error).
-            tmp_path = out_path.with_suffix(".tmp")
-            tmp_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-            import os as _os
-            _os.replace(tmp_path, out_path)
-        except Exception as exc:
-            log.warning("[POSITIONS] Failed to persist: %s", exc)
+        open_positions_snapshot = copy.deepcopy(_open_positions)
 
-    # ── Memory pruning ────────────────────────────────────────────────────────
-    # Remove CLOSED entries older than 2 h from _open_positions to prevent
-    # unbounded memory growth on long overnight runs.
-    _cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
-    _to_prune: list[str] = []
-    for _oid, _p in _open_positions.items():
-        if _p.get("status") not in ("CLOSED", "CANCELLED"):
-            continue
-        _ts = _p.get("exit_timestamp") or _p.get("timestamp", "")
-        if not _ts:
-            continue
+    # 2. Worker function for slow disk I/O
+    def _threaded_writer(positions_snapshot):
+        now = datetime.now(timezone.utc)
+        active: list[dict] = []
+        closed: list[dict] = []
+
+        for order_id, pos in positions_snapshot.items():
+            status      = pos.get("status", "UNKNOWN")
+            entry_price = pos.get("entry_price", 0.0)
+            size        = pos.get("amount_spent", 0.0)
+            shares      = pos.get("shares_acquired", 0.0)
+            open_time   = pos.get("open_time", now)
+            hold_min    = round((now - open_time).total_seconds() / 60, 1) if isinstance(open_time, datetime) else 0
+            title       = pos.get("event_title") or pos.get("event_id", pos.get("market_id", "Unknown"))
+
+            if status in ("CLOSED", "CANCELLED"):
+                closed.append({
+                    "order_id":         order_id,
+                    "market":           pos.get("market", "POLYMARKET"),
+                    "market_id":        pos.get("market_id", ""),
+                    "event_title":      title,
+                    "direction":        pos.get("direction", "?"),
+                    "entry_price":      round(entry_price, 4),
+                    "exit_price":       round(pos.get("exit_price", 0.0), 4),
+                    "size":             round(size, 2),
+                    "realized_pnl":     round(float(pos.get("profit", 0.0) or 0), 2),
+                    "realized_pnl_pct": round(float(pos.get("profit_percent", 0.0) or 0), 2),
+                    "exit_reason":      pos.get("exit_reason", status),
+                    "hold_hours":       round(float(pos.get("hold_duration", hold_min / 60) or 0), 2),
+                    "entry_time":       open_time.isoformat() if isinstance(open_time, datetime) else str(open_time),
+                    "exit_time":        pos.get("exit_timestamp", ""),
+                    "expiry_ts":        pos.get("expiry_ts", 0),
+                })
+            else:
+                current_price = pos.get("current_price", entry_price)
+                unrealized    = round((shares * current_price) - size, 2)
+                active.append({
+                    "order_id":       order_id,
+                    "market":         pos.get("market", "POLYMARKET"),
+                    "market_id":      pos.get("market_id", ""),
+                    "event_title":    title,
+                    "direction":      pos.get("direction", "?"),
+                    "entry_price":    round(entry_price, 4),
+                    "current_price":  round(current_price, 4),
+                    "size":           round(size, 2),
+                    "shares":         round(shares, 4),
+                    "entry_time":     open_time.isoformat() if isinstance(open_time, datetime) else str(open_time),
+                    "hold_minutes":   hold_min,
+                    "unrealized_pnl": unrealized,
+                    "target_price":   pos.get("target_price"),
+                    "stop_loss":      pos.get("stop_loss"),
+                    "status":         status,
+                    "expiry_ts":      pos.get("expiry_ts", 0),
+                })
+
+        # Newest closed trades first
+        closed.sort(key=lambda p: p.get("exit_time", ""), reverse=True)
+
+        # Merge with existing positions file
+        out_path = Path(__file__).parent / "positions_state.json"
+        kalshi_active: list[dict] = []
+        kalshi_closed: list[dict] = []
+        existing_poly_closed: list[dict] = []
         try:
-            _close_dt = datetime.fromisoformat(_ts.replace("Z", "+00:00"))
-            if _close_dt < _cutoff:
-                _to_prune.append(_oid)
+            if out_path.exists():
+                existing = json.loads(out_path.read_text(encoding="utf-8"))
+                kalshi_active = [p for p in existing.get("active", []) if p.get("market") == "KALSHI"]
+                kalshi_closed = [p for p in existing.get("closed", []) if p.get("market") == "KALSHI"]
+                in_mem_ids = {p["order_id"] for p in closed}
+                existing_poly_closed = [
+                    p for p in existing.get("closed", [])
+                    if p.get("market") == "POLYMARKET" and p.get("order_id") not in in_mem_ids
+                ]
         except Exception:
             pass
-    for _oid in _to_prune:
-        _open_positions.pop(_oid, None)
-    if _to_prune:
-        log.debug("[MEMORY] Pruned %d stale CLOSED positions from memory", len(_to_prune))
+
+        # Recover any JSONL-only closed trades
+        _jsonl_path = Path(__file__).parent / "zisi_local_trades.jsonl"
+        jsonl_closed: list[dict] = []
+        try:
+            if _jsonl_path.exists():
+                known_ids = {p["order_id"] for p in closed} | {p.get("order_id") for p in existing_poly_closed}
+                for line in _jsonl_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        oid = entry.get("order_id", "")
+                        if (entry.get("status", "").upper() == "CLOSED" and oid and oid not in known_ids):
+                            known_ids.add(oid)
+                            jsonl_closed.append({
+                                "order_id":         oid,
+                                "market":           "POLYMARKET",
+                                "event_title":      entry.get("event_title", ""),
+                                "direction":        entry.get("direction", "?"),
+                                "entry_price":      round(float(entry.get("entry_price", 0)), 4),
+                                "exit_price":       round(float(entry.get("exit_price", 0)), 4),
+                                "size":             round(float(entry.get("amount_spent", entry.get("position_size", 0))), 2),
+                                "realized_pnl":     round(float(entry.get("profit", 0) or 0), 2),
+                                "realized_pnl_pct": round(float(entry.get("profit_percent", 0) or 0), 2),
+                                "exit_reason":      entry.get("exit_reason", "CLOSED"),
+                                "hold_hours":       round(float(entry.get("hold_duration", 0) or 0), 2),
+                                "entry_time":       entry.get("timestamp", ""),
+                                "exit_time":        entry.get("exit_timestamp", ""),
+                            })
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        merged_active = active + kalshi_active
+        merged_closed = closed + existing_poly_closed + jsonl_closed + kalshi_closed
+        merged_closed.sort(key=lambda p: p.get("exit_time", p.get("exit_timestamp", "")), reverse=True)
+
+        summary = {
+            "active_count":  len(merged_active),
+            "poly_active":   len(active),
+            "kalshi_active": len(kalshi_active),
+            "closed_count":  len(merged_closed),
+            "unrealized_pnl": round(sum(p.get("unrealized_pnl", 0) for p in active), 2),
+            "realized_pnl":   round(
+                sum(p.get("realized_pnl", 0) for p in merged_closed), 2
+            ),
+            "win_count":      sum(1 for p in merged_closed if (p.get("realized_pnl") or 0) > 0),
+            "loss_count":     sum(1 for p in merged_closed if (p.get("realized_pnl") or 0) < 0),
+        }
+
+        data = {
+            "last_updated": now.isoformat(),
+            "source":       "polymarket+kalshi",
+            "summary":      summary,
+            "active":       merged_active,
+            "closed":       merged_closed,
+        }
+
+        with GLOBAL_POSITIONS_LOCK:
+            try:
+                # Cap closed list to 300 most recent
+                data["closed"] = data["closed"][:300]
+                tmp_path = out_path.with_suffix(".tmp")
+                tmp_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+                import os as _os
+                _os.replace(tmp_path, out_path)
+            except Exception as exc:
+                log.warning("[POSITIONS] Failed to persist: %s", exc)
+
+    # 3. Spawn background writer thread
+    threading.Thread(target=_threaded_writer, args=(open_positions_snapshot,), daemon=True).start()
+
+    # 4. Perform memory pruning synchronously under the lock (super fast, <0.1ms, keeps memory fresh)
+    with GLOBAL_POSITIONS_LOCK:
+        _cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
+        _to_prune: list[str] = []
+        for _oid, _p in _open_positions.items():
+            if _p.get("status") not in ("CLOSED", "CANCELLED"):
+                continue
+            _ts = _p.get("exit_timestamp") or _p.get("timestamp", "")
+            if not _ts:
+                continue
+            try:
+                _close_dt = datetime.fromisoformat(_ts.replace("Z", "+00:00"))
+                if _close_dt < _cutoff:
+                    _to_prune.append(_oid)
+            except Exception:
+                pass
+        for _oid in _to_prune:
+            _open_positions.pop(_oid, None)
+        if _to_prune:
+            log.debug("[MEMORY] Pruned %d stale CLOSED positions from memory", len(_to_prune))
 
 
 # ---------------------------------------------------------------------------

@@ -195,6 +195,15 @@ class PositionSizer:
         # Step 10: Apply category weight (existing)
         raw_usd *= category_weight
 
+        # Step 10.5: Streak Dampener (Sprint 5 / Engine 2.0 Mitigation)
+        # Scales down trade sizes after 5 consecutive wins:
+        # Size = Kelly Size * (0.90) ** max(0, ConsecWins - 5)
+        consec_wins = get_consecutive_wins()
+        if consec_wins >= 5:
+            damp_factor = (0.90) ** max(0, consec_wins - 5)
+            log.info("[KELLY-STREAK] Active streak of %d wins (>=5) -> scaling size down by %.4f (Original raw_usd: $%.2f)", consec_wins, damp_factor, raw_usd)
+            raw_usd *= damp_factor
+
         # Step 11: Enforce guards
         # Bounds may be overridden by the caller so a single canonical sizer
         # (UpDownEngine.compute_size) can apply ONE consistent floor/ceiling
@@ -266,6 +275,32 @@ class PositionSizer:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def get_consecutive_wins() -> int:
+    """
+    Count the number of consecutive wins in recent trade history.
+    Reads closed trades from positions_state.json and checks realized_pnl.
+    """
+    try:
+        pf = os.path.join(os.path.dirname(__file__), "..", "..", "infrastructure", "exchange", "positions_state.json")
+        pf = os.path.normpath(pf)
+        if not os.path.exists(pf):
+            return 0
+        with GLOBAL_POSITIONS_LOCK:
+            with open(pf, "r", encoding="utf-8") as f:
+                data = json.loads(f.read())
+        closed = data.get("closed", [])
+        consec = 0
+        for t in reversed(closed):
+            if float(t.get("realized_pnl", 0)) > 0:
+                consec += 1
+            else:
+                break
+        return consec
+    except Exception as e:
+        log.warning("[STREAK] Could not compute consecutive wins: %s", e)
+        return 0
+
+
 # Rolling win-rate cache: {asset_key: (timestamp, multiplier)}
 _wr_cache: Dict = {}
 _WR_CACHE_TTL = 300  # 5 minutes
@@ -286,7 +321,8 @@ def get_rolling_wr_multiplier(asset: str) -> float:
         pf = os.path.join(os.path.dirname(__file__), "..", "..", "infrastructure", "exchange", "positions_state.json")
         pf = os.path.normpath(pf)
         with GLOBAL_POSITIONS_LOCK:
-            data = json.loads(open(pf, encoding="utf-8").read())
+            with open(pf, "r", encoding="utf-8") as f:
+                data = json.loads(f.read())
         closed = data.get("closed", [])
         asset_trades = [
             t for t in closed

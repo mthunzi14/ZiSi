@@ -9,6 +9,9 @@ function assetFromTitle(title) {
   if (/ethereum/i.test(title)) return 'ETH';
   if (/solana/i.test(title))   return 'SOL';
   if (/\bxrp\b/i.test(title))  return 'XRP';
+  if (/doge/i.test(title))     return 'DOGE';
+  if (/hype/i.test(title))     return 'HYPE';
+  if (/bnb/i.test(title) || /binance/i.test(title)) return 'BNB';
   return '?';
 }
 
@@ -34,7 +37,7 @@ function tfFromTitle(title) {
 
 function parseMeta(p) {
   const title = p.event_title || '';
-  const aTag = title.match(/\[(BTC|ETH|SOL|XRP)\]/);
+  const aTag = title.match(/\[(BTC|ETH|SOL|XRP|DOGE|HYPE|BNB)\]/);
   const tTag = title.match(/\[(5m|15m)\]/);
   const xTag = title.match(/\[(SINGLE|DUAL_MAIN|DUAL_HEDGE|DUAL)\]/);
   return {

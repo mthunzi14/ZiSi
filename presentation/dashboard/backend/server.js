@@ -35,6 +35,56 @@ app.use(express.json());
 app.use('/api/trades', tradesRouter);
 app.use('/api/metrics', metricsRouter);
 app.use('/api/health', healthRouter);
+// Intercept reset endpoint to cleanly stop bot process before clearing logs
+app.post('/api/control/reset', (req, res) => {
+  console.log('[CONTROL] Intercepted reset request. Stopping bot engine before resetting state...');
+  try {
+    // 1. Stop the bot engine process cleanly
+    stopBot();
+    
+    // 2. Wait 2 seconds for complete process teardown
+    setTimeout(() => {
+      import('child_process').then(({ exec }) => {
+        const pythonCmd = process.platform === 'win32' ? 'C:\\Python313\\python.exe' : 'python3';
+        
+        // 3. Execute clean_slate.py with --nuke and --archive flags
+        const cmd = `${pythonCmd} miscellaneous/clean_slate.py --archive --force --balance 100 --nuke`;
+        console.log(`[CONTROL] Running reset: ${cmd}`);
+        
+        exec(cmd, { cwd: BOT_ROOT }, (error, stdout, stderr) => {
+          if (error) {
+            console.error(`[CONTROL] Reset failed: ${error.message}`);
+            // Restart bot to prevent system downtime if reset fails
+            botStopped = false;
+            startBot();
+            return res.status(500).json({ error: error.message, details: stderr });
+          }
+          
+          console.log(`[CONTROL] Clean slate executed successfully. Console output:\n${stdout}`);
+          
+          // 4. Safely spawn the bot daemon process again on a fresh slate
+          botStopped = false;
+          startBot();
+          
+          res.json({
+            status: 'success',
+            message: 'Clean slate executed successfully, old history nuked, and engine restarted.',
+            output: stdout
+          });
+        });
+      }).catch(err => {
+        botStopped = false;
+        startBot();
+        res.status(500).json({ error: err.message });
+      });
+    }, 2000);
+  } catch (err) {
+    botStopped = false;
+    startBot();
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.use('/api/control', controlRouter);
 app.use('/api/positions', positionsRouter);
 app.use('/api/equity',   equityRouter);

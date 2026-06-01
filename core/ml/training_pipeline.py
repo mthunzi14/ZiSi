@@ -721,3 +721,15 @@ def get_pipeline_status() -> Dict[str, Any]:
             pass
 
     return status
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    print("Starting LSTM training pipeline...")
+    metrics = train_model()
+    if metrics:
+        print("Training succeeded!")
+        print(f"Val Accuracy: {metrics['final_val_accuracy']*100:.2f}%")
+        print(f"Best Val Loss: {metrics['best_val_loss']:.6f}")
+    else:
+        print("Training failed or insufficient data.")

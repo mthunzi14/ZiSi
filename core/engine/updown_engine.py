@@ -234,8 +234,7 @@ class UpDownEngine:
         self.skip_windows:       int = 0
         self.invert_signal:     bool = False
         self._recent_outcomes:  list = []   # True=win, False=loss; rolling 40
-        self._prefetched_market: Optional[dict] = None
-        self._prefetched_boundary: int = 0
+        self._prefetched_markets: dict = {}  # boundary_ts -> market_dict
         self.last_edge_context: Optional[dict] = None
 
     # ── Circuit breaker ───────────────────────────────────────────────────────
@@ -348,9 +347,55 @@ class UpDownEngine:
         from core.engine.regime_filter import get_regime_mode
         regime = get_regime_mode(self.timeframe)
 
+        # Check if there is a strong 4/4 trend agreement for RSI trigger loosening (Sprint 11)
+        trend_up_agreement = False
+        trend_dn_agreement = False
+        try:
+            from core.engine.confluence_engine import ConfluenceEngine
+            from core.engine.edge_orchestrator import edge_orchestrator
+            if edge_orchestrator and getattr(edge_orchestrator, "_confluence", None):
+                conf_engine = edge_orchestrator._confluence
+            else:
+                conf_engine = ConfluenceEngine()
+            conf_up = await conf_engine.get_confluence(session, self.asset, "UP")
+            if conf_up.get("score", 0) == 4:
+                trend_up_agreement = True
+                log.info("[ENGINE] %s/%s: Strong 4/4 UP trend agreement detected. Activating UP RSI trigger loosening.", self.asset, self.timeframe)
+            else:
+                conf_dn = await conf_engine.get_confluence(session, self.asset, "DOWN")
+                if conf_dn.get("score", 0) == 4:
+                    trend_dn_agreement = True
+                    log.info("[ENGINE] %s/%s: Strong 4/4 DOWN trend agreement detected. Activating DOWN RSI trigger loosening.", self.asset, self.timeframe)
+        except Exception as e:
+            log.warning("[ENGINE] Failed to check trend agreement for RSI loosening: %s", e)
+
+        # Read live volatility percentiles for the 5m volatility veto. Kept OUT of the pure
+        # signal core (decide_signal does no file I/O) so the signal stays deterministic.
+        _atr_pct = _bbw_pct = None
+        try:
+            import json as _json
+            _rs = Path(__file__).parent.parent.parent / "regime_status.json"
+            if _rs.exists():
+                _d = _json.loads(_rs.read_text(encoding="utf-8"))
+                _atr_pct = float(_d.get("atr_percentile", 50.0))
+                _bbw_pct = float(_d.get("bbw_percentile", 50.0))
+        except Exception:
+            pass
+
         # Raw direction from the shared signal core (single source of truth)
         from core.engine.signal_core import decide_signal
-        _dec = decide_signal(rsi, mom, ofi, self.timeframe, regime=regime)
+        _dec = decide_signal(
+            rsi,
+            mom,
+            ofi,
+            self.timeframe,
+            regime=regime,
+            trend_up_agreement=trend_up_agreement,
+            trend_dn_agreement=trend_dn_agreement,
+            use_session_scaling=True,
+            atr_percentile=_atr_pct,
+            bbw_percentile=_bbw_pct,
+        )
         if _dec["blocked"]:
             log.info("[ENGINE] %s/%s: Spot OFI divergence — blocking entry.", self.asset, self.timeframe)
             return None
@@ -452,18 +497,27 @@ class UpDownEngine:
                     p_delta = float(klines[i][4]) - float(klines[i][1])
                     sub_rsi = _compute_rsi(subset) or 50.0
                     sub_mom = _compute_momentum(subset) or 0.0
-                    seq.append([p_delta, 0.0, sub_rsi, sub_mom, vol])
+                    # Aligned to exact order of FEATURE_NAMES: ["rsi", "momentum", "ofi", "volume", "price_delta"]
+                    seq.append([sub_rsi, sub_mom, 0.0, vol, p_delta])
                 if seq:
-                    seq[-1][1] = ofi
-                ai_up_prob = injector.predict(seq)
+                    seq[-1][2] = ofi  # Index 2 is "ofi"
+                
+                # Predict passing the active regime for 9-feature one-hot encoding
+                ai_up_prob = injector.predict(seq, regime)
+                
                 if direction == "UP" and ai_up_prob < 0.35:
+                    log.warning("[AI-VETO] %s/%s UP entry vetoed by PyTorch LSTM (probability: %.1f%% < 35%%)", self.asset, self.timeframe, ai_up_prob * 100)
                     return None
                 elif direction == "DOWN" and ai_up_prob > 0.65:
+                    log.warning("[AI-VETO] %s/%s DOWN entry vetoed by PyTorch LSTM (probability: %.1f%% > 65%%)", self.asset, self.timeframe, ai_up_prob * 100)
                     return None
+                
                 if direction == "UP" and ai_up_prob > 0.60:
                     score = min(1.0, score + 0.05)
+                    log.info("[AI-BOOST] %s/%s UP entry score boosted by PyTorch LSTM (probability: %.1f%% > 60%%)", self.asset, self.timeframe, ai_up_prob * 100)
                 elif direction == "DOWN" and ai_up_prob < 0.40:
                     score = min(1.0, score + 0.05)
+                    log.info("[AI-BOOST] %s/%s DOWN entry score boosted by PyTorch LSTM (probability: %.1f%% < 40%%)", self.asset, self.timeframe, ai_up_prob * 100)
         except Exception as e:
             log.error("[ENGINE] AI Predictor failed: %s", e)
 
@@ -499,7 +553,13 @@ class UpDownEngine:
             log.warning("[EDGE] Failed to query EdgeOrchestrator in generate_signal: %s", e)
             self.last_edge_context = None
 
-        score = round(score, 4)
+        # Confluence-Veto Gate: Block directional SINGLE trades if confluence score is 0 (complete macro trend conflict)
+        if not is_dual_eligible and edge_ctx and edge_ctx.get("confluence_score", 2) == 0:
+            log.warning(
+                "[CONFLUENCE-VETO] %s/%s: Blocking directional entry due to complete lack of multi-timeframe agreement (score = 0)",
+                self.asset, self.timeframe
+            )
+            return None
 
         if score < 0.50 and not is_dual_eligible:
             return None
@@ -530,6 +590,7 @@ class UpDownEngine:
         up_tk: str,
         dn_tk: str,
         max_spread: float = 0.15,
+        is_latency_scan: bool = False,
     ) -> Optional[tuple[float, float, float]]:
         """Return (up_price, dn_price, spread) or None if book invalid."""
         from infrastructure.websocket.extraterrestrial_ws_gateway import polymarket_l2_gateway
@@ -545,9 +606,11 @@ class UpDownEngine:
         effective_max_spread = max_spread
 
         up_price, dn_price = None, None
-        for attempt in range(4):
-            # Stretch sleep window (1.0s then 1.5s) to allow Polymarket order books to populate naturally
-            await asyncio.sleep(1.0 if attempt == 0 else 1.5)
+        attempts = 2 if is_latency_scan else 4
+        for attempt in range(attempts):
+            # Enforce 0s sleep on attempt 0 if latency scan to fail fast / act instantly
+            if attempt > 0 or not is_latency_scan:
+                await asyncio.sleep(0.5 if is_latency_scan else (1.0 if attempt == 0 else 1.5))
             up_price, up_spread = polymarket_l2_gateway.get_price(up_tk)
             dn_price, dn_spread = polymarket_l2_gateway.get_price(dn_tk)
             
@@ -666,7 +729,7 @@ class UpDownEngine:
                             polymarket_l2_gateway.subscribe(up_tk)
                             polymarket_l2_gateway.subscribe(dn_tk)
                             
-                            self._prefetched_market = {
+                            self._prefetched_markets[next_boundary] = {
                                 "event_id": ev.get("id", ""),
                                 "event_title": ev.get("title", ""),
                                 "expiry_ts": next_boundary + (dur_min * 60),
@@ -676,7 +739,12 @@ class UpDownEngine:
                                 "dn_market": {"id": dn_tk},
                                 "slug": slug,
                             }
-                            self._prefetched_boundary = next_boundary
+                            # Prune cache to keep only recent entries (older than 1 hour)
+                            now_ts = int(time.time())
+                            self._prefetched_markets = {
+                                k: v for k, v in self._prefetched_markets.items()
+                                if k > now_ts - 3600
+                            }
                             log.info(
                                 "[ENGINE] %s/%s: Upcoming market pre-fetched & WS subscribed! Yes=%s No=%s",
                                 self.asset, self.timeframe, up_tk[:10], dn_tk[:10]
@@ -685,7 +753,7 @@ class UpDownEngine:
         except Exception as e:
             log.warning("[ENGINE] Failed to pre-fetch upcoming market %s: %s", slug, e)
 
-    async def _fetch_market(self, session: aiohttp.ClientSession) -> Optional[dict]:
+    async def _fetch_market(self, session: aiohttp.ClientSession, is_latency_scan: bool = False) -> Optional[dict]:
         """Fetch active Up/Down market with verified L2/REST pricing (no 50c fallback)."""
         coin_lower = self.asset.lower()
         dur_min = 5 if self.timeframe == "5m" else 15
@@ -695,13 +763,14 @@ class UpDownEngine:
         start_ts = boundary - interval
 
         # Check if we have a valid pre-fetched market for the current candle start
-        if self._prefetched_market and self._prefetched_boundary == start_ts:
-            up_tk = self._prefetched_market["up_market"]["id"]
-            dn_tk = self._prefetched_market["dn_market"]["id"]
-            resolved = await self._resolve_l2_prices(session, up_tk, dn_tk)
+        if start_ts in self._prefetched_markets:
+            cached_market = self._prefetched_markets[start_ts]
+            up_tk = cached_market["up_market"]["id"]
+            dn_tk = cached_market["dn_market"]["id"]
+            resolved = await self._resolve_l2_prices(session, up_tk, dn_tk, is_latency_scan=is_latency_scan)
             if resolved:
                 up_price, dn_price, spread = resolved
-                market = dict(self._prefetched_market)
+                market = dict(cached_market)
                 market["up_price"] = up_price
                 market["dn_price"] = dn_price
                 market["spread"] = spread
@@ -764,7 +833,7 @@ class UpDownEngine:
 
                             up_tk = clob_token_ids[up_idx]
                             dn_tk = clob_token_ids[dn_idx]
-                            resolved = await self._resolve_l2_prices(session, up_tk, dn_tk)
+                            resolved = await self._resolve_l2_prices(session, up_tk, dn_tk, is_latency_scan=is_latency_scan)
                             if not resolved:
                                 log.info(
                                     "[ENGINE] %s/%s: slug %s — no valid L2 book (skip phantom 50c)",
@@ -783,7 +852,6 @@ class UpDownEngine:
                                 "event_title": ev.get("title", ""),
                                 "expiry_ts": offset_ts + interval,
                                 "duration_min": dur_min,
-                                "liquidity": float(ev.get("liquidity", 0) or 1000.0),
                                 "up_price": up_price,
                                 "dn_price": dn_price,
                                 "spread": spread,
@@ -837,6 +905,36 @@ class UpDownEngine:
                     max_position_usd=unified_max_cap,
                     max_bankroll_fraction=0.15,
                 )
+                
+                # Retrieve and apply session sizing multiplier (Sprint 11)
+                session_sizing_mult = 1.0
+                try:
+                    from core.shared.session_manager import TradingSessionManager
+                    session_params = TradingSessionManager.get_active_session_params()
+                    session_sizing_mult = session_params.get("sizing_mult", 1.0)
+                    usd_size *= session_sizing_mult
+                    log.info("[SIZE] Adaptive Kelly scaled by session multiplier %.2fx -> $%.2f", session_sizing_mult, usd_size)
+                except Exception as e:
+                    log.warning("[SIZE] Failed to scale by session multiplier: %s", e)
+                
+                # Price-Scaled Risk Sizer calibration to bypass 70¢ trap and extreme pricing risk
+                price_scalar = 1.0
+                if price > 0.65 and price <= 0.78:
+                    price_scalar = 0.40  # 60% reduction
+                    log.info("[SIZE] Price %.4f in 70¢ trap -> applying 60%% scaling (x0.40) in adaptive Kelly", price)
+                elif price > 0.78:
+                    price_scalar = 0.25  # 75% reduction
+                    log.info("[SIZE] Price %.4f extremely expensive -> applying 75%% scaling (x0.25) in adaptive Kelly", price)
+                usd_size *= price_scalar
+
+                # Consecutive Loss Streak Brake
+                consecutive_losses = self._recent_closed_loss_streak()
+                if consecutive_losses >= 2:
+                    usd_size *= 0.5
+                    log.warning(
+                        "[SIZE] %s/%s loss streak brake active (%d losses) -> halving size in adaptive Kelly",
+                        self.asset, self.timeframe, consecutive_losses,
+                    )
 
                 shares = round(usd_size / price) if price > 0 else 0
                 actual_cost = shares * price
@@ -899,6 +997,18 @@ class UpDownEngine:
         max_usd_cap = max(5.00, max_usd_cap)
 
         raw_usd = kelly_pct * balance * regime_mult * price_scalar
+
+        # Retrieve and apply session sizing multiplier (Sprint 11)
+        session_sizing_mult = 1.0
+        try:
+            from core.shared.session_manager import TradingSessionManager
+            session_params = TradingSessionManager.get_active_session_params()
+            session_sizing_mult = session_params.get("sizing_mult", 1.0)
+            raw_usd *= session_sizing_mult
+            log.info("[SIZE] Fallback Kelly scaled by session multiplier %.2fx -> $%.2f", session_sizing_mult, raw_usd)
+        except Exception as e:
+            log.warning("[SIZE] Failed to scale by session multiplier: %s", e)
+
         usd = max(MIN_USD, min(raw_usd, max_usd_cap))
 
         consecutive_losses = self._recent_closed_loss_streak()

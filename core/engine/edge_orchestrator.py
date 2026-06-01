@@ -248,7 +248,7 @@ class EdgeOrchestrator:
         # Aggregate all confidence modifiers into a single boost value
         ctx["combined_confidence_boost"] = round(
             ctx["confluence_boost"]
-            + ctx["sentiment_modifier"]
+            + (ctx["sentiment_modifier"] - 1.0)
             + (0.03 if ctx["whale_mult"] > 1.0 else -0.02 if ctx["whale_mult"] < 1.0 else 0.0),
             4,
         )

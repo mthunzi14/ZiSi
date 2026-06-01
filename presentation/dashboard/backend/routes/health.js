@@ -655,11 +655,12 @@ setInterval(() => {
     { asset: 'SOL', tf: '15m', secs: 900 - (now % 900) },
     { asset: 'XRP', tf: '5m',  secs: 300 - (now % 300) },
     { asset: 'XRP', tf: '15m', secs: 900 - (now % 900) },
-    { asset: 'ADA', tf: '5m',  secs: 300 - (now % 300) },
-    { asset: 'LINK', tf: '5m',  secs: 300 - (now % 300) },
     { asset: 'DOGE', tf: '5m',  secs: 300 - (now % 300) },
-    { asset: 'AVAX', tf: '5m',  secs: 300 - (now % 300) },
-    { asset: 'SUI', tf: '5m',  secs: 300 - (now % 300) },
+    { asset: 'DOGE', tf: '15m', secs: 900 - (now % 900) },
+    { asset: 'HYPE', tf: '5m',  secs: 300 - (now % 300) },
+    { asset: 'HYPE', tf: '15m', secs: 900 - (now % 900) },
+    { asset: 'BNB', tf: '5m',  secs: 300 - (now % 300) },
+    { asset: 'BNB', tf: '15m', secs: 900 - (now % 900) },
   ];
   broadcastSSE({ type: 'candle_boundary', payload: boundaries, ts: Date.now() });
 }, 10000);
