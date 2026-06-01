@@ -447,6 +447,9 @@ class UpDownEngine:
         if FAIR_VALUE_MODE and not _dec["is_reversal"]:
             _now_ts = datetime.now(timezone.utc).timestamp()
             _candle_open_ts = float(klines[-1][0]) / 1000.0
+            # Guard: if candle open is more than 2h ago the timestamp is bad data — use 0
+            if _candle_open_ts < (_now_ts - 7200):
+                _candle_open_ts = _now_ts
             _elapsed_min = max(0.0, (_now_ts - _candle_open_ts) / 60.0)
             _fv = self._fair_value_entry(klines, closes[-1], up_price, dn_price, _elapsed_min)
             if _fv["direction"] is not None:

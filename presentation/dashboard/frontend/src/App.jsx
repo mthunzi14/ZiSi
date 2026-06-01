@@ -29,27 +29,9 @@ export default function App() {
   const [uptime, setUptime] = useState('00:00:00');
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
   const [isHovered, setIsHovered] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [fadeClass, setFadeClass] = useState('loading-fade-in');
   const esRef = useRef(null);
 
   const [isPrivate, setIsPrivate] = useState(false);
-
-  useEffect(() => {
-    // Elegant fade out after 0.4s and complete unmount at 0.6s (lightning fast)
-    const fadeTimer = setTimeout(() => {
-      setFadeClass('loading-fade-out');
-    }, 400);
-
-    const removeTimer = setTimeout(() => {
-      setIsLoading(false);
-    }, 600);
-
-    return () => {
-      clearTimeout(fadeTimer);
-      clearTimeout(removeTimer);
-    };
-  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -136,21 +118,6 @@ export default function App() {
 
   return (
     <div className="dashboard-container relative overflow-x-hidden min-h-screen">
-      {isLoading && (
-        <div className={`loading-overlay ${fadeClass}`}>
-          <div className="loading-content">
-            <div className="premium-logo-glow-wrapper">
-              <h1 className="premium-logo-text">ZiSi.</h1>
-              <div className="premium-logo-glow"></div>
-            </div>
-            <p className="premium-subtitle-text">intuitive investing.</p>
-            <div className="premium-loader-line">
-              <div className="premium-loader-sweep"></div>
-            </div>
-          </div>
-        </div>
-      )}
-
       <GhostCursor />
       
       {/* Background drifting symbols */}

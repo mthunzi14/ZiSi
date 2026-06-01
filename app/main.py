@@ -9,6 +9,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import asyncio
 import logging
 import time
+
+# Global entry rate limiter — prevents burst entries across all asset loops.
+# Max one new position every ENTRY_COOLDOWN_S seconds globally.
+_last_entry_ts: float = 0.0
+ENTRY_COOLDOWN_S: float = 15.0
 import aiohttp
 from datetime import datetime, timezone
 from pathlib import Path
@@ -319,6 +324,13 @@ async def _execute_order_flow(
     """
     Executes placing orders (including DUAL hedges) and handles recovery.
     """
+    global _last_entry_ts
+    now = time.time()
+    if now - _last_entry_ts < ENTRY_COOLDOWN_S:
+        wait = ENTRY_COOLDOWN_S - (now - _last_entry_ts)
+        log.info("[MAIN] %s/%s COOLDOWN skip — next entry in %.1fs", asset, timeframe, wait)
+        return False
+
     direction = details["direction"]
     score = details["score"]
     market = details["market"]
@@ -346,6 +358,7 @@ async def _execute_order_flow(
 
         if main_order or hedge_order:
             traded = True
+            _last_entry_ts = time.time()
             await commit_trade_slot(asset, timeframe, score, interval_minutes, is_dual=True, direction=direction)
 
         if (main_order is not None) != (hedge_order is not None):
@@ -363,6 +376,7 @@ async def _execute_order_flow(
         order = _place_trade(asset, timeframe, direction, market, bet_usd, entry_price, score, "SINGLE")
         if order:
             traded = True
+            _last_entry_ts = time.time()
             await commit_trade_slot(asset, timeframe, score, interval_minutes, is_dual=False, direction=direction)
 
     return traded
