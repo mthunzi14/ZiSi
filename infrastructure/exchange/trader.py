@@ -52,6 +52,17 @@ def _get_config() -> dict:
     return load_config()
 
 
+def _derive_entry_type(title: str) -> str:
+    t = (title or "").upper()
+    if "LATENCY_ARB" in t or "LAT_ARB" in t:
+        return "LAT-ARB"
+    if "FAIR_VAL" in t or "FAIR-VAL" in t:
+        return "FAIR-VAL"
+    if "REVERSAL_SNIPE" in t or "REVERSAL-SNIPE" in t:
+        return "REVERSAL-SNIPE"
+    return "SIGNAL"
+
+
 def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, title: str = "") -> tuple[Optional[float], Optional[float]]:
     try:
         _title_upper = (title or "").upper()
@@ -445,6 +456,7 @@ def place_order(
             "target_price": tp,
             "stop_loss": sl,
             "open_time": datetime.now(timezone.utc),
+            "entry_type": _derive_entry_type(_display_title),
         }
         persist_positions()
         return order
@@ -506,6 +518,7 @@ def place_order(
         "target_price": tp,
         "stop_loss":    sl,
         "open_time":    datetime.now(timezone.utc),
+        "entry_type":   _derive_entry_type(event_title or ""),
         **({"expiry_ts": expiry_ts} if expiry_ts else {}),
     }
     persist_positions()
@@ -1331,6 +1344,7 @@ def persist_positions() -> None:
                     "entry_time":       open_time.isoformat() if isinstance(open_time, datetime) else str(open_time),
                     "exit_time":        pos.get("exit_timestamp", ""),
                     "expiry_ts":        pos.get("expiry_ts", 0),
+                    "entry_type":       pos.get("entry_type", "SIGNAL"),
                 })
             else:
                 current_price = pos.get("current_price", entry_price)
@@ -1352,6 +1366,7 @@ def persist_positions() -> None:
                     "stop_loss":      pos.get("stop_loss"),
                     "status":         status,
                     "expiry_ts":      pos.get("expiry_ts", 0),
+                    "entry_type":     pos.get("entry_type", "SIGNAL"),
                 })
 
         # Newest closed trades first
@@ -1629,6 +1644,7 @@ def _recover_active_positions_from_disk() -> None:
                         "target_price": pos.get("target_price"),
                         "stop_loss": pos.get("stop_loss"),
                         "expiry_ts": pos.get("expiry_ts", 0),
+                        "entry_type": pos.get("entry_type", "SIGNAL"),
                     }
                     loaded += 1
         if loaded:

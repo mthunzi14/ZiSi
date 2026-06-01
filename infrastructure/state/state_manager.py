@@ -35,7 +35,8 @@ def _balance_from_positions() -> float | None:
     """
     Derive the correct account balance from positions_state.json.
     Returns None if the file is missing or unreadable.
-    Uses starting_balance from account_state.json so clean_slate resets are respected.
+    Always reads starting_balance from disk so clean_slate resets are respected
+    even when called before initialize_state() sets the module-level variable.
     """
     if not _POSITIONS_FILE.exists():
         return None
@@ -44,7 +45,8 @@ def _balance_from_positions() -> float | None:
             pos     = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
         summary = pos.get("summary") or {}
         realized_pnl = float(summary.get("realized_pnl", 0) or 0)
-        return round(_starting_balance + realized_pnl, 2)
+        starting = _read_starting_balance()
+        return round(starting + realized_pnl, 2)
     except Exception:
         return None
 

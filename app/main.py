@@ -14,6 +14,7 @@ import time
 # Max one new position every ENTRY_COOLDOWN_S seconds globally.
 _last_entry_ts: float = 0.0
 ENTRY_COOLDOWN_S: float = 15.0
+_entry_lock: asyncio.Lock | None = None  # lazy-initialized inside the event loop
 import aiohttp
 from datetime import datetime, timezone
 from pathlib import Path
@@ -233,6 +234,12 @@ async def _validate_trade_slot(
     if is_dual and (up_price + dn_price) >= DUAL_ENTRY_MAX_COMBINED:
         is_dual = False
 
+    # 5m ATM gate — single entries in the 47-53¢ coin-flip zone have no edge
+    if timeframe == "5m" and not is_dual and 0.47 <= entry_price <= 0.53:
+        context.log_skip("5m_atm_blocked", asset, timeframe, {"price": entry_price})
+        log.info("[MAIN] %s/5m ATM_BLOCK: %.0f¢ in coin-flip zone", asset, entry_price * 100)
+        return False, {}
+
     # Score-Tiered Price Ceiling — preserves edge on high-conviction signals while
     # still protecting against buying near-resolved expensive contracts on weak signals.
     # EV analysis: score=0.76 at 58¢ DOWN → est WR 65% → EV = 0.65×0.42 - 0.35×0.58 = +8.7¢/$ edge.
@@ -274,6 +281,11 @@ async def _validate_trade_slot(
 
     raw_bet_usd = engine.compute_size(score, entry_price, current_balance)
     bet_usd = raw_bet_usd * risk_multiplier
+
+    # 15m premium — 85.7% historical WR vs ~30% on 5m warrants larger position
+    if timeframe == "15m":
+        bet_usd *= 1.5
+        log.info("[RISK] 15m signal: 1.5x size multiplier -> $%.2f", bet_usd)
 
     # ── Optimal Altcoin Sizing Gates (Fix A - Maximize P&L safely) ──
     if asset in ["SOL", "XRP"]:
@@ -324,12 +336,17 @@ async def _execute_order_flow(
     """
     Executes placing orders (including DUAL hedges) and handles recovery.
     """
-    global _last_entry_ts
-    now = time.time()
-    if now - _last_entry_ts < ENTRY_COOLDOWN_S:
-        wait = ENTRY_COOLDOWN_S - (now - _last_entry_ts)
-        log.info("[MAIN] %s/%s COOLDOWN skip — next entry in %.1fs", asset, timeframe, wait)
-        return False
+    global _entry_lock, _last_entry_ts
+    if _entry_lock is None:
+        _entry_lock = asyncio.Lock()
+
+    async with _entry_lock:
+        now = time.time()
+        if now - _last_entry_ts < ENTRY_COOLDOWN_S:
+            wait = ENTRY_COOLDOWN_S - (now - _last_entry_ts)
+            log.info("[MAIN] %s/%s COOLDOWN skip — next entry in %.1fs", asset, timeframe, wait)
+            return False
+        _last_entry_ts = now  # claim the slot before releasing the lock
 
     direction = details["direction"]
     score = details["score"]
@@ -358,7 +375,6 @@ async def _execute_order_flow(
 
         if main_order or hedge_order:
             traded = True
-            _last_entry_ts = time.time()
             await commit_trade_slot(asset, timeframe, score, interval_minutes, is_dual=True, direction=direction)
 
         if (main_order is not None) != (hedge_order is not None):
@@ -376,7 +392,6 @@ async def _execute_order_flow(
         order = _place_trade(asset, timeframe, direction, market, bet_usd, entry_price, score, "SINGLE")
         if order:
             traded = True
-            _last_entry_ts = time.time()
             await commit_trade_slot(asset, timeframe, score, interval_minutes, is_dual=False, direction=direction)
 
     return traded
@@ -595,6 +610,13 @@ async def main() -> None:
                 log.info("[MAIN] Latency edge scanner background task registered.")
             except Exception as e:
                 log.error("[MAIN] Failed to import start_latency_edge_scanner: %s", e)
+
+            try:
+                from core.engine.cycle_manager import start_reversal_sniper
+                tasks.append(start_reversal_sniper(session, context.engines))
+                log.info("[MAIN] Reversal sniper background task registered.")
+            except Exception as e:
+                log.error("[MAIN] Failed to import start_reversal_sniper: %s", e)
 
             log.info("[MAIN] Launching %d asyncio tasks (Dynamic asset loops + reconciliation + arbitrage scanner)", len(tasks))
             await asyncio.gather(*tasks)

@@ -109,6 +109,33 @@ function buildRunningEv(closed) {
   });
 }
 
+function buildTypeStats(closed) {
+  const byType = {};
+  for (const t of closed) {
+    const type = t.entry_type || 'SIGNAL';
+    if (!byType[type]) byType[type] = { wins: 0, total: 0, pnl: 0 };
+    byType[type].total += 1;
+    byType[type].pnl += parseFloat(t.realized_pnl || 0);
+    if (parseFloat(t.realized_pnl || 0) > 0) byType[type].wins += 1;
+  }
+  const ORDER = ['LAT-ARB', 'FAIR-VAL', 'REVERSAL-SNIPE', 'SIGNAL'];
+  return Object.entries(byType)
+    .sort((a, b) => (ORDER.indexOf(a[0]) - ORDER.indexOf(b[0])))
+    .map(([type, d]) => ({
+      type,
+      wr:    d.total > 0 ? Math.round((d.wins / d.total) * 100) : 0,
+      pnl:   Math.round(d.pnl * 100) / 100,
+      count: d.total,
+    }));
+}
+
+const TYPE_COLOR = {
+  'LAT-ARB':        '#2b7fff',
+  'FAIR-VAL':       '#00d4a3',
+  'REVERSAL-SNIPE': '#ff007a',
+  'SIGNAL':         'var(--color-iron)',
+};
+
 // ── shared style constants ────────────────────────────────────────────────────
 
 const S = {
@@ -139,11 +166,12 @@ function CustomBar(props) {
 export default function Analytics({ state = {}, positions = {} }) {
   const closed = positions.closed || [];
 
-  const assetStats   = buildAssetStats(closed);
+  const assetStats    = buildAssetStats(closed);
   const exitBreakdown = buildExitBreakdown(closed);
   const volumeSeries  = buildVolumeSeries(closed);
   const hourlyPnl     = buildHourlyPnl(closed);
   const runningEv     = buildRunningEv(closed);
+  const typeStats     = buildTypeStats(closed);
 
   const totalTrades = closed.length;
   const totalPnl    = Math.round(closed.reduce((s, t) => s + parseFloat(t.realized_pnl || 0), 0) * 100) / 100;
@@ -309,6 +337,37 @@ export default function Analytics({ state = {}, positions = {} }) {
           )}
         </PanelCard>
       </div>
+
+      {/* Row 4: Signal source breakdown */}
+      <PanelCard title="Performance by Signal Source" sub="Win rate and P&L split by which system generated the trade">
+        {typeStats.length === 0 ? (
+          <div style={{ color: 'var(--color-iron)', fontSize: '12px', textAlign: 'center', paddingTop: '20px' }}>
+            No typed trades yet — trades entered after this update show their source
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '4px' }}>
+            {typeStats.map(({ type, wr, pnl, count }) => {
+              const color = TYPE_COLOR[type] || 'var(--color-iron)';
+              const pnlColor = pnl > 0 ? 'var(--color-profit)' : pnl < 0 ? 'var(--color-loss)' : 'var(--color-iron)';
+              return (
+                <div key={type} style={{ display: 'grid', gridTemplateColumns: '108px 1fr 52px 72px', gap: 12, alignItems: 'center' }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, color }}>{type}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ flex: 1, height: 6, background: 'var(--color-cream-deep)', borderRadius: 3, overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${wr}%`, background: wr >= 65 ? 'var(--color-profit)' : wr >= 50 ? '#f59e0b' : 'var(--color-loss)', borderRadius: 3 }} />
+                    </div>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, minWidth: 38, color: wr >= 65 ? 'var(--color-profit)' : wr >= 50 ? '#f59e0b' : 'var(--color-loss)' }}>{wr}%</span>
+                  </div>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--color-iron)', textAlign: 'right' }}>{count}t</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, color: pnlColor, textAlign: 'right' }}>
+                    {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </PanelCard>
 
     </div>
   );

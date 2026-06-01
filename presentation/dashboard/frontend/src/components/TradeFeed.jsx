@@ -48,21 +48,32 @@ function parseMeta(p) {
 }
 
 function fmtLocal(ts) {
-  if (!ts) return '--:--';
+  if (!ts) return '--:--:--';
   const d = new Date(ts);
-  return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+  return d.getHours().toString().padStart(2,'0') + ':' +
+         d.getMinutes().toString().padStart(2,'0') + ':' +
+         d.getSeconds().toString().padStart(2,'0');
 }
 
-// Entry timestamp with date prepended: "05/29 10:30"
+// Entry timestamp with date prepended: "05/29 10:30:05"
 function fmtLocalDT(ts) {
-  if (!ts) return '--/-- --:--';
+  if (!ts) return '--/-- --:--:--';
   const d = new Date(ts);
   const mm = (d.getMonth() + 1).toString().padStart(2,'0');
   const dd = d.getDate().toString().padStart(2,'0');
   const hh = d.getHours().toString().padStart(2,'0');
   const mi = d.getMinutes().toString().padStart(2,'0');
-  return `${mm}/${dd} ${hh}:${mi}`;
+  const ss = d.getSeconds().toString().padStart(2,'0');
+  return `${mm}/${dd} ${hh}:${mi}:${ss}`;
 }
+
+const ENTRY_TYPE_CONFIG = {
+  'LAT-ARB':        { label: 'LAT',  color: '#2b7fff' },
+  'FAIR-VAL':       { label: 'FV',   color: '#00d4a3' },
+  'REVERSAL-SNIPE': { label: 'REV',  color: '#ff007a' },
+  'SIGNAL':         { label: 'SIG',  color: 'var(--color-text-muted)' },
+};
+function entryTypeCfg(t) { return ENTRY_TYPE_CONFIG[t] || ENTRY_TYPE_CONFIG['SIGNAL']; }
 
 // Wilson score 95% CI for a binomial proportion -> [low%, high%].
 // Honest small-sample band on the win rate (matches dashboard/backend performance.js).
@@ -123,11 +134,11 @@ function CountdownTimer({ expiry_ts }) {
 
 // ── Column configs ─────────────────────────────────────────────────────────
 
-const CLOSED_COLS  = ['In (Local)', 'Asset', 'TF', 'Dir', 'Size ($)', 'Entry¢', 'Exit¢', 'Hold', 'Reason', 'P&L / %', 'Exit (Local)', 'Result'];
-const CLOSED_GRID  = '75px 65px 48px 56px 52px 50px 50px 48px 64px 92px 64px 44px';
+const CLOSED_COLS  = ['In (Local)', 'Asset', 'TF', 'Src', 'Dir', 'Size ($)', 'Entry¢', 'Exit¢', 'Hold', 'Reason', 'P&L / %', 'Exit (Local)', 'Result'];
+const CLOSED_GRID  = '92px 52px 38px 38px 50px 50px 48px 48px 48px 58px 88px 62px 40px';
 
-const OPEN_COLS    = ['In (Local)', 'Asset', 'TF', 'Dir', 'Type', 'Entry¢', 'Cur¢', 'Target¢', 'Stop¢', 'Unr P&L', 'Hold', 'Closes In'];
-const OPEN_GRID    = '56px 65px 48px 56px 50px 50px 50px 54px 50px 68px 48px 80px';
+const OPEN_COLS    = ['In (Local)', 'Asset', 'TF', 'Dir', 'Src', 'Entry¢', 'Cur¢', 'Target¢', 'Stop¢', 'Unr P&L', 'Hold', 'Closes In'];
+const OPEN_GRID    = '66px 55px 42px 50px 40px 48px 48px 52px 48px 68px 48px 80px';
 
 // ── Row components ────────────────────────────────────────────────────────────
 
@@ -153,6 +164,9 @@ function ClosedRow({ p }) {
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtLocalDT(p.entry_time)}</span>
       <span style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: 13, color: 'var(--color-text-primary)' }}>{meta.asset}</span>
       <span style={{ color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)' }}>{meta.timeframe}</span>
+      <span style={{ fontWeight: 700, fontSize: 9, letterSpacing: '0.05em', color: entryTypeCfg(p.entry_type).color }}>
+        {entryTypeCfg(p.entry_type).label}
+      </span>
       <span style={{ fontWeight: 600, color: dir === 'UP' ? 'var(--color-profit)' : 'var(--color-loss)' }}>
         {dir === 'UP' ? '↑ UP' : '↓ DN'}
       </span>
@@ -199,7 +213,9 @@ function OpenRow({ p }) {
       <span style={{ fontWeight: 600, color: dir === 'UP' ? 'var(--color-profit)' : 'var(--color-loss)' }}>
         {dir === 'UP' ? '↑ UP' : '↓ DN'}
       </span>
-      <span style={{ color: isDual ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>{meta.type}</span>
+      <span style={{ fontWeight: 700, fontSize: 9, letterSpacing: '0.05em', color: entryTypeCfg(p.entry_type).color }}>
+        {entryTypeCfg(p.entry_type).label}
+      </span>
       <span style={{ fontFamily: 'var(--font-mono)' }}>{(entry * 100).toFixed(0)}¢</span>
       <span style={{ fontFamily: 'var(--font-mono)', color: cur >= entry ? 'var(--color-profit)' : 'var(--color-loss)' }}>
         {(cur * 100).toFixed(0)}¢

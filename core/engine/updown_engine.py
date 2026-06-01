@@ -48,7 +48,7 @@ KELLY = {
     "LOW":  (0.015, 0.050),   # score 0.62-0.75: 1.5% Kelly, 5% cap
 }
 MIN_USD = 1.00
-VOLUME_GATE_FLOORS = {"BTC": 2.0, "ETH": 10.0, "SOL": 75.0, "XRP": 5000.0, "DOGE": 10000.0, "HYPE": 100.0, "BNB": 10.0}
+VOLUME_GATE_FLOORS = {"BTC": 2.0, "ETH": 10.0, "SOL": 75.0, "XRP": 5000.0, "DOGE": 10000.0, "HYPE": 50.0, "BNB": 10.0}
 UPDOWN_MIN_LIQUIDITY = 0.0
 
 SCORE_TO_WR = [

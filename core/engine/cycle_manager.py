@@ -334,3 +334,126 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             log.error("[LATENCY-ARB] Scanner loop error: %s", e, exc_info=True)
             
         await asyncio.sleep(1.0)
+
+
+async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -> None:
+    """
+    Background daemon that snipes the cheap losing side (≤10¢) of near-certain (≥90¢)
+    binary markets when Pyth data contradicts the market consensus.
+    Entry window: T-90s to T-45s before candle close.
+    Size: 0.5% of balance, hard cap $2.
+    """
+    log.info("[REVERSAL-SNIPE] Starting cheap reversal sniper daemon...")
+    last_scanned = {}  # (asset, tf) -> next_close_ts
+
+    async def _snipe(engine, next_close):
+        asset = engine.asset
+        timeframe = engine.timeframe
+        interval_minutes = int(timeframe.rstrip("m"))
+        try:
+            from core.pyth_oracle_service import GLOBAL_ORACLE_CACHE
+            pyth_price = GLOBAL_ORACLE_CACHE.get(asset, {}).get("price", 0.0)
+            if pyth_price <= 0.0:
+                return
+
+            from core.engine.updown_engine import _fetch_klines_async
+            tf_map = {"5m": ("5m", 30), "15m": ("15m", 30)}
+            interval, limit = tf_map.get(timeframe, ("5m", 30))
+            klines = await _fetch_klines_async(session, asset, interval, limit)
+            if len(klines) < 2:
+                return
+
+            open_price = float(klines[-1][1])
+            pct_move = (pyth_price - open_price) / open_price if open_price > 0 else 0.0
+
+            market = await engine._fetch_market(session, is_latency_scan=True)
+            if not market:
+                return
+
+            up_price = market["up_price"]
+            dn_price = market["dn_price"]
+
+            # Identify snipe direction: Pyth contradicts the near-certain side
+            snipe_direction = None
+            snipe_price = None
+
+            if up_price >= 0.90 and dn_price <= 0.10 and pct_move <= -0.004:
+                # Market says UP is certain, but Pyth price is falling → snipe DOWN
+                snipe_direction = "DOWN"
+                snipe_price = dn_price
+            elif dn_price >= 0.90 and up_price <= 0.10 and pct_move >= 0.004:
+                # Market says DOWN is certain, but Pyth price is rising → snipe UP
+                snipe_direction = "UP"
+                snipe_price = up_price
+
+            if not snipe_direction:
+                return
+
+            # Skip if already in this market
+            import infrastructure.state.state_manager as state_mgr
+            for pos in state_mgr.get_open_positions():
+                if pos.get("event_id") == market["event_id"]:
+                    return
+
+            # Abort if candle already closed
+            if time.time() >= next_close:
+                log.warning("[REVERSAL-SNIPE] Candle closed, aborting %s/%s", asset, timeframe)
+                return
+
+            from infrastructure.state.state_manager import get_current_balance
+            balance = get_current_balance()
+            usd_size = min(balance * 0.005, 2.0)
+            if usd_size < 0.50:
+                log.info("[REVERSAL-SNIPE] Size $%.2f too small, skipping %s/%s", usd_size, asset, timeframe)
+                return
+
+            market_id = market["dn_market"]["id"] if snipe_direction == "DOWN" else market["up_market"]["id"]
+
+            from infrastructure.exchange.trader import place_order
+            from core.engine.session_governor import commit_trade_slot
+            order = place_order(
+                event_id=market["event_id"],
+                market_id=market_id,
+                amount_dollars=usd_size,
+                direction="NO" if snipe_direction == "DOWN" else "YES",
+                entry_price=snipe_price,
+                event_title=f"[UPDOWN][{asset}][{timeframe}][REVERSAL_SNIPE] {market['event_title']}",
+                expiry_ts=market["expiry_ts"],
+            )
+            if order:
+                await commit_trade_slot(asset, timeframe, 0.50, interval_minutes, is_dual=False, direction=snipe_direction)
+                log.info(
+                    "[REVERSAL-SNIPE ENTERED] %s/%s %s: $%.2f @ %.0f¢ (Pyth move=%.2f%%)",
+                    asset, timeframe, snipe_direction, usd_size, snipe_price * 100, pct_move * 100,
+                )
+                try:
+                    from app.telegram_bot import send_alert
+                    send_alert(f"REV-SNIPE {asset}/{timeframe} {snipe_direction} | ${usd_size:.2f} @ {snipe_price*100:.0f}c")
+                except Exception:
+                    pass
+        except Exception as e:
+            log.error("[REVERSAL-SNIPE] Error for %s/%s: %s", asset, timeframe, e, exc_info=True)
+
+    while True:
+        try:
+            now = time.time()
+            for key, engine in engines.items():
+                asset = engine.asset
+                timeframe = engine.timeframe
+                interval_minutes = int(timeframe.rstrip("m"))
+                interval_secs = interval_minutes * 60
+
+                next_close = ((int(now) // interval_secs) + 1) * interval_secs
+                time_left = next_close - now
+
+                # T-90s to T-45s window
+                if 45.0 <= time_left <= 90.0:
+                    if last_scanned.get((asset, timeframe)) == next_close:
+                        continue
+                    last_scanned[(asset, timeframe)] = next_close
+                    log.info("[REVERSAL-SNIPE] Scanning %s/%s at T-%.0fs", asset, timeframe, time_left)
+                    asyncio.create_task(_snipe(engine, next_close))
+        except Exception as e:
+            log.error("[REVERSAL-SNIPE] Loop error: %s", e)
+
+        await asyncio.sleep(5.0)
