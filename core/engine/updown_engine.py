@@ -236,6 +236,8 @@ class UpDownEngine:
         self._recent_outcomes:  list = []   # True=win, False=loss; rolling 40
         self._prefetched_markets: dict = {}  # boundary_ts -> market_dict
         self.last_edge_context: Optional[dict] = None
+        self._slope_history:    list = []   # rolling 4 slope readings for choppy detection
+        self._choppy_candles:   int  = 0    # candles remaining in choppy cooldown
 
     # ── Circuit breaker ───────────────────────────────────────────────────────
 
@@ -486,15 +488,15 @@ class UpDownEngine:
         if self.invert_signal:
             direction = "DOWN" if direction == "UP" else "UP"
 
-        # ── Real-time trend gate ──────────────────────────────────────────────
-        # Uses the closes array already in memory — zero lag, adapts every candle.
-        # Slope of closes[-5:] measures the current 5-candle drift.
-        # If signal contradicts a clear trend, skip rather than flip — prevents
-        # the inversion lag trap when market direction reverses suddenly.
+        # ── Real-time trend gate + per-asset choppy detection ────────────────
+        # Slope of closes[-5:] measures current 5-candle drift.
+        # Trend gate: blocks entries that contradict a clear trend direction.
+        # Choppy detection: if slope flipped sign 2+ times in last 4 candles
+        # while still ranging, enter a 2-candle cooldown (Option C).
         if len(closes) >= 10:
             _c0 = closes[-5] if closes[-5] > 0 else 1.0
             _slope = (closes[-1] - closes[-5]) / _c0
-            _TREND_GATE = 0.0025  # 0.25% drift = clear trend
+            _TREND_GATE = 0.004  # 0.4% drift = clear trend (raised from 0.25%)
             _ranging = abs(_slope) < _TREND_GATE
             if not _ranging:
                 _trend_dn = _slope < 0
@@ -503,6 +505,34 @@ class UpDownEngine:
                     log.info(
                         "[TREND-GATE] %s/%s: %s signal contradicts trend (slope=%.3f%%) — skip",
                         self.asset, self.timeframe, direction, _slope * 100,
+                    )
+                    return None
+
+            # Serve active choppy cooldown before updating history
+            if self._choppy_candles > 0:
+                self._choppy_candles -= 1
+                log.info(
+                    "[CHOPPY] %s/%s: cooling down (%d candle(s) remaining)",
+                    self.asset, self.timeframe, self._choppy_candles,
+                )
+                return None
+
+            # Accumulate slope into rolling 4-reading history
+            self._slope_history.append(_slope)
+            if len(self._slope_history) > 4:
+                self._slope_history = self._slope_history[-4:]
+
+            # Detect choppy: 2+ sign flips while slope is still unclear
+            if len(self._slope_history) >= 4 and _ranging:
+                _flips = sum(
+                    1 for i in range(1, len(self._slope_history))
+                    if (self._slope_history[i] >= 0) != (self._slope_history[i - 1] >= 0)
+                )
+                if _flips >= 2:
+                    self._choppy_candles = 2
+                    log.info(
+                        "[CHOPPY] %s/%s: %d slope flips, slope=%.3f%% — 2-candle pause",
+                        self.asset, self.timeframe, _flips, _slope * 100,
                     )
                     return None
         # ─────────────────────────────────────────────────────────────────────
