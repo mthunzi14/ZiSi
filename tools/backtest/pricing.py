@@ -22,6 +22,9 @@ class PricingParams:
     reversal_steepness: float = 0.06  # discount slope vs RSI extremity (calibrated)
     slippage_base: float = 0.0      # added to ATM entry (calibrated)
     slippage_atr_coef: float = 0.0  # extra slippage per unit ATR fraction (regime-aware)
+    fee_frac: float = 0.0            # fee as fraction of notional (Polymarket ~0; tunable)
+    slippage_floor: float = 0.01     # minimum entry slippage in price units (1c)
+    adverse_selection: float = 0.0   # stress: fraction of marginal edge assumed lost to adverse fills
 
 
 def _directional(p_up: float, direction: str) -> float:
@@ -65,3 +68,14 @@ def price_path_exit(direction: str, s_0: float, entry: float, spot_path: List[fl
         if p >= params.target_threshold:
             return round(p, 4), "TARGET_HIT"
     return round(params.expired_mid, 4), "MARKET_EXPIRED"
+
+
+def apply_entry_slippage(quoted: float, atr_frac: float, params: "PricingParams") -> float:
+    """Buying worsens (raises) the entry price. slippage = max(floor, atr_coef * atr_frac)."""
+    slip = max(params.slippage_floor, params.slippage_atr_coef * atr_frac)
+    return max(0.01, min(0.99, quoted + slip))
+
+
+def net_pnl(gross: float, size: float, params: "PricingParams") -> float:
+    """Subtract fees (fraction of notional) from a gross P&L figure."""
+    return round(gross - params.fee_frac * size, 4)
