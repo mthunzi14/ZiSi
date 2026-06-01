@@ -89,3 +89,6 @@ zisi_bot_console.log
 core/ml/trained_model.pt
 core/ml/training_metrics.json
 oi_history.json
+
+# Fair-value demo trade log (runtime data)
+infrastructure/state/fair_value_trades.jsonl
