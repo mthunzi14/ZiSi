@@ -543,7 +543,7 @@ async def main() -> None:
     # ── Pyth Hermes Real-Time SSE Price Stream Service Integration ──────────
     # Starts Pyth Hermes streaming as a persistent background daemon, bypassing rate limits.
     # Enables global in-memory sub-0.1ms oracle spot price caching.
-    from scratch.pyth_oracle_service import PythOracleService
+    from core.pyth_oracle_service import PythOracleService
     pyth_service = PythOracleService()
     await pyth_service.start()
 
