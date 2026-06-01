@@ -75,9 +75,9 @@ export default function App() {
       try {
         const r = await fetch('/api/health');
         const d = await r.json();
-        setState(d);
+        setState(s => ({ ...s, ...d }));
       } catch { /* offline */ }
-      
+
       try {
         const r = await fetch('/api/positions');
         const d = await r.json();
@@ -85,7 +85,7 @@ export default function App() {
       } catch { /* offline */ }
     };
     poll();
-    const id = setInterval(poll, 5000);
+    const id = setInterval(poll, 15000);
     return () => clearInterval(id);
   }, []);
 
@@ -96,9 +96,10 @@ export default function App() {
     es.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
-        if (event.type === 'position_update') setPositions(event.payload);
-        if (event.type === 'balance_update')  setState(s => ({ ...s, ...event.payload }));
-        if (event.type === 'candle_boundary') setCandles(event.payload);
+        if (event.type === 'position_update')    setPositions(event.payload);
+        if (event.type === 'positions_snapshot') setPositions(p => ({ ...p, ...event.payload }));
+        if (event.type === 'balance_update')     setState(s => ({ ...s, ...event.payload }));
+        if (event.type === 'candle_boundary')    setCandles(event.payload);
         if (event.type === 'diagnostics_update') setDiagnostics(event.payload);
       } catch { /* ignore malformed */ }
     };

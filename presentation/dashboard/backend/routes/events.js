@@ -197,7 +197,7 @@ setInterval(() => {
 setInterval(async () => {
   const positions = _safeRead(POSITIONS_FILE);
   broadcastEvent('balance_update', _buildBalancePayload());
-  _lastBalance = _balanceFromPositions() ?? STARTING_BALANCE;
+  _lastBalance = _balanceFromPositions() ?? _getStartingBalance();
 
   if (positions) {
     const activeArr = positions.active  || [];
