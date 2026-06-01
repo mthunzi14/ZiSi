@@ -456,6 +456,16 @@ class UpDownEngine:
                 log.info("[FAIR-VALUE] %s/%s %s | fp=%.3f quote=%.3f edge=%.3f (%s)",
                          self.asset, self.timeframe, raw_dir, _fv["fp_up"],
                          up_price if raw_dir == "UP" else dn_price, _fv["edge"], _fv["archetype"])
+                try:
+                    from infrastructure.state.fair_value_log import log_fair_value_entry
+                    log_fair_value_entry({
+                        "asset": self.asset, "timeframe": self.timeframe, "direction": raw_dir,
+                        "fp_up": _fv["fp_up"], "quote": (up_price if raw_dir == "UP" else dn_price),
+                        "edge": _fv["edge"], "archetype": _fv["archetype"],
+                        "elapsed_min": round(_elapsed_min, 2), "entry_ts": _now_ts,
+                    })
+                except Exception:
+                    pass
 
         if raw_dir is None:
             if is_dual_eligible and abs(ofi) >= 0.12:
