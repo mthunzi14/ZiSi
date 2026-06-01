@@ -168,7 +168,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
         
         try:
             # 1. Fetch Pyth Price
-            from scratch.pyth_oracle_service import GLOBAL_ORACLE_CACHE
+            from core.pyth_oracle_service import GLOBAL_ORACLE_CACHE
             pyth_price = GLOBAL_ORACLE_CACHE.get(asset, {}).get("price", 0.0)
             if pyth_price <= 0.0:
                 log.warning("[LATENCY-ARB] No Pyth price available for %s", asset)
