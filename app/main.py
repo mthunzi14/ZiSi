@@ -234,10 +234,10 @@ async def _validate_trade_slot(
     if is_dual and (up_price + dn_price) >= DUAL_ENTRY_MAX_COMBINED:
         is_dual = False
 
-    # 5m ATM gate — single entries in the 47-53¢ coin-flip zone have no edge
-    if timeframe == "5m" and not is_dual and 0.47 <= entry_price <= 0.53:
-        context.log_skip("5m_atm_blocked", asset, timeframe, {"price": entry_price})
-        log.info("[MAIN] %s/5m ATM_BLOCK: %.0f¢ in coin-flip zone", asset, entry_price * 100)
+    # ATM gate — single entries in the 47-53¢ coin-flip zone have no edge on any timeframe
+    if not is_dual and 0.47 <= entry_price <= 0.53:
+        context.log_skip("atm_blocked", asset, timeframe, {"price": entry_price})
+        log.info("[MAIN] %s/%s ATM_BLOCK: %.0f¢ in coin-flip zone", asset, timeframe, entry_price * 100)
         return False, {}
 
     # Score-Tiered Price Ceiling — preserves edge on high-conviction signals while
@@ -282,10 +282,7 @@ async def _validate_trade_slot(
     raw_bet_usd = engine.compute_size(score, entry_price, current_balance)
     bet_usd = raw_bet_usd * risk_multiplier
 
-    # 15m premium — 85.7% historical WR vs ~30% on 5m warrants larger position
-    if timeframe == "15m":
-        bet_usd *= 1.5
-        log.info("[RISK] 15m signal: 1.5x size multiplier -> $%.2f", bet_usd)
+    # 15m SIG no longer gets size premium — LAT-ARB has earned it, SIG has not
 
     # ── Optimal Altcoin Sizing Gates (Fix A - Maximize P&L safely) ──
     if asset in ["SOL", "XRP"]:

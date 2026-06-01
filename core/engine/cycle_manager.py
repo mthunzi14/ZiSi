@@ -165,7 +165,11 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
         asset = engine.asset
         timeframe = engine.timeframe
         interval_minutes = int(timeframe.rstrip("m"))
-        
+
+        # DOGE excluded — Pyth signal too noisy for reliable latency edge
+        if asset == "DOGE":
+            return
+
         try:
             # 1. Fetch Pyth Price
             from core.pyth_oracle_service import GLOBAL_ORACLE_CACHE
@@ -186,11 +190,12 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             open_price = float(klines[-1][1])
             pct_move = (pyth_price - open_price) / open_price
             
-            # Check threshold (0.2%)
-            if abs(pct_move) < 0.002:
-                return  # Move is too small
-                
-            direction = "UP" if pct_move > 0.002 else "DOWN"
+            # 5m needs a stronger Pyth move to justify the shorter resolution window
+            threshold = 0.004 if timeframe == "5m" else 0.002
+            if abs(pct_move) < threshold:
+                return
+
+            direction = "UP" if pct_move > 0 else "DOWN"
             log.info("[LATENCY-ARB] Potential %s move detected for %s/%s (move: %.4f%%, Pyth: %.4f, Open: %.4f)",
                      direction, asset, timeframe, pct_move * 100, pyth_price, open_price)
             
@@ -233,10 +238,10 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 entry_price = dn_price
                 market_id = market["dn_market"]["id"]
 
-            # 5m ATM gate — coin-flip zone is edge-negative regardless of Pyth signal
-            if timeframe == "5m" and 0.47 <= entry_price <= 0.53:
-                log.info("[LATENCY-ARB] %s/5m ATM_BLOCK: %.0f¢ in coin-flip zone, skipping.",
-                         asset, entry_price * 100)
+            # ATM gate — coin-flip zone is edge-negative on any timeframe
+            if 0.47 <= entry_price <= 0.53:
+                log.info("[LATENCY-ARB] %s/%s ATM_BLOCK: %.0f¢ in coin-flip zone, skipping.",
+                         asset, timeframe, entry_price * 100)
                 return
 
             # Retrieve active session discount hurdle (Sprint 11)
@@ -255,12 +260,15 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                          asset, timeframe, direction, entry_price, implied_prob, implied_prob - discount_hurdle)
                 return
                 
-            # 5. Position sizing (half Kelly)
+            # 5. Position sizing — 15m gets 1.5× premium (82% WR earns it), 5m stays conservative
             from infrastructure.state.state_manager import get_current_balance
             current_balance = get_current_balance()
-            
+
             normal_usd = engine.compute_size(0.85, entry_price, current_balance)
             usd_size = max(1.0, normal_usd * 0.5)
+            if timeframe == "15m":
+                usd_size *= 1.5
+                log.info("[LATENCY-ARB] 15m premium: 1.5x size -> $%.2f", usd_size)
             
             # Apply Altcoin Sizing Gates
             if asset in ["SOL", "XRP"]:

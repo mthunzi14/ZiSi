@@ -68,8 +68,12 @@ def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, ti
         _title_upper = (title or "").upper()
         _is_short_tf = "5M" in _title_upper or "15M" in _title_upper or "UPDOWN" in _title_upper
         if _is_short_tf:
-            log.info("[SL-CALIB] Short-TF trade detected from title '%s' -> applying static target 0.88, stop -1.0", title)
-            return 0.88, -1.0
+            # 5m gets a tighter target (72¢) — achievable in 5 minutes
+            # 15m keeps 88¢ — has the full window to run
+            _is_5m = "][5M]" in _title_upper
+            target = 0.72 if _is_5m else 0.88
+            log.info("[SL-CALIB] Short-TF trade '%s' -> target %.2f, stop -1.0", title, target)
+            return target, -1.0
 
         from core.risk.risk_manager import calculate_exit_targets
         res = calculate_exit_targets(entry_price, amount_spent)
