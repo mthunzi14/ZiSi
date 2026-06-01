@@ -15,7 +15,10 @@ const BOT_ROOT  = path.join(__dirname, '../../../../');
 const STATE_FILE     = path.join(BOT_ROOT, 'account_state.json');
 const POSITIONS_FILE = path.join(BOT_ROOT, 'infrastructure', 'exchange', 'positions_state.json');
 
-const STARTING_BALANCE = 100.0;
+function _getStartingBalance() {
+  const state = _safeRead(STATE_FILE);
+  return parseFloat(state?.starting_balance || 100.0);
+}
 
 const _clients = new Map();
 let _clientId  = 0;
@@ -85,16 +88,19 @@ function _balanceFromPositions() {
   const pos = _safeRead(POSITIONS_FILE);
   if (!pos) return null;
   const realizedPnl = parseFloat((pos.summary || {}).realized_pnl || 0);
-  return Math.round((STARTING_BALANCE + realizedPnl) * 100) / 100;
+  const start = _getStartingBalance();
+  return Math.round((start + realizedPnl) * 100) / 100;
 }
 
 function _buildBalancePayload() {
-  const state   = _safeRead(STATE_FILE);
-  const balance = _balanceFromPositions() ?? STARTING_BALANCE;
-  const pnl     = Math.round((balance - STARTING_BALANCE) * 100) / 100;
+  const state          = _safeRead(STATE_FILE);
+  const startingBalance = _getStartingBalance();
+  const balance        = _balanceFromPositions() ?? startingBalance;
+  const pnl            = Math.round((balance - startingBalance) * 100) / 100;
   return {
     balance,
     pnl,
+    starting_balance: startingBalance,
     trades: state?.trades_executed || 0,
     status: state?.status || 'running',
   };
@@ -163,7 +169,7 @@ function _watchPositionsFile() {
 }
 
 function _seedInitialState() {
-  const balance = _balanceFromPositions() ?? STARTING_BALANCE;
+  const balance = _balanceFromPositions() ?? _getStartingBalance();
   _lastBalance = balance;
   const positions = _safeRead(POSITIONS_FILE);
   if (positions) {

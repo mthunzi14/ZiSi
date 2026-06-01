@@ -400,7 +400,8 @@ router.get('/', (req, res) => {
 
     // Derive balance from positions_state.json (single source of truth)
     if (positions_summary.realized_pnl !== undefined) {
-      balance = Math.round((100.0 + (positions_summary.realized_pnl || 0)) * 100) / 100;
+      const _startBal = parseFloat(state.starting_balance || 100.0);
+      balance = Math.round((_startBal + (positions_summary.realized_pnl || 0)) * 100) / 100;
       pnl = parseFloat((positions_summary.realized_pnl || 0).toFixed(2));
     }
 

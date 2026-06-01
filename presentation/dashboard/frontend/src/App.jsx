@@ -374,9 +374,9 @@ export default function App() {
             }}>
               {/* Stat 1: Balance */}
               {(() => {
-                const bal = parseFloat(state.balance ?? 50);
+                const bal = parseFloat(state.balance ?? 0);
                 const pnl = parseFloat(state.pnl ?? 0);
-                const start = bal - pnl;
+                const start = parseFloat(state.starting_balance ?? (bal - pnl)) || 1;
                 const pnlPct = start > 0 ? (pnl / start) * 100 : 0;
                 const pnlPositive = pnl >= 0;
 

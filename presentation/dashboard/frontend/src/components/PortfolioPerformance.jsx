@@ -191,7 +191,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
 
   // Filter history based on timeframe pill
   const getFilteredData = () => {
-    const bal = parseFloat(state.balance || 100.00);
+    const bal = parseFloat(state.balance || state.starting_balance || 0);
     const nowMs = Date.now();
     
     // Synthesis fallback: if history is empty, plot a beautiful flat line starting 24h ago
@@ -278,21 +278,20 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
     // Return live total P&L if history is empty or single point
     if (!history || history.length < 2 || timeframe === 'ALL') {
       const totalPnl = parseFloat(state.pnl || 0);
-      const balance = parseFloat(state.balance || 100);
-      const start = balance - totalPnl;
-      const pct = start > 0 ? (totalPnl / start) * 100 : 0;
+      const start = parseFloat(state.starting_balance || 0) || 1;
+      const pct = (totalPnl / start) * 100;
       return { pnl: totalPnl, pct };
     }
-    
+
     const latest = filteredHistory[filteredHistory.length - 1].balance;
     const first = filteredHistory[0].balance;
     let pnl = latest - first;
     let pct = first > 0 ? (pnl / first) * 100 : 0;
-    
+
     // Core fallback sync: if calculated PnL from history is 0 but real state has non-zero PnL, display real state PnL
     if (Math.abs(pnl) < 0.01 && Math.abs(parseFloat(state.pnl || 0)) > 0.01) {
       pnl = parseFloat(state.pnl || 0);
-      const start = parseFloat(state.balance || 100) - pnl;
+      const start = parseFloat(state.starting_balance || 0) || 1;
       pct = start > 0 ? (pnl / start) * 100 : 0;
     }
     

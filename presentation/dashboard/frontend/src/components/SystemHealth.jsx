@@ -51,9 +51,10 @@ export default function SystemHealth({ state = {}, positions = {}, uptime = '00:
   const isAlive    = minutesAgo !== null && minutesAgo < 10;
   const isStale    = minutesAgo !== null && minutesAgo >= 10 && minutesAgo < 30;
 
-  const pnl     = parseFloat(state.pnl || 0);
-  const balance = parseFloat(state.balance || 100);
-  const drawPct = Math.max(0, ((100 - balance) / 100 * 100)).toFixed(1);
+  const pnl          = parseFloat(state.pnl || 0);
+  const balance      = parseFloat(state.balance || 0);
+  const startBalance = parseFloat(state.starting_balance || balance || 100);
+  const drawPct      = startBalance > 0 ? Math.max(0, ((startBalance - balance) / startBalance * 100)).toFixed(1) : '0.0';
 
   return (
     <div 
