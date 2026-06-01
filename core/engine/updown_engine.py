@@ -325,7 +325,7 @@ class UpDownEngine:
 
         # Pyth Hermes Real-time Price Integration
         try:
-            from scratch.pyth_oracle_service import GLOBAL_ORACLE_CACHE
+            from core.pyth_oracle_service import GLOBAL_ORACLE_CACHE
             pyth_price = GLOBAL_ORACLE_CACHE.get(self.asset, {}).get("price", 0.0)
             if pyth_price > 0.0:
                 closes[-1] = pyth_price
@@ -485,6 +485,27 @@ class UpDownEngine:
         direction = apply_regime(raw_dir, regime)
         if self.invert_signal:
             direction = "DOWN" if direction == "UP" else "UP"
+
+        # ── Real-time trend gate ──────────────────────────────────────────────
+        # Uses the closes array already in memory — zero lag, adapts every candle.
+        # Slope of closes[-5:] measures the current 5-candle drift.
+        # If signal contradicts a clear trend, skip rather than flip — prevents
+        # the inversion lag trap when market direction reverses suddenly.
+        if len(closes) >= 10:
+            _c0 = closes[-5] if closes[-5] > 0 else 1.0
+            _slope = (closes[-1] - closes[-5]) / _c0
+            _TREND_GATE = 0.0025  # 0.25% drift = clear trend
+            _ranging = abs(_slope) < _TREND_GATE
+            if not _ranging:
+                _trend_dn = _slope < 0
+                _signal_dn = direction == "DOWN"
+                if _trend_dn != _signal_dn:
+                    log.info(
+                        "[TREND-GATE] %s/%s: %s signal contradicts trend (slope=%.3f%%) — skip",
+                        self.asset, self.timeframe, direction, _slope * 100,
+                    )
+                    return None
+        # ─────────────────────────────────────────────────────────────────────
 
         # Composite score
         abs_mom = abs(mom)
