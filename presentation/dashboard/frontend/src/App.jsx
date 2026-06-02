@@ -28,8 +28,9 @@ export default function App() {
   });
   const [uptime,     setUptime]     = useState('00:00:00');
   const [theme,      setTheme]      = useState(() => localStorage.getItem('theme') || 'dark');
-  const [gateLog,    setGateLog]    = useState([]);
-  const [assetMacro, setAssetMacro] = useState({});
+  const [gateLog,      setGateLog]      = useState([]);
+  const [assetMacro,   setAssetMacro]   = useState({});
+  const [statsExpanded, setStatsExpanded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const esRef = useRef(null);
 
@@ -390,110 +391,132 @@ export default function App() {
             </div>
 
             {/* Overview Stats Strip */}
-            <div className="glass-panel reveal-up" style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(4, 1fr)',
-              width: '100%',
-              padding: 0,
-              marginBottom: '4px',
-              overflow: 'hidden',
-              borderTop: '2px solid rgba(197,155,39,0.65)',
-            }}>
-              {/* Stat 1: Balance */}
-              {(() => {
-                const bal = parseFloat(state.balance ?? 0);
-                const pnl = parseFloat(state.pnl ?? 0);
-                const start = parseFloat(state.starting_balance ?? (bal - pnl)) || 1;
-                const pnlPct = start > 0 ? (pnl / start) * 100 : 0;
-                const pnlPositive = pnl >= 0;
+            {/* ── Bloomberg Stats Strip ─────────────────────────────────────── */}
+            {(() => {
+              const bal      = parseFloat(state.balance ?? 0);
+              const pnl      = parseFloat(state.pnl ?? 0);
+              const start    = parseFloat(state.starting_balance ?? (bal - pnl)) || 1;
+              const pnlPct   = start > 0 ? (pnl / start) * 100 : 0;
+              const closed   = positions.closed || [];
+              const wins     = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).length;
+              const losses   = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0).length;
+              const decisive = wins + losses;
+              const wr       = decisive > 0 ? (wins / decisive * 100) : 0;
+              const active   = positions.active?.length || 0;
+              const grossW   = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).reduce((s, p) => s + parseFloat(p.realized_pnl ?? 0), 0);
+              const grossL   = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0).reduce((s, p) => s + Math.abs(parseFloat(p.realized_pnl ?? 0)), 0);
+              const pf       = grossL > 0 ? (grossW / grossL).toFixed(2) : '∞';
+              const avgW     = wins > 0 ? (grossW / wins).toFixed(2) : null;
+              const avgL     = losses > 0 ? (grossL / losses).toFixed(2) : null;
+              const sorted   = [...closed].sort((a, b) => parseFloat(b.realized_pnl ?? 0) - parseFloat(a.realized_pnl ?? 0));
+              const best     = parseFloat(sorted[0]?.realized_pnl ?? 0);
+              const worst    = parseFloat(sorted[sorted.length - 1]?.realized_pnl ?? 0);
+              let streak = 0, streakWin = null;
+              for (const p of closed) {
+                const isW = parseFloat(p.realized_pnl ?? 0) > 0;
+                if (streakWin === null) { streakWin = isW; streak = 1; }
+                else if (isW === streakWin) streak++;
+                else break;
+              }
 
-                const closed = positions.closed || [];
-                const wins  = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).length;
-                const losses = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0).length;
-                const evens = closed.filter(p => parseFloat(p.realized_pnl ?? 0) === 0).length;
-                const totalClosed = closed.length || state.trades_executed || 0;
-                const decisive = wins + losses;
-                const wr = decisive > 0 ? (wins / decisive) * 100 : 0;
-                const active = positions.active?.length || 0;
+              const Stat = ({ label, val, color, sub }) => (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <span style={{ fontSize: 8, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700 }}>{label}</span>
+                  <span style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 800, lineHeight: 1, letterSpacing: '-0.02em', color: color || 'var(--color-text-primary)' }}>{val}</span>
+                  {sub && <span style={{ fontSize: 9, color: '#71717a' }}>{sub}</span>}
+                </div>
+              );
 
-                const cellStyle = (borderRight = true) => ({
-                  display: 'flex',
-                  flexDirection: 'column',
-                  padding: '22px 28px',
-                  gap: '4px',
-                  borderRight: borderRight ? '1px solid var(--color-card-border)' : 'none',
-                });
-                const labelStyle = {
-                  fontSize: '9.5px',
-                  fontFamily: 'var(--font-primary)',
-                  color: 'var(--color-text-muted)',
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.13em',
-                  fontWeight: 700,
-                };
-                const numStyle = (color = 'var(--color-obsidian)') => ({
-                  fontSize: '28px',
-                  fontWeight: 800,
-                  color,
-                  fontFamily: 'var(--font-display)',
-                  lineHeight: 1.05,
-                  letterSpacing: '-0.02em',
-                });
-                const subStyle = {
-                  fontSize: '10.5px',
-                  color: 'var(--color-text-muted)',
-                  fontWeight: 500,
-                  marginTop: '1px',
-                };
+              const Pill = ({ label, color }) => (
+                <span style={{
+                  fontSize: 9, fontWeight: 700, letterSpacing: '0.05em',
+                  color, background: `${color}15`, border: `1px solid ${color}40`,
+                  borderRadius: 6, padding: '2px 8px', whiteSpace: 'nowrap',
+                }}>{label}</span>
+              );
 
-                return (
-                  <>
-                    <div style={cellStyle()}>
-                      <span style={labelStyle}>Balance</span>
-                      <span style={numStyle()}>${bal.toFixed(2)}</span>
-                      <span style={subStyle}>Paper account</span>
+              return (
+                <div className="glass-panel reveal-up" style={{
+                  width: '100%', marginBottom: 4,
+                  padding: '14px 20px',
+                  borderTop: '2px solid rgba(197,155,39,0.55)',
+                  overflow: 'hidden',
+                }}>
+                  {/* Always-visible compact strip */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
+
+                    {/* Primary KPIs */}
+                    <div style={{ display: 'flex', gap: 20, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                      <Stat label="Balance" val={`$${bal.toFixed(2)}`} sub="paper account" />
+                      <Stat
+                        label="Net P&L"
+                        val={`${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`}
+                        color={pnl >= 0 ? '#10b981' : '#ef4444'}
+                        sub={`${pnl >= 0 ? '+' : ''}${pnlPct.toFixed(1)}% return`}
+                      />
+                      <Stat
+                        label="Win Rate"
+                        val={decisive > 0 ? `${wr.toFixed(1)}%` : '—'}
+                        color={wr >= 65 ? '#10b981' : wr >= 50 ? '#f97316' : '#ef4444'}
+                        sub={`${wins}W · ${losses}L · ${closed.length} trades`}
+                      />
+                      <Stat
+                        label="Open"
+                        val={active}
+                        color={active > 4 ? '#f97316' : 'var(--color-text-primary)'}
+                        sub="positions"
+                      />
                     </div>
 
-                    <div style={cellStyle()}>
-                      <span style={labelStyle}>Net P&amp;L</span>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '9px' }}>
-                        <span style={numStyle(pnlPositive ? 'var(--color-profit)' : 'var(--color-loss)')}>
-                          {pnlPositive ? '+' : ''}{pnl.toFixed(2)}
-                        </span>
-                        <span style={{
-                          fontSize: '11px', fontWeight: 700,
-                          color: pnlPositive ? 'var(--color-profit)' : 'var(--color-loss)',
-                          background: pnlPositive ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
-                          padding: '2px 7px', borderRadius: '5px',
-                        }}>
-                          {pnlPositive ? '+' : ''}{pnlPct.toFixed(1)}%
-                        </span>
-                      </div>
-                      <span style={subStyle}>vs starting balance</span>
+                    {/* Divider */}
+                    <div style={{ width: 1, height: 36, background: 'rgba(255,255,255,0.06)', flexShrink: 0 }} />
+
+                    {/* Status pills */}
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <Pill label={pnl >= 0 ? `+${pnlPct.toFixed(1)}% SESSION` : `${pnlPct.toFixed(1)}% SESSION`} color={pnl >= 0 ? '#10b981' : '#ef4444'} />
+                      {decisive > 0 && <Pill label={`PF ${pf}`} color={parseFloat(pf) >= 1.5 || pf === '∞' ? '#10b981' : parseFloat(pf) >= 1 ? '#f97316' : '#ef4444'} />}
+                      {streak > 1 && <Pill label={`${streakWin ? '🔥' : '❄️'} ${streak}${streakWin ? 'W STREAK' : 'L STREAK'}`} color={streakWin ? '#10b981' : '#ef4444'} />}
                     </div>
 
-                    <div style={cellStyle()}>
-                      <span style={labelStyle}>Win Rate</span>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                        <span style={numStyle(wr >= 55 ? 'var(--color-profit)' : wr >= 45 ? 'var(--color-obsidian)' : 'var(--color-loss)')}>
-                          {wr.toFixed(1)}%
-                        </span>
-                      </div>
-                      <span style={subStyle}>{wins}W · {losses}L · {evens}E · {totalClosed} trades</span>
-                    </div>
+                    {/* Expand toggle */}
+                    <button onClick={() => setStatsExpanded(e => !e)} style={{
+                      marginLeft: 'auto', background: 'rgba(255,255,255,0.04)',
+                      border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8,
+                      padding: '4px 12px', cursor: 'pointer', color: '#71717a', fontSize: 9, fontWeight: 700,
+                      display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+                      transition: 'all 0.2s',
+                    }}>
+                      <span style={{
+                        display: 'inline-block',
+                        transform: statsExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                        transition: 'transform 0.25s',
+                      }}>▾</span>
+                      {statsExpanded ? 'Less' : 'More'}
+                    </button>
+                  </div>
 
-                    <div style={cellStyle(false)}>
-                      <span style={labelStyle}>Positions</span>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
-                        <span style={numStyle()}>{active}</span>
-                        <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--color-text-muted)', alignSelf: 'center' }}>open</span>
-                      </div>
-                      <span style={subStyle}>{totalClosed} closed lifetime</span>
+                  {/* Expandable detail row */}
+                  <div style={{
+                    maxHeight: statsExpanded ? '200px' : '0px',
+                    overflow: 'hidden',
+                    transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)',
+                  }}>
+                    <div style={{
+                      display: 'flex', gap: 20, flexWrap: 'wrap', paddingTop: 14,
+                      borderTop: '1px solid rgba(255,255,255,0.05)', marginTop: 14,
+                    }}>
+                      {avgW && <Stat label="Avg Win"   val={`+$${avgW}`} color="#10b981" />}
+                      {avgL && <Stat label="Avg Loss"  val={`-$${avgL}`} color="#ef4444" />}
+                      {best > 0  && <Stat label="Best Trade"  val={`+$${best.toFixed(2)}`}  color="#10b981" />}
+                      {worst < 0 && <Stat label="Worst Trade" val={`-$${Math.abs(worst).toFixed(2)}`} color="#ef4444" />}
+                      <Stat label="Gross Win"  val={`$${grossW.toFixed(2)}`} color="#10b981" />
+                      <Stat label="Gross Loss" val={`$${grossL.toFixed(2)}`} color="#ef4444" />
+                      <Stat label="Total Trades" val={closed.length} />
                     </div>
-                  </>
-                );
-              })()}
-            </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             <AssetCards positions={positions} candles={candles} state={state} />
             
