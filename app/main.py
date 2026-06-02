@@ -303,7 +303,7 @@ async def _validate_trade_slot(
     if asset in ["SOL", "XRP"]:
         bet_usd = bet_usd * 0.60
         log.info("[RISK] SOL/XRP Sizing calibrated to 60%%: $%.2f", bet_usd)
-    elif asset in ["BNB", "HYPE"]:
+    elif asset in ["BNB", "LINK"]:
         bet_usd = bet_usd * 0.50
         log.info("[RISK] Altcoin %s Sizing calibrated to 50%%: $%.2f", asset, bet_usd)
     elif asset in ["ADA", "LINK", "DOGE", "AVAX", "SUI"]:

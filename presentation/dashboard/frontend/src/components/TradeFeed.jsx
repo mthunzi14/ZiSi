@@ -10,7 +10,7 @@ function assetFromTitle(title) {
   if (/solana/i.test(title))   return 'SOL';
   if (/\bxrp\b/i.test(title))  return 'XRP';
   if (/doge/i.test(title))     return 'DOGE';
-  if (/hype/i.test(title))     return 'HYPE';
+  if (/\blink\b/i.test(title) || /chainlink/i.test(title)) return 'LINK';
   if (/bnb/i.test(title) || /binance/i.test(title)) return 'BNB';
   return '?';
 }
@@ -37,7 +37,7 @@ function tfFromTitle(title) {
 
 function parseMeta(p) {
   const title = p.event_title || '';
-  const aTag = title.match(/\[(BTC|ETH|SOL|XRP|DOGE|HYPE|BNB)\]/);
+  const aTag = title.match(/\[(BTC|ETH|SOL|XRP|DOGE|LINK|BNB)\]/);
   const tTag = title.match(/\[(5m|15m)\]/);
   const xTag = title.match(/\[(SINGLE|DUAL_MAIN|DUAL_HEDGE|DUAL)\]/);
   return {
@@ -185,6 +185,341 @@ function MacroTrendArrow() {
     >
       {ARROW_GLYPH[trend.direction] || '→'}
     </span>
+  );
+}
+
+// ── Candle Countdown Bar ──────────────────────────────────────────────────────
+// Shows next 5m & 15m candle boundary countdowns + per-asset macro direction dots.
+
+function CandleCountdownBar({ assetMacro = {} }) {
+  const [fiveM,    setFiveM]    = useState('');
+  const [fifteenM, setFifteenM] = useState('');
+  const [pct5,     setPct5]     = useState(100);
+  const [pct15,    setPct15]    = useState(100);
+
+  useEffect(() => {
+    const tick = () => {
+      const now = Date.now();
+      const next5  = Math.ceil(now / 300_000)  * 300_000;
+      const next15 = Math.ceil(now / 900_000)  * 900_000;
+      const rem5   = Math.max(0, next5  - now);
+      const rem15  = Math.max(0, next15 - now);
+      const fmt = ms => {
+        const s = Math.floor(ms / 1000);
+        return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+      };
+      setFiveM(fmt(rem5));
+      setFifteenM(fmt(rem15));
+      setPct5(Math.round((rem5 / 300_000) * 100));
+      setPct15(Math.round((rem15 / 900_000) * 100));
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'LINK', 'BNB'];
+  const dColor  = d => d === 'UP' ? '#10b981' : d === 'DOWN' ? '#ef4444' : '#52525b';
+  const dGlyph  = d => d === 'UP' ? '↑' : d === 'DOWN' ? '↓' : '→';
+
+  const timerColor = p => p < 15 ? '#ef4444' : p < 30 ? '#f97316' : '#c59b27';
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+      padding: '5px 12px',
+      marginBottom: 8,
+      background: 'rgba(18,18,20,0.92)',
+      borderRadius: 8,
+      border: '1px solid rgba(255,255,255,0.06)',
+    }}>
+      {/* 5m timer */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+        <span style={{ fontSize: 8, color: '#52525b', letterSpacing: '0.08em', textTransform: 'uppercase' }}>5m</span>
+        <div style={{ width: 40, height: 3, background: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${pct5}%`, background: timerColor(pct5), borderRadius: 2, transition: 'width 1s linear, background 0.3s' }} />
+        </div>
+        <span style={{ fontFamily: 'monospace', fontSize: 11, fontWeight: 700, color: timerColor(pct5), minWidth: 34 }}>{fiveM}</span>
+      </div>
+
+      {/* 15m timer */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+        <span style={{ fontSize: 8, color: '#52525b', letterSpacing: '0.08em', textTransform: 'uppercase' }}>15m</span>
+        <div style={{ width: 40, height: 3, background: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${pct15}%`, background: timerColor(pct15), borderRadius: 2, transition: 'width 1s linear, background 0.3s' }} />
+        </div>
+        <span style={{ fontFamily: 'monospace', fontSize: 11, fontWeight: 700, color: timerColor(pct15), minWidth: 34 }}>{fifteenM}</span>
+      </div>
+
+      <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.06)', flexShrink: 0 }} />
+
+      {/* Per-asset macro dots */}
+      {ASSETS.map(a => {
+        const d = assetMacro[a]?.direction || 'NEUTRAL';
+        const uc = assetMacro[a]?.up_count ?? 4;
+        return (
+          <div key={a} title={`${a}: ${uc}/8 up candles`}
+            style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, cursor: 'default' }}>
+            <span style={{ fontSize: 7, color: '#3f3f46', letterSpacing: '0.04em' }}>{a}</span>
+            <span style={{ fontSize: 12, fontWeight: 800, color: dColor(d), lineHeight: 1 }}>{dGlyph(d)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── CollapsiblePanel utility ───────────────────────────────────────────────────
+
+function CollapsiblePanel({ title, children, defaultOpen = false, badge = null, accentColor = null }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const accent = accentColor || 'rgba(255,255,255,0.35)';
+  return (
+    <div style={{
+      marginBottom: 8,
+      border: `1px solid ${open ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.04)'}`,
+      borderRadius: 8,
+      overflow: 'hidden',
+      transition: 'border-color 0.2s',
+    }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'flex', width: '100%', alignItems: 'center',
+          padding: '6px 12px',
+          background: open ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.02)',
+          cursor: 'pointer', border: 'none',
+          transition: 'background 0.2s',
+        }}
+      >
+        <span style={{
+          color: open ? accent : 'var(--color-text-muted)',
+          fontSize: 9, fontWeight: 700, letterSpacing: '0.07em',
+          textTransform: 'uppercase', flex: 1, textAlign: 'left',
+          transition: 'color 0.2s',
+        }}>{title}</span>
+        {badge !== null && (
+          <span style={{
+            fontSize: 9, background: 'rgba(255,255,255,0.07)', borderRadius: 4,
+            padding: '1px 6px', color: 'var(--color-text-muted)', marginRight: 8,
+          }}>{badge}</span>
+        )}
+        <span style={{
+          color: 'var(--color-text-muted)', fontSize: 9,
+          display: 'inline-block',
+          transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+          transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+        }}>▾</span>
+      </button>
+      <div style={{
+        maxHeight: open ? '600px' : '0px',
+        overflow: 'hidden',
+        transition: 'max-height 0.35s cubic-bezier(0.4, 0, 0.2, 1)',
+      }}>
+        <div style={{ padding: '8px 12px 12px' }}>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Mini equity sparkline ──────────────────────────────────────────────────────
+
+function MiniSparkline({ values, color, label, width = 80, height = 24 }) {
+  if (!values || values.length < 2) return (
+    <div style={{ width, textAlign: 'center' }}>
+      <div style={{ fontSize: 8, color: '#3f3f46', marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 10, color: '#3f3f46' }}>no data</div>
+    </div>
+  );
+  const min = Math.min(...values, 0);
+  const max = Math.max(...values, 0);
+  const range = max - min || 1;
+  const toY = v => height - ((v - min) / range) * (height - 4) - 2;
+  const pts  = values.map((v, i) => `${(i / (values.length - 1)) * width},${toY(v)}`).join(' ');
+  const zeroY = toY(0);
+  const last = values[values.length - 1];
+  const lineColor = last >= 0 ? color : '#ef4444';
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+      <span style={{ fontSize: 8, color: '#52525b', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{label}</span>
+      <svg width={width} height={height}>
+        <line x1={0} y1={zeroY} x2={width} y2={zeroY} stroke="rgba(255,255,255,0.08)" strokeWidth={0.5} strokeDasharray="3,2" />
+        <polyline points={pts} fill="none" stroke={lineColor} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx={(values.length-1)/(values.length-1)*width} cy={toY(last)} r={2.5} fill={lineColor} />
+      </svg>
+      <span style={{ fontSize: 9, fontFamily: 'monospace', fontWeight: 700, color: lineColor }}>
+        {last >= 0 ? '+' : ''}${last.toFixed(2)}
+      </span>
+    </div>
+  );
+}
+
+// ── Session Analytics (drawdown + per-type equity) ────────────────────────────
+
+function SessionAnalytics({ closed }) {
+  if (closed.length === 0) return null;
+
+  // Build running P&L from chronological order
+  const chrono = [...closed].reverse();
+  let runBal = 0, peak = 0, maxDD = 0;
+  const latSeries = [], fvSeries = [], sigSeries = [];
+  let latBal = 0, fvBal = 0, sigBal = 0;
+
+  chrono.forEach(t => {
+    const pnl = parseFloat(t.realized_pnl || 0);
+    runBal += pnl;
+    if (runBal > peak) peak = runBal;
+    const dd = peak - runBal;
+    if (dd > maxDD) maxDD = dd;
+    const et = t.entry_type || 'SIGNAL';
+    if (et === 'LAT-ARB')  { latBal += pnl; latSeries.push(latBal); }
+    if (et === 'FAIR-VAL') { fvBal  += pnl; fvSeries.push(fvBal); }
+    if (et === 'SIGNAL')   { sigBal += pnl; sigSeries.push(sigBal); }
+  });
+
+  const currentDD = Math.max(0, peak - runBal);
+  const ddColor   = currentDD > 5 ? '#ef4444' : currentDD > 2 ? '#f97316' : '#10b981';
+  const maxDDColor= maxDD > 8 ? '#ef4444' : maxDD > 4 ? '#f97316' : '#10b981';
+
+  return (
+    <CollapsiblePanel title="Session Analytics" defaultOpen={true} accentColor="#c59b27">
+      <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        {/* Drawdown stats */}
+        <div style={{ display: 'flex', gap: 16 }}>
+          {[
+            { label: 'Peak P&L', val: `+$${peak.toFixed(2)}`,        color: '#10b981' },
+            { label: 'Max DD',   val: `-$${maxDD.toFixed(2)}`,        color: maxDDColor },
+            { label: 'Cur DD',   val: `-$${currentDD.toFixed(2)}`,    color: ddColor },
+          ].map(({ label, val, color }) => (
+            <div key={label} style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 8, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 3 }}>{label}</div>
+              <div style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 800, color }}>{val}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Per-type sparklines */}
+        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end' }}>
+          {latSeries.length > 0 && <MiniSparkline values={latSeries} color="#2b7fff" label="LAT" />}
+          {fvSeries.length  > 0 && <MiniSparkline values={fvSeries}  color="#00d4a3" label="FV"  />}
+          {sigSeries.length > 0 && <MiniSparkline values={sigSeries} color="#a1a1aa" label="SIG" />}
+        </div>
+      </div>
+    </CollapsiblePanel>
+  );
+}
+
+// ── Asset Heatmap ─────────────────────────────────────────────────────────────
+
+function AssetHeatmap({ closed }) {
+  if (closed.length === 0) return null;
+
+  const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'LINK', 'BNB'];
+
+  const stats = ASSETS.map(asset => {
+    const trades = closed.filter(t => {
+      const tag = (t.event_title || '').match(/\[(BTC|ETH|SOL|XRP|DOGE|LINK|BNB)\]/);
+      return tag && tag[1] === asset;
+    });
+    if (trades.length === 0) return null;
+    const wins = trades.filter(t => parseFloat(t.realized_pnl || 0) > 0).length;
+    const wr   = trades.length > 0 ? wins / trades.length * 100 : 0;
+    const net  = trades.reduce((s, t) => s + parseFloat(t.realized_pnl || 0), 0);
+    const avgH = trades.reduce((s, t) => s + parseFloat(t.hold_hours || 0) * 60, 0) / trades.length;
+    return { asset, count: trades.length, wr, net, avgH };
+  }).filter(Boolean);
+
+  if (stats.length === 0) return null;
+
+  const wrColor  = wr  => wr  >= 65 ? '#10b981' : wr  >= 50 ? '#f97316' : '#ef4444';
+  const netColor = net => net >= 0  ? '#10b981' : '#ef4444';
+
+  return (
+    <CollapsiblePanel title="Asset Heatmap" defaultOpen={false} badge={`${stats.length} assets`} accentColor="#00d4a3">
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 10 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+              {['Asset', 'Trades', 'WR%', 'Net P&L', 'Avg Hold'].map(h => (
+                <th key={h} style={{ padding: '3px 8px', textAlign: 'left', color: '#52525b', fontWeight: 600, fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {stats.map(({ asset, count, wr, net, avgH }) => (
+              <tr key={asset} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                <td style={{ padding: '4px 8px', fontWeight: 700, fontSize: 11, color: 'var(--color-text-primary)' }}>{asset}</td>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#a1a1aa' }}>{count}</td>
+                <td style={{ padding: '4px 8px' }}>
+                  <span style={{
+                    background: `${wrColor(wr)}18`,
+                    color: wrColor(wr),
+                    borderRadius: 4, padding: '1px 6px',
+                    fontWeight: 700, fontFamily: 'monospace', fontSize: 10,
+                  }}>{wr.toFixed(0)}%</span>
+                </td>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 700, color: netColor(net) }}>
+                  {net >= 0 ? '+' : ''}${net.toFixed(2)}
+                </td>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#71717a' }}>
+                  {avgH < 60 ? `${avgH.toFixed(0)}m` : `${(avgH/60).toFixed(1)}h`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </CollapsiblePanel>
+  );
+}
+
+// ── Gate Event Log ─────────────────────────────────────────────────────────────
+
+const GATE_META = {
+  'MACRO-GATE':   { color: '#f97316', label: 'MACRO' },
+  'FV-MACRO':     { color: '#00d4a3', label: 'FV-MACRO' },
+  'DIR-COOLDOWN': { color: '#2b7fff', label: 'COOLDOWN' },
+  'TREND-CONFIRM':{ color: '#a855f7', label: 'TREND-CF' },
+  'TREND-GATE':   { color: '#ef4444', label: 'TREND' },
+  'FV-EDGE-GATE': { color: '#c59b27', label: 'FV-EDGE' },
+  'CORROBORATE':  { color: '#6b7280', label: 'CORR' },
+  'VOL-SURGE':    { color: '#ec4899', label: 'VOL-SURGE' },
+};
+
+function GateEventLog({ events = [] }) {
+  if (events.length === 0) return null;
+
+  return (
+    <CollapsiblePanel title="Gate Events" defaultOpen={false} badge={events.length} accentColor="#f97316">
+      <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+        {events.map((e, i) => {
+          const meta  = GATE_META[e.gate] || { color: '#6b7280', label: e.gate };
+          const ts    = new Date(e.ts * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          const dirC  = e.direction === 'UP' ? '#10b981' : '#ef4444';
+          return (
+            <div key={i} style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '3px 0',
+              borderBottom: '1px solid rgba(255,255,255,0.03)',
+              fontSize: 9, lineHeight: 1.4,
+            }}>
+              <span style={{ fontFamily: 'monospace', color: '#3f3f46', minWidth: 54, flexShrink: 0 }}>{ts}</span>
+              <span style={{
+                background: `${meta.color}20`, color: meta.color,
+                borderRadius: 3, padding: '1px 5px',
+                fontWeight: 700, fontSize: 8, letterSpacing: '0.05em',
+                flexShrink: 0, minWidth: 58, textAlign: 'center',
+              }}>{meta.label}</span>
+              <span style={{ fontWeight: 700, color: 'var(--color-text-secondary)', minWidth: 50, flexShrink: 0 }}>{e.asset}/{e.tf}</span>
+              <span style={{ fontWeight: 700, color: dirC, minWidth: 28, flexShrink: 0 }}>{e.direction}</span>
+              <span style={{ color: '#52525b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.reason}</span>
+            </div>
+          );
+        })}
+      </div>
+    </CollapsiblePanel>
   );
 }
 
@@ -470,9 +805,12 @@ function ClosedSummary({ closed }) {
     return acc;
   }, []);
 
-  // P&L velocity ($/hr)
-  const oldestTs = closed.length > 0
+  // P&L velocity ($/hr) — parse ISO string or unix int from entry_time
+  const _rawOldest = closed.length > 0
     ? (closed[closed.length - 1].entry_time || closed[closed.length - 1].timestamp || 0)
+    : 0;
+  const oldestTs = _rawOldest
+    ? (typeof _rawOldest === 'string' ? new Date(_rawOldest).getTime() / 1000 : Number(_rawOldest))
     : 0;
   const hoursElapsed = oldestTs > 0 ? (Date.now() / 1000 - oldestTs) / 3600 : 0;
   const pnlVelocity  = hoursElapsed > 0.05 ? totalPnl / hoursElapsed : null;
@@ -679,7 +1017,7 @@ function SrcPill({ src, active, count, pnl, onClick }) {
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
-export default function TradeFeed({ positions = {} }) {
+export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {} }) {
   const [tab, setTab] = useState('open');
   const [srcFilter, setSrcFilter] = useState('ALL');
 
@@ -690,6 +1028,7 @@ export default function TradeFeed({ positions = {} }) {
 
   // Total unrealized P&L across all open positions
   const totalUnrPnl = active.reduce((s, p) => s + parseFloat(p.unrealized_pnl || 0), 0);
+  const totalUnrColor = totalUnrPnl > 0 ? 'var(--color-profit)' : totalUnrPnl < 0 ? 'var(--color-loss)' : 'var(--color-text-muted)';
 
   // Per-source counts + P&L for filter pills
   const srcStats = SRC_FILTERS.slice(1).map(src => {
@@ -706,10 +1045,13 @@ export default function TradeFeed({ positions = {} }) {
         className="glass-panel"
         style={{ padding: 'var(--spacing-20)', display: 'flex', flexDirection: 'column' }}
       >
-        {/* Header: title + market session pill + tabs */}
+        {/* Candle countdown + per-asset macro bar */}
+        <CandleCountdownBar assetMacro={assetMacro} />
+
+        {/* Header: title + pills + tabs */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 600, fontSize: 15 }}>
+            <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, letterSpacing: '-0.01em' }}>
               Trade Ledger
             </div>
             <MarketSessionPill />
@@ -722,70 +1064,76 @@ export default function TradeFeed({ positions = {} }) {
           </div>
         </div>
 
-        {/* Open tab: unrealized P&L total pill */}
-        {tab === 'open' && active.length > 0 && (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            marginBottom: 8,
-            padding: '5px 10px',
-            background: 'rgba(255,255,255,0.03)',
-            borderRadius: 6,
-            border: '1px solid rgba(255,255,255,0.07)',
-          }}>
-            <span style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
-              Total Unrealized P&amp;L
-            </span>
-            <span style={{
-              fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: 14,
-              color: totalUnrPnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)',
-            }}>
-              {totalUnrPnl >= 0 ? '+' : ''}${totalUnrPnl.toFixed(2)}
-            </span>
-            <span style={{ fontSize: 9, color: 'var(--color-text-muted)', marginLeft: 'auto' }}>
-              {active.length} position{active.length !== 1 ? 's' : ''} open
-            </span>
-          </div>
-        )}
+        {/* Gate Event Log — always visible regardless of tab */}
+        <GateEventLog events={gateLog} />
 
-        {/* History tab: source filter pills + summary */}
-        {tab === 'history' && closed.length > 0 && (
+        {/* Open tab: unrealized P&L live strip + positions */}
+        {tab === 'open' && (
           <>
-            <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
-              <SrcPill
-                src="ALL" active={srcFilter === 'ALL'} count={closed.length} pnl={null}
-                onClick={() => setSrcFilter('ALL')}
-              />
-              {srcStats.map(({ src, count, pnl }) => (
-                <SrcPill
-                  key={src} src={src} active={srcFilter === src}
-                  count={count} pnl={pnl}
-                  onClick={() => setSrcFilter(src)}
-                />
-              ))}
+            {active.length > 0 && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                marginBottom: 8, padding: '5px 10px',
+                background: `${totalUnrPnl >= 0 ? 'rgba(16,185,129,0.05)' : 'rgba(239,68,68,0.05)'}`,
+                borderRadius: 6,
+                border: `1px solid ${totalUnrPnl >= 0 ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'}`,
+                transition: 'all 0.3s',
+              }}>
+                <span style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+                  Unrealized P&amp;L
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: 14, color: totalUnrColor }}>
+                  {totalUnrPnl >= 0 ? '+' : ''}${totalUnrPnl.toFixed(2)}
+                </span>
+                <span style={{ fontSize: 9, color: 'var(--color-text-muted)', marginLeft: 'auto' }}>
+                  {active.length} position{active.length !== 1 ? 's' : ''} open
+                </span>
+              </div>
+            )}
+            {active.length > 0 && <ColHeaders cols={OPEN_COLS} grid={OPEN_GRID} />}
+            <div style={{ overflowY: 'auto', maxHeight: 300 }}>
+              {active.length === 0
+                ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>No open positions</div>
+                : active.map((p, i) => <OpenRow key={p.order_id || i} p={p} />)
+              }
             </div>
-            <ClosedSummary closed={visibleClosed} />
           </>
         )}
 
-        {/* Column headers */}
-        {tab === 'history' && <ColHeaders cols={CLOSED_COLS} grid={CLOSED_GRID} />}
-        {tab === 'open' && active.length > 0 && <ColHeaders cols={OPEN_COLS} grid={OPEN_GRID} />}
-
-        {/* Rows */}
-        <div style={{ overflowY: 'auto', maxHeight: 400, flex: 1 }}>
-          {tab === 'history' && (
-            visibleClosed.length === 0
-              ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>
-                  {srcFilter === 'ALL' ? 'No closed trades yet' : `No ${srcFilter} trades yet`}
+        {/* History tab */}
+        {tab === 'history' && (
+          <>
+            {/* Source filter + summary stats */}
+            {closed.length > 0 && (
+              <>
+                <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
+                  <SrcPill src="ALL" active={srcFilter === 'ALL'} count={closed.length} pnl={null} onClick={() => setSrcFilter('ALL')} />
+                  {srcStats.map(({ src, count, pnl }) => (
+                    <SrcPill key={src} src={src} active={srcFilter === src} count={count} pnl={pnl} onClick={() => setSrcFilter(src)} />
+                  ))}
                 </div>
-              : visibleClosed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} />)
-          )}
-          {tab === 'open' && (
-            active.length === 0
-              ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>No open positions</div>
-              : active.map((p, i) => <OpenRow key={p.order_id || i} p={p} />)
-          )}
-        </div>
+                <ClosedSummary closed={visibleClosed} />
+
+                {/* Session Analytics (drawdown + per-type sparklines) */}
+                <SessionAnalytics closed={closed} />
+
+                {/* Asset Heatmap */}
+                <AssetHeatmap closed={closed} />
+              </>
+            )}
+
+            {/* Trade rows */}
+            <ColHeaders cols={CLOSED_COLS} grid={CLOSED_GRID} />
+            <div style={{ overflowY: 'auto', maxHeight: 380, flex: 1 }}>
+              {visibleClosed.length === 0
+                ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>
+                    {srcFilter === 'ALL' ? 'No closed trades yet' : `No ${srcFilter} trades yet`}
+                  </div>
+                : visibleClosed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} />)
+              }
+            </div>
+          </>
+        )}
       </div>
     </SpotlightMask>
   );

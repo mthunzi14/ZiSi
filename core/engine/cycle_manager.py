@@ -298,9 +298,9 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             # Apply Altcoin Sizing Gates
             if asset in ["SOL", "XRP"]:
                 usd_size *= 0.60
-            elif asset in ["BNB", "HYPE"]:
+            elif asset in ["BNB", "LINK"]:
                 usd_size *= 0.50
-            elif asset in ["ADA", "LINK", "DOGE", "AVAX", "SUI"]:
+            elif asset in ["ADA", "DOGE", "AVAX", "SUI"]:
                 usd_size = min(usd_size * 0.35, 35.0)
                 
             # Safety cap

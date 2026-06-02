@@ -38,6 +38,30 @@ POLY_GAMMA_API = "https://gamma-api.polymarket.com"
 POLY_CLOB_API  = "https://clob.polymarket.com"
 BINANCE_API    = "https://api.binance.com/api/v3"
 
+_GATE_LOG_PATH = None  # resolved lazily on first write
+
+
+def _write_gate_event(asset: str, timeframe: str, gate: str, direction: str, reason: str) -> None:
+    """Append one gate-block event to gate_log.jsonl for dashboard visibility."""
+    global _GATE_LOG_PATH
+    try:
+        import json
+        from pathlib import Path
+        if _GATE_LOG_PATH is None:
+            _GATE_LOG_PATH = Path(__file__).parent.parent.parent / "gate_log.jsonl"
+        entry = {
+            "ts": time.time(),
+            "asset": asset,
+            "tf": timeframe,
+            "gate": gate,
+            "direction": direction,
+            "reason": reason,
+        }
+        with open(_GATE_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
 # Global single-flight Technical Cache shared across all engine instances
 _cache = TechnicalDataCache()
 
@@ -48,7 +72,7 @@ KELLY = {
     "LOW":  (0.015, 0.050),   # score 0.62-0.75: 1.5% Kelly, 5% cap
 }
 MIN_USD = 1.00
-VOLUME_GATE_FLOORS = {"BTC": 2.0, "ETH": 10.0, "SOL": 75.0, "XRP": 5000.0, "DOGE": 10000.0, "HYPE": 50.0, "BNB": 10.0}
+VOLUME_GATE_FLOORS = {"BTC": 2.0, "ETH": 10.0, "SOL": 75.0, "XRP": 5000.0, "DOGE": 10000.0, "LINK": 200.0, "BNB": 10.0}
 UPDOWN_MIN_LIQUIDITY = 0.0
 
 SCORE_TO_WR = [
@@ -523,6 +547,31 @@ class UpDownEngine:
             else:
                 _min_edge = 0.10
 
+            # Macro-aware FV edge penalty: raises the edge bar when the 8-candle macro
+            # trend conflicts with FV direction, preventing macro-opposing FV entries.
+            # 5+/8 conflict (soft) → +0.08 penalty; 6+/8 conflict (hard) → +0.15 penalty.
+            if len(klines) >= 10:
+                _fv_m8 = klines[-9:-1]
+                _fv_m_up = sum(1 for k in _fv_m8 if float(k[4]) > float(k[1]))
+                _fv_m_dn = 8 - _fv_m_up
+                _fv_is_up = _fv["direction"] == "UP"
+                if (_fv_m_up >= 6 and not _fv_is_up) or (_fv_m_dn >= 6 and _fv_is_up):
+                    _min_edge = max(_min_edge, 0.25)
+                    log.info(
+                        "[FV-MACRO] %s/%s: hard macro conflict %d/8 vs FV %s — edge bar %.2f",
+                        self.asset, self.timeframe,
+                        _fv_m_up if not _fv_is_up else _fv_m_dn,
+                        _fv["direction"], _min_edge,
+                    )
+                elif (_fv_m_up >= 5 and not _fv_is_up) or (_fv_m_dn >= 5 and _fv_is_up):
+                    _min_edge = max(_min_edge, 0.18)
+                    log.info(
+                        "[FV-MACRO] %s/%s: soft macro conflict %d/8 vs FV %s — edge bar %.2f",
+                        self.asset, self.timeframe,
+                        _fv_m_up if not _fv_is_up else _fv_m_dn,
+                        _fv["direction"], _min_edge,
+                    )
+
             if _fv["edge"] < _min_edge:
                 log.info(
                     "[FV-EDGE-GATE] %s/%s: edge %.3f < required %.3f (price=%.2f) — skip",
@@ -536,7 +585,7 @@ class UpDownEngine:
             _PEERS = {
                 "BTC": ["ETH", "SOL"], "ETH": ["BTC", "SOL"],
                 "SOL": ["BTC", "ETH"], "XRP": ["BTC", "ETH"],
-                "DOGE": ["BTC"], "HYPE": ["BTC"], "BNB": ["BTC"],
+                "DOGE": ["BTC"], "LINK": ["BTC", "ETH"], "BNB": ["BTC"],
             }
             _corroborated = False
             for _peer in _PEERS.get(self.asset, []):
@@ -575,6 +624,16 @@ class UpDownEngine:
         direction = apply_regime(raw_dir, regime)
         if self.invert_signal:
             direction = "DOWN" if direction == "UP" else "UP"
+
+        # Same-asset direction cooldown: after a trade on this asset closes in direction D,
+        # block new trades in direction D for 15 minutes to prevent chasing.
+        if self._is_dir_cooldown_active(direction):
+            log.info(
+                "[DIR-COOLDOWN] %s/%s: %s blocked — same asset+direction within 15 min",
+                self.asset, self.timeframe, direction,
+            )
+            _write_gate_event(self.asset, self.timeframe, "DIR-COOLDOWN", direction, "same asset+direction within 15 min")
+            return None
 
         # ── Real-time trend gate + per-asset choppy detection ────────────────
         # Slope of closes[-5:] measures current 5-candle drift.
@@ -639,12 +698,14 @@ class UpDownEngine:
                     "[MACRO-GATE] %s/%s: blocked DN — %d/8 candles bullish",
                     self.asset, self.timeframe, _macro_up,
                 )
+                _write_gate_event(self.asset, self.timeframe, "MACRO-GATE", direction, f"{_macro_up}/8 candles bullish")
                 return None
             if _macro_dn >= 6 and _signal_is_up:
                 log.info(
                     "[MACRO-GATE] %s/%s: blocked UP — %d/8 candles bearish",
                     self.asset, self.timeframe, _macro_dn,
                 )
+                _write_gate_event(self.asset, self.timeframe, "MACRO-GATE", direction, f"{_macro_dn}/8 candles bearish")
                 return None
 
         # SIG trend confirmation: both last 2 closed candles must resolve in the
@@ -655,12 +716,12 @@ class UpDownEngine:
             c_prev_bull = float(klines[-3][4]) > float(klines[-3][1])
             signal_bull = direction == "UP"
             if not (c_last_bull == c_prev_bull == signal_bull):
+                _c_desc = f"{('UP' if c_prev_bull else 'DN')}/{('UP' if c_last_bull else 'DN')}"
                 log.info(
-                    "[TREND-CONFIRM] %s/%s: SIG %s blocked — last 2 closed candles: %s/%s",
-                    self.asset, self.timeframe, direction,
-                    "UP" if c_prev_bull else "DN",
-                    "UP" if c_last_bull else "DN",
+                    "[TREND-CONFIRM] %s/%s: SIG %s blocked — last 2 closed candles: %s",
+                    self.asset, self.timeframe, direction, _c_desc,
                 )
+                _write_gate_event(self.asset, self.timeframe, "TREND-CONFIRM", direction, f"candles: {_c_desc}")
                 return None
 
         # Composite score
@@ -1335,6 +1396,42 @@ class UpDownEngine:
             return count
         except Exception:
             return 0
+
+    def _is_dir_cooldown_active(self, direction: str, cooldown_minutes: int = 15) -> bool:
+        """Return True if a trade on this asset+direction closed within the last N minutes."""
+        try:
+            import json, time as _time
+            from datetime import datetime, timezone
+            from pathlib import Path
+            path = Path(__file__).parent.parent.parent / "infrastructure" / "exchange" / "positions_state.json"
+            if not path.exists():
+                return False
+            data = json.loads(path.read_text(encoding="utf-8"))
+            cutoff = _time.time() - cooldown_minutes * 60
+            signal_up = direction == "UP"
+            asset_tag = f"[{self.asset}]"
+            for trade in data.get("closed", []):
+                if asset_tag not in (trade.get("event_title") or ""):
+                    continue
+                trade_dir = trade.get("direction", "")
+                trade_is_up = trade_dir in ("YES", "UP")
+                if trade_is_up != signal_up:
+                    continue
+                raw_ts = trade.get("exit_time") or trade.get("closed_at")
+                if not raw_ts:
+                    continue
+                try:
+                    if isinstance(raw_ts, str):
+                        exit_ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp()
+                    else:
+                        exit_ts = float(raw_ts)
+                    if exit_ts >= cutoff:
+                        return True
+                except Exception:
+                    continue
+            return False
+        except Exception:
+            return False
 
     def _recent_closed_loss_streak(self, n: int = 3) -> int:
         """Return consecutive recent closed losses from positions_state.json."""

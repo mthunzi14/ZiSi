@@ -26,8 +26,10 @@ export default function App() {
     avg_latency_ms: 0,
     avg_slippage_cents: 0
   });
-  const [uptime, setUptime] = useState('00:00:00');
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
+  const [uptime,     setUptime]     = useState('00:00:00');
+  const [theme,      setTheme]      = useState(() => localStorage.getItem('theme') || 'dark');
+  const [gateLog,    setGateLog]    = useState([]);
+  const [assetMacro, setAssetMacro] = useState({});
   const [isHovered, setIsHovered] = useState(false);
   const esRef = useRef(null);
 
@@ -86,6 +88,30 @@ export default function App() {
     };
     poll();
     const id = setInterval(poll, 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Gate event log — poll every 5 seconds for new blocked signals
+  useEffect(() => {
+    const load = () =>
+      fetch('/api/gate-log?limit=60')
+        .then(r => r.json())
+        .then(d => setGateLog(d.events || []))
+        .catch(() => {});
+    load();
+    const id = setInterval(load, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Per-asset macro direction — poll every 30 seconds
+  useEffect(() => {
+    const load = () =>
+      fetch('/api/asset-macro')
+        .then(r => r.json())
+        .then(d => setAssetMacro(d.assets || {}))
+        .catch(() => {});
+    load();
+    const id = setInterval(load, 30000);
     return () => clearInterval(id);
   }, []);
 
@@ -478,7 +504,7 @@ export default function App() {
             </div>
 
             {/* Row 3: Trade Ledger */}
-            <TradeFeed positions={positions} />
+            <TradeFeed positions={positions} gateLog={gateLog} assetMacro={assetMacro} />
           </div>
         )}
 
