@@ -17,6 +17,8 @@ import signalQueueRouter from './routes/signalQueue.js';
 import eventsRouter from './routes/events.js';
 import performanceRouter from './routes/performance.js';
 import backtestRouter from './routes/backtest.js';
+import regimeRouter from './routes/regime.js';
+import macroTrendRouter from './routes/macroTrend.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,6 +37,8 @@ app.use(express.json());
 app.use('/api/trades', tradesRouter);
 app.use('/api/metrics', metricsRouter);
 app.use('/api/health', healthRouter);
+app.use('/api/regime', regimeRouter);
+app.use('/api/macro-trend', macroTrendRouter);
 // Intercept reset endpoint to cleanly stop bot process before clearing logs
 app.post('/api/control/reset', (req, res) => {
   console.log('[CONTROL] Intercepted reset request. Stopping bot engine before resetting state...');

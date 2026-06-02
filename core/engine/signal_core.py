@@ -46,7 +46,24 @@ REGIME_RSI_PARAMS = {
         "ofi_block_5m": 0.28,
         "ofi_block_15m": 0.20,
     },
-    "MEAN_REVERTING": DEFAULT_SIGNAL_PARAMS,
+    "MEAN_REVERTING": {
+        "rsi_up":      55.0,   # lowered from 60 — oscillation peaks hit earlier in ranging markets
+        "mom_up":      0.015,
+        "rsi_up_soft": 50.0,   # lowered from 54
+        "mom_up_soft": 0.008,
+        "ofi_confirm_up": 0.40,
+        "rsi_dn":      45.0,   # raised from 40 — symmetric
+        "mom_dn":      -0.015,
+        "rsi_dn_soft": 50.0,   # raised from 46
+        "mom_dn_soft": -0.008,
+        "ofi_confirm_dn": -0.40,
+        "reversal_lo": 20.0,
+        "reversal_hi": 80.0,
+        "reversal_score": 0.70,
+        "ofi_block_neutral": 0.30,
+        "ofi_block_5m": 0.25,
+        "ofi_block_15m": 0.18,
+    },
     "VOLATILE_CHAOS": {
         "rsi_up": 65.0, # tightened RSI triggers to reduce noise-signal entries in choppy markets
         "mom_up": 0.02,

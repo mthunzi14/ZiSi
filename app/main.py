@@ -546,6 +546,16 @@ def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, s
                 "[TRADE OPENED] %s/%s %s | $%.2f @ %.0f¢ | score=%.2f | %s",
                 asset, timeframe, direction, actual_cost, entry_price * 100, score, trade_type,
             )
+            # Stamp the regime at entry time for Session×Regime analytics
+            try:
+                import json as _j
+                from pathlib import Path as _P
+                _rs = _P("regime_status.json")
+                _regime_now = _j.loads(_rs.read_text(encoding="utf-8")).get("regime", "UNKNOWN") if _rs.exists() else "UNKNOWN"
+                from infrastructure.exchange.trader import annotate_position
+                annotate_position(order["order_id"], regime=_regime_now)
+            except Exception:
+                pass
             _try_telegram(
                 f"TRADE {asset}/{timeframe} {direction} | ${actual_cost:.2f} @ {entry_price*100:.0f}c | {trade_type}"
             )

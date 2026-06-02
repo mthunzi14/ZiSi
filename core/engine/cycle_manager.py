@@ -342,6 +342,19 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                     send_alert(f"LATENCY ARB {asset}/{timeframe} {direction} | ${usd_size:.2f} @ {entry_price*100:.0f}c")
                 except Exception:
                     pass
+
+                # Spawn early-exit monitor for 15m positions only — enough runway to act.
+                if timeframe == "15m":
+                    asyncio.create_task(
+                        _monitor_lat_exit(
+                            order_id=order["order_id"],
+                            asset=asset,
+                            timeframe=timeframe,
+                            direction=direction,
+                            token_id=market_id,
+                            boundary_ts=next_close,
+                        )
+                    )
         except Exception as e:
             log.error("[LATENCY-ARB] Error scanning %s/%s: %s", asset, timeframe, e, exc_info=True)
 
@@ -386,6 +399,53 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             log.error("[LATENCY-ARB] Scanner loop error: %s", e, exc_info=True)
             
         await asyncio.sleep(1.0)
+
+
+async def _monitor_lat_exit(
+    order_id: str,
+    asset: str,
+    timeframe: str,
+    direction: str,
+    token_id: str,
+    boundary_ts: float,
+) -> None:
+    """
+    Background monitor for an open 15m LAT-ARB position.
+    Checks the live quote every 60s and bails early if the market has moved
+    ≥75% against our direction (token quote drops below 0.25).
+    """
+    import time as _t
+    BAIL_THRESHOLD = 0.25  # quote < 0.25 = 75%+ wrong
+
+    while True:
+        await asyncio.sleep(60)
+        try:
+            now = _t.time()
+            if now >= boundary_ts:
+                break  # candle has expired — let normal resolution handle it
+
+            from infrastructure.websocket.extraterrestrial_ws_gateway import polymarket_l2_gateway
+            quote, _ = polymarket_l2_gateway.get_price(token_id)
+            if quote is None:
+                continue
+
+            if quote < BAIL_THRESHOLD:
+                log.info(
+                    "[LAT-EXIT] %s/%s %s: quote %.2f < %.2f — bailing early",
+                    asset, timeframe, direction, quote, BAIL_THRESHOLD,
+                )
+                from infrastructure.exchange.trader import execute_exit
+                execute_exit(order_id, quote, exit_reason="STOP_HIT")
+                try:
+                    from app.telegram_bot import send_alert
+                    send_alert(
+                        f"LAT-EXIT {asset}/{timeframe} {direction} | quote {quote:.2f} — early bail"
+                    )
+                except Exception:
+                    pass
+                break
+        except Exception as e:
+            log.warning("[LAT-EXIT] Monitor error for %s/%s: %s", asset, timeframe, e)
 
 
 async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -> None:

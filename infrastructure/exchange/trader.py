@@ -812,6 +812,13 @@ def get_all_open_trades() -> list[dict]:
     ]
 
 
+def annotate_position(order_id: str, **kwargs) -> None:
+    """Merge extra fields into an open position and re-persist. No-op if not found."""
+    if order_id in _open_positions:
+        _open_positions[order_id].update(kwargs)
+        persist_positions()
+
+
 def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
     """
     Paper-trading only: auto-close positions older than max_hold_minutes.

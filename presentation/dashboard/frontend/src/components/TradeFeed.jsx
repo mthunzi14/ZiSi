@@ -116,6 +116,78 @@ function MarketSessionPill() {
   );
 }
 
+// ── Regime pill ──────────────────────────────────────────────────────────────
+
+const REGIME_COLORS = {
+  TRENDING:       '#2b7fff',
+  MEAN_REVERTING: '#00d4a3',
+  COMPRESSION:    '#f59e0b',
+  VOLATILE_CHAOS: '#ef4444',
+  UNKNOWN:        '#6b7280',
+};
+const REGIME_LABELS = {
+  TRENDING:       'TRENDING',
+  MEAN_REVERTING: 'MEAN-REV',
+  COMPRESSION:    'COMPRESS',
+  VOLATILE_CHAOS: 'CHAOS',
+  UNKNOWN:        'UNKNOWN',
+};
+
+function RegimePill() {
+  const [regime, setRegime] = useState({ regime: 'UNKNOWN', confidence: 0 });
+  useEffect(() => {
+    const load = () =>
+      fetch('/api/regime').then(r => r.json()).then(setRegime).catch(() => {});
+    load();
+    const id = setInterval(load, 15_000);
+    return () => clearInterval(id);
+  }, []);
+  const color = REGIME_COLORS[regime.regime] || REGIME_COLORS.UNKNOWN;
+  const label = REGIME_LABELS[regime.regime] || regime.regime;
+  const conf  = regime.confidence > 0 ? Math.round(regime.confidence * 100) : null;
+  return (
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: 5,
+      background: `${color}18`,
+      border: `1px solid ${color}55`,
+      borderRadius: 8,
+      padding: '3px 10px',
+      fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
+      color,
+      flexShrink: 0,
+    }}>
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, display: 'inline-block', boxShadow: `0 0 5px ${color}` }} />
+      {label}
+      {conf !== null && <span style={{ fontWeight: 500, opacity: 0.75 }}>{conf}%</span>}
+    </div>
+  );
+}
+
+// ── Macro trend arrow ─────────────────────────────────────────────────────────
+
+const ARROW_GLYPH = { UP: '↑', DOWN: '↓', NEUTRAL: '→' };
+const ARROW_COLOR = { UP: '#00d4a3', DOWN: '#ef4444', NEUTRAL: '#6b7280' };
+
+function MacroTrendArrow() {
+  const [trend, setTrend] = useState({ direction: 'NEUTRAL', up_count: 4, total: 8 });
+  useEffect(() => {
+    const load = () =>
+      fetch('/api/macro-trend').then(r => r.json()).then(setTrend).catch(() => {});
+    load();
+    const id = setInterval(load, 30_000);
+    return () => clearInterval(id);
+  }, []);
+  const color = ARROW_COLOR[trend.direction] || '#6b7280';
+  return (
+    <span
+      title={`BTC macro: ${trend.up_count}/${trend.total} UP candles`}
+      style={{ fontSize: 16, fontWeight: 800, color, lineHeight: 1, cursor: 'default' }}
+    >
+      {ARROW_GLYPH[trend.direction] || '→'}
+    </span>
+  );
+}
+
 // Wilson score 95% CI for a binomial proportion -> [low%, high%].
 // Honest small-sample band on the win rate (matches dashboard/backend performance.js).
 function wilson95(wins, n) {
@@ -398,6 +470,56 @@ function ClosedSummary({ closed }) {
     return acc;
   }, []);
 
+  // P&L velocity ($/hr)
+  const oldestTs = closed.length > 0
+    ? (closed[closed.length - 1].entry_time || closed[closed.length - 1].timestamp || 0)
+    : 0;
+  const hoursElapsed = oldestTs > 0 ? (Date.now() / 1000 - oldestTs) / 3600 : 0;
+  const pnlVelocity  = hoursElapsed > 0.05 ? totalPnl / hoursElapsed : null;
+  const velStr = pnlVelocity !== null
+    ? `${pnlVelocity >= 0 ? '+' : ''}$${pnlVelocity.toFixed(2)}/hr`
+    : '—';
+
+  // Loss cluster alert: 3+ trades settled ≤10¢ in last 20 min
+  const now20min = Date.now() - 20 * 60 * 1000;
+  const recentFullLosses = closed.filter(t => {
+    const exitTs = (t.exit_time || t.closed_at || 0) * 1000;
+    const exitPrice = parseFloat(t.exit_price ?? 1.0);
+    return exitTs >= now20min && exitPrice <= 0.10;
+  }).length;
+
+  // Session × Regime table data
+  const SESSION_ORDER = ['Asian', 'EU', 'US', 'Off-Peak', 'Weekend'];
+  const REGIME_ORDER  = ['TRENDING', 'MEAN_REVERTING', 'COMPRESSION', 'VOLATILE_CHAOS'];
+  const REGIME_SHORT  = { TRENDING: 'Trend', MEAN_REVERTING: 'Mean-Rev', COMPRESSION: 'Compr', VOLATILE_CHAOS: 'Chaos' };
+
+  function getSessionLabel(entryTs) {
+    if (!entryTs) return null;
+    const d   = new Date(entryTs * 1000);
+    const day = d.getUTCDay();
+    if (day === 0 || day === 6) return 'Weekend';
+    const h = d.getUTCHours() + d.getUTCMinutes() / 60;
+    if (h >= 13.5 && h < 22) return 'US';
+    if (h >= 7   && h < 16)  return 'EU';
+    if (h >= 0   && h < 8)   return 'Asian';
+    return 'Off-Peak';
+  }
+
+  const srCells = {};
+  for (const t of closed) {
+    const sess   = getSessionLabel(t.entry_time || t.timestamp);
+    const regime = t.regime || 'UNKNOWN';
+    if (!sess || regime === 'UNKNOWN') continue;
+    const key = `${sess}|${regime}`;
+    if (!srCells[key]) srCells[key] = { wins: 0, total: 0, pnl: 0 };
+    srCells[key].total++;
+    srCells[key].pnl += parseFloat(t.realized_pnl ?? 0);
+    if (parseFloat(t.realized_pnl ?? 0) > 0) srCells[key].wins++;
+  }
+  const activeSessions = SESSION_ORDER.filter(s => REGIME_ORDER.some(r => srCells[`${s}|${r}`]));
+  const activeRegimes  = REGIME_ORDER.filter(r => SESSION_ORDER.some(s => srCells[`${s}|${r}`]));
+  const showSRTable = activeSessions.length > 0 && activeRegimes.length > 0;
+
   const statCols = [
     { label: 'Trades',   val: closed.length, color: 'var(--color-text-primary)' },
     { label: 'Win Rate', val: (
@@ -407,6 +529,7 @@ function ClosedSummary({ closed }) {
       ), color: parseFloat(wr) >= 62 ? 'var(--color-profit)' : parseFloat(wr) >= 45 ? 'var(--color-amber)' : 'var(--color-loss)' },
     { label: 'W / L / E', val: `${wins} / ${losses} / ${evens}`, color: 'var(--color-text-secondary)' },
     { label: 'Total P&L', val: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)' },
+    { label: 'P&L Rate',  val: velStr, color: pnlVelocity !== null ? (pnlVelocity >= 0 ? 'var(--color-profit)' : 'var(--color-loss)') : 'var(--color-text-muted)' },
     { label: 'Profit Factor', val: pf, color: parseFloat(pf) >= 1.5 ? 'var(--color-profit)' : parseFloat(pf) >= 1 ? 'var(--color-amber)' : 'var(--color-loss)' },
     { label: 'Avg Win',   val: avgWin > 0 ? `+$${avgWin.toFixed(2)}` : '—', color: 'var(--color-profit)' },
     { label: 'Avg Loss',  val: avgLoss > 0 ? `-$${avgLoss.toFixed(2)}` : '—', color: 'var(--color-loss)' },
@@ -424,6 +547,23 @@ function ClosedSummary({ closed }) {
       borderBottom: '1px solid rgba(255,255,255,0.06)',
       marginBottom: 8,
     }}>
+      {/* Loss cluster alert strip */}
+      {recentFullLosses >= 3 && (
+        <div style={{
+          background: 'rgba(127,29,29,0.55)',
+          border: '1px solid #ef4444aa',
+          borderRadius: 6,
+          padding: '5px 10px',
+          marginBottom: 8,
+          fontSize: 10,
+          fontWeight: 700,
+          color: '#fca5a5',
+          letterSpacing: '0.04em',
+        }}>
+          ⚠ {recentFullLosses} FULL LOSSES IN LAST 20 MIN — MACRO REVERSAL RISK — HIGH-CONFIDENCE ENTRIES ONLY
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 4 }}>
         {statCols.map(({ label, val, color }) => (
           <div key={label}>
@@ -433,6 +573,47 @@ function ClosedSummary({ closed }) {
         ))}
       </div>
       <PnLSparkline values={cumValues} />
+
+      {/* Session × Regime analytics table */}
+      {showSRTable && (
+        <div style={{ marginTop: 10, overflowX: 'auto' }}>
+          <div style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4 }}>
+            Session × Regime
+          </div>
+          <table style={{ borderCollapse: 'collapse', fontSize: 10, width: '100%' }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', color: 'var(--color-text-muted)', fontWeight: 500, paddingRight: 10, paddingBottom: 3 }}>Session</th>
+                {activeRegimes.map(r => (
+                  <th key={r} style={{ textAlign: 'center', color: REGIME_COLORS[r] || '#6b7280', fontWeight: 600, paddingBottom: 3, paddingRight: 8 }}>
+                    {REGIME_SHORT[r] || r}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {activeSessions.map(sess => (
+                <tr key={sess}>
+                  <td style={{ color: 'var(--color-text-secondary)', paddingRight: 10, paddingBottom: 2 }}>{sess}</td>
+                  {activeRegimes.map(r => {
+                    const cell = srCells[`${sess}|${r}`];
+                    if (!cell) return <td key={r} style={{ textAlign: 'center', color: 'var(--color-text-muted)', paddingRight: 8 }}>—</td>;
+                    const wr = Math.round((cell.wins / cell.total) * 100);
+                    const pnlStr = `${cell.pnl >= 0 ? '+' : ''}$${cell.pnl.toFixed(1)}`;
+                    const wrColor = wr >= 65 ? 'var(--color-profit)' : wr >= 50 ? 'var(--color-amber)' : 'var(--color-loss)';
+                    return (
+                      <td key={r} style={{ textAlign: 'center', paddingRight: 8, paddingBottom: 2 }}>
+                        <span style={{ color: cell.total < 3 ? 'var(--color-text-muted)' : wrColor, fontWeight: 700 }}>{wr}%</span>
+                        <span style={{ display: 'block', fontSize: 9, color: cell.pnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)', opacity: 0.8 }}>{pnlStr}</span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -527,11 +708,13 @@ export default function TradeFeed({ positions = {} }) {
       >
         {/* Header: title + market session pill + tabs */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 600, fontSize: 15 }}>
               Trade Ledger
             </div>
             <MarketSessionPill />
+            <RegimePill />
+            <MacroTrendArrow />
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             <Tab label="Open"    count={active.length} active={tab === 'open'}    onClick={() => setTab('open')} />

@@ -366,6 +366,18 @@ class UpDownEngine:
             log.info("[ENGINE] %s/%s: Volume climax detected (current vol %.1f > %.1fx avg %.1f). Blocking trade to avoid blow-off top/bottom.", self.asset, self.timeframe, cur_vol, vol_climax_threshold, avg_vol)
             return None
 
+        # Volume surge block: a sudden 4× spike vs rolling 5-candle avg signals a macro
+        # move starting — FV model is too slow to reprice mid-surge, pause 2 candles.
+        if len(volumes) >= 7:
+            _roll_avg_vol = sum(volumes[-7:-2]) / 5
+            if _roll_avg_vol > 0 and cur_vol > 4.0 * _roll_avg_vol:
+                log.info(
+                    "[VOL-SURGE] %s/%s: spike %.0f > 4x avg %.0f — 2-candle pause",
+                    self.asset, self.timeframe, cur_vol, _roll_avg_vol,
+                )
+                self._choppy_candles = max(self._choppy_candles, 2)
+                return None
+
         # Retrieve real-time Spot Order Flow Imbalance (OFI)
         ofi = await get_current_ofi(self.asset)
 
@@ -454,6 +466,14 @@ class UpDownEngine:
             if _candle_open_ts < (_now_ts - 7200):
                 _candle_open_ts = _now_ts
             _elapsed_min = max(0.0, (_now_ts - _candle_open_ts) / 60.0)
+            # Candle timing gate (5m only): FV edge decays in the final 60s —
+            # entering after 4min means <60s runway, skip.
+            if self.timeframe == "5m" and _elapsed_min > 4.0:
+                log.info(
+                    "[TIMING-GATE] %s/5m: %.1f min elapsed — entry too late (<60s left), skip",
+                    self.asset, _elapsed_min,
+                )
+                return None
             _fv = self._fair_value_entry(klines, closes[-1], up_price, dn_price, _elapsed_min)
             if _fv["direction"] is not None:
                 raw_dir = _fv["direction"]
@@ -472,6 +492,70 @@ class UpDownEngine:
                     })
                 except Exception:
                     pass
+
+        # ── FV edge gate (tiered) + cross-TF conflict check ──────────────────
+        # Applies only when FV fired. Does not touch the SIG path.
+        if _fv.get("direction") is not None:
+            _entry_price_fv = up_price if _fv["direction"] == "UP" else dn_price
+
+            # Cross-TF: check whether last closed 15m candle on same asset
+            # points OPPOSITE to the 5m FV direction (medium penalty = +0.08 edge bar).
+            _cross_tf_conflict = False
+            if self.timeframe == "5m":
+                try:
+                    _k15 = await _fetch_klines_async(session, self.asset, "15m", 5)
+                    if len(_k15) >= 2:
+                        _last15_bull = float(_k15[-2][4]) > float(_k15[-2][1])
+                        _cross_tf_conflict = (_last15_bull != (_fv["direction"] == "UP"))
+                        if _cross_tf_conflict:
+                            log.info(
+                                "[CROSS-TF] %s/5m: 15m candle %s contradicts FV %s — raising edge bar",
+                                self.asset, "UP" if _last15_bull else "DN", _fv["direction"],
+                            )
+                except Exception:
+                    pass
+
+            _expensive_fv = _entry_price_fv > 0.50
+            if _expensive_fv and _cross_tf_conflict:
+                _min_edge = 0.20
+            elif _expensive_fv or _cross_tf_conflict:
+                _min_edge = 0.18
+            else:
+                _min_edge = 0.10
+
+            if _fv["edge"] < _min_edge:
+                log.info(
+                    "[FV-EDGE-GATE] %s/%s: edge %.3f < required %.3f (price=%.2f) — skip",
+                    self.asset, self.timeframe, _fv["edge"], _min_edge, _entry_price_fv,
+                )
+                _fv = {"direction": None, "edge": 0.0, "archetype": None}
+
+        # Multi-asset corroboration (5m FV only): require ≥1 peer asset's last
+        # closed candle to agree with the FV direction before committing.
+        if self.timeframe == "5m" and _fv.get("direction") is not None:
+            _PEERS = {
+                "BTC": ["ETH", "SOL"], "ETH": ["BTC", "SOL"],
+                "SOL": ["BTC", "ETH"], "XRP": ["BTC", "ETH"],
+                "DOGE": ["BTC"], "HYPE": ["BTC"], "BNB": ["BTC"],
+            }
+            _corroborated = False
+            for _peer in _PEERS.get(self.asset, []):
+                try:
+                    _pk = await _fetch_klines_async(session, _peer, "5m", 5)
+                    if len(_pk) >= 2:
+                        _peer_bull = float(_pk[-2][4]) > float(_pk[-2][1])
+                        if _peer_bull == (_fv["direction"] == "UP"):
+                            _corroborated = True
+                            break
+                except Exception:
+                    pass
+            if not _corroborated:
+                log.info(
+                    "[CORROBORATE] %s/5m: no peer asset agrees with FV %s — skip",
+                    self.asset, _fv["direction"],
+                )
+                _fv = {"direction": None, "edge": 0.0, "archetype": None}
+        # ─────────────────────────────────────────────────────────────────────
 
         # Track whether this entry is driven by fair-value or pure RSI/OFI signal
         entry_source = "FAIR_VAL" if (FAIR_VALUE_MODE and not _dec["is_reversal"] and _fv.get("direction") is not None) else "SIG"
@@ -540,6 +624,28 @@ class UpDownEngine:
                     )
                     return None
         # ─────────────────────────────────────────────────────────────────────
+
+        # Macro trend gate (8-candle): if 6+/8 last closed candles all point in
+        # one direction, only signals that agree are allowed through.
+        # Applies to BOTH FV and SIG — prevents the recurring loss cluster pattern
+        # where FV keeps firing DN while the market is bouncing UP for 45+ minutes.
+        if len(klines) >= 10:
+            _macro_candles = klines[-9:-1]  # last 8 closed candles
+            _macro_up = sum(1 for k in _macro_candles if float(k[4]) > float(k[1]))
+            _macro_dn = 8 - _macro_up
+            _signal_is_up = direction == "UP"
+            if _macro_up >= 6 and not _signal_is_up:
+                log.info(
+                    "[MACRO-GATE] %s/%s: blocked DN — %d/8 candles bullish",
+                    self.asset, self.timeframe, _macro_up,
+                )
+                return None
+            if _macro_dn >= 6 and _signal_is_up:
+                log.info(
+                    "[MACRO-GATE] %s/%s: blocked UP — %d/8 candles bearish",
+                    self.asset, self.timeframe, _macro_dn,
+                )
+                return None
 
         # SIG trend confirmation: both last 2 closed candles must resolve in the
         # signal direction. Skipping this for FAIR-VAL entries — they enter on
@@ -707,6 +813,26 @@ class UpDownEngine:
                 "[DIR-SAT] %s/%s: 3 consecutive %s — soft penalty %.2f -> %.2f (smaller size)",
                 self.asset, self.timeframe, direction, old_score, score,
             )
+
+        # Correlated asset loss brake (soft filter): after 3+ full losses
+        # (settled ≤10¢) in the last 20 min across ANY asset, the macro environment
+        # has likely reversed — raise bar to edge ≥0.20 (FV) or score ≥0.82 (SIG).
+        _full_loss_count = self._recent_full_loss_count(lookback_minutes=20)
+        if _full_loss_count >= 3:
+            if entry_source == "FAIR_VAL":
+                _fv_edge = _fv.get("edge", 0.0) if _fv.get("direction") is not None else 0.0
+                if _fv_edge < 0.20:
+                    log.info(
+                        "[LOSS-BRAKE] %s/%s: %d full losses in 20min — FV edge %.3f < 0.20, skip",
+                        self.asset, self.timeframe, _full_loss_count, _fv_edge,
+                    )
+                    return None
+            elif score < 0.82:
+                log.info(
+                    "[LOSS-BRAKE] %s/%s: %d full losses in 20min — SIG score %.2f < 0.82, skip",
+                    self.asset, self.timeframe, _full_loss_count, score,
+                )
+                return None
 
         log.info(
             "[ENGINE] %s/%s SIGNAL: %s | Score=%.2f | up=%.0fc dn=%.0fc | dual=%s | %s",
@@ -1189,6 +1315,26 @@ class UpDownEngine:
             else:
                 break
         return streak
+
+    def _recent_full_loss_count(self, lookback_minutes: int = 20) -> int:
+        """Count trades that settled near zero (≤10¢) within the last N minutes (cross-asset)."""
+        try:
+            import json, time as _time
+            from pathlib import Path
+            path = Path(__file__).parent.parent.parent / "infrastructure" / "exchange" / "positions_state.json"
+            if not path.exists():
+                return 0
+            data = json.loads(path.read_text(encoding="utf-8"))
+            cutoff = _time.time() - lookback_minutes * 60
+            count = 0
+            for trade in data.get("closed", []):
+                exit_ts = trade.get("exit_time") or trade.get("closed_at") or 0
+                exit_price = float(trade.get("exit_price", 1.0) or 1.0)
+                if exit_ts >= cutoff and exit_price <= 0.10:
+                    count += 1
+            return count
+        except Exception:
+            return 0
 
     def _recent_closed_loss_streak(self, n: int = 3) -> int:
         """Return consecutive recent closed losses from positions_state.json."""
