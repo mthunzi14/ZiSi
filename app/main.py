@@ -295,7 +295,11 @@ async def _validate_trade_slot(
         return False, {}
 
     raw_bet_usd = engine.compute_size(score, entry_price, current_balance)
-    bet_usd = raw_bet_usd * risk_multiplier
+    corr_mult = signal.get("corroboration_multiplier", 1.0)
+    bet_usd = raw_bet_usd * risk_multiplier * corr_mult
+    if corr_mult != 1.0:
+        log.info("[RISK] %s/%s corroboration_mult=%.1f → bet $%.2f",
+                 asset, timeframe, corr_mult, bet_usd)
 
     # 15m SIG no longer gets size premium — LAT-ARB has earned it, SIG has not
 
