@@ -309,15 +309,16 @@ async def _validate_trade_slot(
         return False, {}
 
     validation_details = {
-        "direction": direction,
-        "score": score,
-        "market": market,
-        "entry_price": entry_price,
-        "up_price": up_price,
-        "dn_price": dn_price,
-        "is_dual": is_dual,
+        "direction":    direction,
+        "score":        score,
+        "market":       market,
+        "entry_price":  entry_price,
+        "up_price":     up_price,
+        "dn_price":     dn_price,
+        "is_dual":      is_dual,
         "risk_multiplier": risk_multiplier,
-        "bet_usd": bet_usd,
+        "bet_usd":      bet_usd,
+        "entry_source": signal.get("entry_source", "SIG"),
     }
     return True, validation_details
 
@@ -345,15 +346,16 @@ async def _execute_order_flow(
             return False
         _last_entry_ts = now  # claim the slot before releasing the lock
 
-    direction = details["direction"]
-    score = details["score"]
-    market = details["market"]
-    entry_price = details["entry_price"]
-    up_price = details["up_price"]
-    dn_price = details["dn_price"]
-    is_dual = details["is_dual"]
+    direction    = details["direction"]
+    score        = details["score"]
+    market       = details["market"]
+    entry_price  = details["entry_price"]
+    up_price     = details["up_price"]
+    dn_price     = details["dn_price"]
+    is_dual      = details["is_dual"]
     risk_multiplier = details["risk_multiplier"]
-    bet_usd = details["bet_usd"]
+    bet_usd      = details["bet_usd"]
+    entry_source = details.get("entry_source", "SIG")
 
     traded = False
     if is_dual:
@@ -365,7 +367,8 @@ async def _execute_order_flow(
         main_usd = max(1.0, main_usd * risk_multiplier)
         hedge_usd = max(1.0, hedge_usd * risk_multiplier)
 
-        main_order = _place_trade(asset, timeframe, direction, market, main_usd, entry_price, score, "DUAL_MAIN")
+        dual_main_tag = "FAIR_VAL" if entry_source == "FAIR_VAL" else "DUAL_MAIN"
+        main_order = _place_trade(asset, timeframe, direction, market, main_usd, entry_price, score, dual_main_tag)
         hedge_dir = "DOWN" if direction == "UP" else "UP"
         hedge_price = dn_price if direction == "UP" else up_price
         hedge_order = _place_trade(asset, timeframe, hedge_dir, market, hedge_usd, hedge_price, score, "DUAL_HEDGE")
@@ -386,7 +389,8 @@ async def _execute_order_flow(
             if hedge_order:
                 execute_exit(hedge_order["order_id"], hedge_price, exit_reason="EMERGENCY_ASYMMETRIC_UNWIND")
     else:
-        order = _place_trade(asset, timeframe, direction, market, bet_usd, entry_price, score, "SINGLE")
+        single_tag = "FAIR_VAL" if entry_source == "FAIR_VAL" else "SINGLE"
+        order = _place_trade(asset, timeframe, direction, market, bet_usd, entry_price, score, single_tag)
         if order:
             traded = True
             await commit_trade_slot(asset, timeframe, score, interval_minutes, is_dual=False, direction=direction)

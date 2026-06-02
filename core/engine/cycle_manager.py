@@ -160,6 +160,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
     """
     log.info("[LATENCY-ARB] Starting T-15s latency arbitrage scanner daemon...")
     last_scanned_close = {}  # (asset, timeframe) -> next_close_ts
+    lat_arb_count = {}      # next_close_ts -> number of tasks spawned (cap at 3)
 
     async def scan_and_trade(engine, next_close, time_left):
         asset = engine.asset
@@ -190,10 +191,23 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             open_price = float(klines[-1][1])
             pct_move = (pyth_price - open_price) / open_price
             
-            # 5m needs a stronger Pyth move to justify the shorter resolution window
-            threshold = 0.004 if timeframe == "5m" else 0.002
+            # Both timeframes now require a 0.4% move — weak moves are noise
+            threshold = 0.004
             if abs(pct_move) < threshold:
                 return
+
+            # Regime gate: if last 2 closed candles flipped direction → choppy market, skip
+            if len(klines) >= 3:
+                c_last = klines[-2]
+                c_prev = klines[-3]
+                last_bull = float(c_last[4]) > float(c_last[1])
+                prev_bull = float(c_prev[4]) > float(c_prev[1])
+                if last_bull != prev_bull:
+                    log.info("[LATENCY-ARB] %s/%s REGIME_GATE: last 2 candles flipped (%s→%s) — choppy, skipping",
+                             asset, timeframe,
+                             "UP" if prev_bull else "DN",
+                             "UP" if last_bull else "DN")
+                    return
 
             direction = "UP" if pct_move > 0 else "DOWN"
             log.info("[LATENCY-ARB] Potential %s move detected for %s/%s (move: %.4f%%, Pyth: %.4f, Open: %.4f)",
@@ -337,12 +351,25 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 if 8.0 <= time_left <= 15.5:
                     if last_scanned_close.get((asset, timeframe)) == next_close:
                         continue  # Already scanned this candle
-                        
+
+                    # Concurrent cap: max 3 assets per candle boundary to prevent
+                    # catastrophic loss clusters when wrong on a single direction
+                    if lat_arb_count.get(next_close, 0) >= 3:
+                        log.info("[LATENCY-ARB] %s/%s: concurrent cap reached (3 tasks already spawned for boundary %d), skipping",
+                                 asset, timeframe, next_close)
+                        continue
+
                     last_scanned_close[(asset, timeframe)] = next_close
-                    log.info("[LATENCY-ARB] Spawning concurrent scan for %s/%s at T-%.1fs before close", asset, timeframe, time_left)
-                    
+                    lat_arb_count[next_close] = lat_arb_count.get(next_close, 0) + 1
+                    log.info("[LATENCY-ARB] Spawning concurrent scan for %s/%s at T-%.1fs before close (slot %d/3)",
+                             asset, timeframe, time_left, lat_arb_count[next_close])
+
                     # Spawn concurrently!
                     asyncio.create_task(scan_and_trade(engine, next_close, time_left))
+
+                    # Prune stale boundary counts (keep only last 30 minutes)
+                    cutoff = int(now) - 1800
+                    lat_arb_count = {k: v for k, v in lat_arb_count.items() if k > cutoff}
                     
         except Exception as e:
             log.error("[LATENCY-ARB] Scanner loop error: %s", e, exc_info=True)

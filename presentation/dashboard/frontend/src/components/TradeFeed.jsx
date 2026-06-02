@@ -1,5 +1,5 @@
 // TradeFeed.jsx — tabbed trade ledger: Open Positions + Trade History
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import SpotlightMask from './common/SpotlightMask';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -74,6 +74,47 @@ const ENTRY_TYPE_CONFIG = {
   'SIGNAL':         { label: 'SIG',  color: 'var(--color-text-muted)' },
 };
 function entryTypeCfg(t) { return ENTRY_TYPE_CONFIG[t] || ENTRY_TYPE_CONFIG['SIGNAL']; }
+
+// ── Market session ────────────────────────────────────────────────────────────
+
+function getMarketSession() {
+  const now = new Date();
+  const day = now.getUTCDay(); // 0=Sun, 6=Sat
+  if (day === 0 || day === 6) return { label: 'Weekend', color: '#6b7280' };
+  const h = now.getUTCHours() + now.getUTCMinutes() / 60;
+  if (h >= 13.5 && h < 22) return { label: 'US Session',    color: '#2b7fff' };
+  if (h >= 7   && h < 16)  return { label: 'EU Session',    color: '#f59e0b' };
+  if (h >= 0   && h < 8)   return { label: 'Asian Session', color: '#00d4a3' };
+  return { label: 'Off-Peak', color: '#6b7280' };
+}
+
+function MarketSessionPill() {
+  const [session, setSession] = useState(getMarketSession());
+  useEffect(() => {
+    const id = setInterval(() => setSession(getMarketSession()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: 5,
+      background: `${session.color}18`,
+      border: `1px solid ${session.color}55`,
+      borderRadius: 8,
+      padding: '3px 10px',
+      fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
+      color: session.color,
+      flexShrink: 0,
+    }}>
+      <span style={{
+        width: 6, height: 6, borderRadius: '50%',
+        background: session.color,
+        display: 'inline-block',
+        boxShadow: `0 0 5px ${session.color}`,
+      }} />
+      {session.label.toUpperCase()}
+    </div>
+  );
+}
 
 // Wilson score 95% CI for a binomial proportion -> [low%, high%].
 // Honest small-sample band on the win rate (matches dashboard/backend performance.js).
@@ -322,27 +363,101 @@ function ClosedSummary({ closed }) {
   );
 }
 
+// ── Source filter pills ───────────────────────────────────────────────────────
+
+const SRC_FILTERS = ['ALL', 'LAT', 'FV', 'REV', 'SIG'];
+const SRC_TO_ENTRY_TYPE = {
+  LAT: 'LAT-ARB',
+  FV:  'FAIR-VAL',
+  REV: 'REVERSAL-SNIPE',
+  SIG: 'SIGNAL',
+};
+
+function filterBySrc(trades, src) {
+  if (src === 'ALL') return trades;
+  const et = SRC_TO_ENTRY_TYPE[src];
+  return trades.filter(p => (p.entry_type || 'SIGNAL') === et);
+}
+
+function SrcPill({ src, active, count, pnl, onClick }) {
+  const cfg = src === 'ALL'
+    ? { color: '#fff' }
+    : entryTypeCfg(SRC_TO_ENTRY_TYPE[src]);
+  const color = cfg.color;
+  const isActive = active;
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: isActive ? `${color}22` : 'transparent',
+        border: `1px solid ${isActive ? color : 'rgba(255,255,255,0.1)'}`,
+        borderRadius: 6,
+        padding: '2px 8px',
+        fontSize: 10, fontWeight: 700, letterSpacing: '0.05em',
+        color: isActive ? color : 'var(--color-text-muted)',
+        cursor: 'pointer',
+        display: 'flex', alignItems: 'center', gap: 4,
+        transition: 'all 0.15s',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {src}
+      {count > 0 && (
+        <span style={{
+          background: isActive ? `${color}33` : 'rgba(255,255,255,0.07)',
+          borderRadius: 4,
+          padding: '0 4px',
+          fontSize: 9,
+          color: isActive ? color : 'var(--color-text-muted)',
+        }}>
+          {count}
+          {src !== 'ALL' && pnl !== null && (
+            <span style={{ marginLeft: 3, color: pnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)' }}>
+              {pnl >= 0 ? '+' : ''}${Math.abs(pnl).toFixed(1)}
+            </span>
+          )}
+        </span>
+      )}
+    </button>
+  );
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export default function TradeFeed({ positions = {} }) {
   const [tab, setTab] = useState('open');
+  const [srcFilter, setSrcFilter] = useState('ALL');
 
   const active = positions?.active || [];
-  const closed = [...(positions?.closed || [])].sort((a, b) => new Date(b.exit_time || 0) - new Date(a.exit_time || 0)); // newest first
+  const closed = [...(positions?.closed || [])].sort(
+    (a, b) => new Date(b.exit_time || 0) - new Date(a.exit_time || 0)
+  );
+
+  // Total unrealized P&L across all open positions
+  const totalUnrPnl = active.reduce((s, p) => s + parseFloat(p.unrealized_pnl || 0), 0);
+
+  // Per-source counts + P&L for filter pills
+  const srcStats = SRC_FILTERS.slice(1).map(src => {
+    const filtered = filterBySrc(closed, src);
+    const pnl = filtered.reduce((s, p) => s + parseFloat(p.realized_pnl ?? 0), 0);
+    return { src, count: filtered.length, pnl: filtered.length > 0 ? pnl : null };
+  });
+
+  const visibleClosed = filterBySrc(closed, srcFilter);
 
   return (
     <SpotlightMask>
-      <div 
+      <div
         className="glass-panel"
-        style={{
-          padding: 'var(--spacing-20)',
-          display: 'flex', flexDirection: 'column',
-        }}
+        style={{ padding: 'var(--spacing-20)', display: 'flex', flexDirection: 'column' }}
       >
-        {/* Header + tabs */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 600, fontSize: 15 }}>
-            Trade Ledger
+        {/* Header: title + market session pill + tabs */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 600, fontSize: 15 }}>
+              Trade Ledger
+            </div>
+            <MarketSessionPill />
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             <Tab label="Open"    count={active.length} active={tab === 'open'}    onClick={() => setTab('open')} />
@@ -350,19 +465,63 @@ export default function TradeFeed({ positions = {} }) {
           </div>
         </div>
 
-        {/* Closed summary strip */}
-        {tab === 'history' && closed.length > 0 && <ClosedSummary closed={closed} />}
+        {/* Open tab: unrealized P&L total pill */}
+        {tab === 'open' && active.length > 0 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            marginBottom: 8,
+            padding: '5px 10px',
+            background: 'rgba(255,255,255,0.03)',
+            borderRadius: 6,
+            border: '1px solid rgba(255,255,255,0.07)',
+          }}>
+            <span style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+              Total Unrealized P&amp;L
+            </span>
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: 14,
+              color: totalUnrPnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)',
+            }}>
+              {totalUnrPnl >= 0 ? '+' : ''}${totalUnrPnl.toFixed(2)}
+            </span>
+            <span style={{ fontSize: 9, color: 'var(--color-text-muted)', marginLeft: 'auto' }}>
+              {active.length} position{active.length !== 1 ? 's' : ''} open
+            </span>
+          </div>
+        )}
+
+        {/* History tab: source filter pills + summary */}
+        {tab === 'history' && closed.length > 0 && (
+          <>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
+              <SrcPill
+                src="ALL" active={srcFilter === 'ALL'} count={closed.length} pnl={null}
+                onClick={() => setSrcFilter('ALL')}
+              />
+              {srcStats.map(({ src, count, pnl }) => (
+                <SrcPill
+                  key={src} src={src} active={srcFilter === src}
+                  count={count} pnl={pnl}
+                  onClick={() => setSrcFilter(src)}
+                />
+              ))}
+            </div>
+            <ClosedSummary closed={visibleClosed} />
+          </>
+        )}
 
         {/* Column headers */}
         {tab === 'history' && <ColHeaders cols={CLOSED_COLS} grid={CLOSED_GRID} />}
-        {tab === 'open'    && active.length > 0 && <ColHeaders cols={OPEN_COLS} grid={OPEN_GRID} />}
+        {tab === 'open' && active.length > 0 && <ColHeaders cols={OPEN_COLS} grid={OPEN_GRID} />}
 
         {/* Rows */}
         <div style={{ overflowY: 'auto', maxHeight: 400, flex: 1 }}>
           {tab === 'history' && (
-            closed.length === 0
-              ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>No closed trades yet</div>
-              : closed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} />)
+            visibleClosed.length === 0
+              ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>
+                  {srcFilter === 'ALL' ? 'No closed trades yet' : `No ${srcFilter} trades yet`}
+                </div>
+              : visibleClosed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} />)
           )}
           {tab === 'open' && (
             active.length === 0

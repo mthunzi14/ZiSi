@@ -442,6 +442,7 @@ class UpDownEngine:
 
         # ── Fair-value primary entry (additive). Reversal-snipe keeps priority;
         #    fair-value fills at the REAL L2 quote (never at fair value). ──
+        _fv = {"direction": None}  # default: no FV signal
         try:
             from config import FAIR_VALUE_MODE
         except Exception:
@@ -471,6 +472,9 @@ class UpDownEngine:
                     })
                 except Exception:
                     pass
+
+        # Track whether this entry is driven by fair-value or pure RSI/OFI signal
+        entry_source = "FAIR_VAL" if (FAIR_VALUE_MODE and not _dec["is_reversal"] and _fv.get("direction") is not None) else "SIG"
 
         if raw_dir is None:
             if is_dual_eligible and abs(ofi) >= 0.12:
@@ -536,6 +540,22 @@ class UpDownEngine:
                     )
                     return None
         # ─────────────────────────────────────────────────────────────────────
+
+        # SIG trend confirmation: both last 2 closed candles must resolve in the
+        # signal direction. Skipping this for FAIR-VAL entries — they enter on
+        # divergence which may precede the candle trend shift.
+        if entry_source == "SIG" and len(klines) >= 4:
+            c_last_bull = float(klines[-2][4]) > float(klines[-2][1])
+            c_prev_bull = float(klines[-3][4]) > float(klines[-3][1])
+            signal_bull = direction == "UP"
+            if not (c_last_bull == c_prev_bull == signal_bull):
+                log.info(
+                    "[TREND-CONFIRM] %s/%s: SIG %s blocked — last 2 closed candles: %s/%s",
+                    self.asset, self.timeframe, direction,
+                    "UP" if c_prev_bull else "DN",
+                    "UP" if c_last_bull else "DN",
+                )
+                return None
 
         # Composite score
         abs_mom = abs(mom)
@@ -677,17 +697,18 @@ class UpDownEngine:
         )
 
         return {
-            "asset":     self.asset,
-            "timeframe": self.timeframe,
-            "direction": direction,
-            "score":     score,
-            "regime":    regime,
-            "inverted":  self.invert_signal,
-            "rsi":       rsi,
-            "momentum":  round(mom, 4),
-            "market":    market,
+            "asset":        self.asset,
+            "timeframe":    self.timeframe,
+            "direction":    direction,
+            "score":        score,
+            "regime":       regime,
+            "inverted":     self.invert_signal,
+            "rsi":          rsi,
+            "momentum":     round(mom, 4),
+            "market":       market,
             "is_dual_eligible": is_dual_eligible,
             "edge_context": edge_ctx,
+            "entry_source": entry_source,
         }
 
     async def _resolve_l2_prices(
