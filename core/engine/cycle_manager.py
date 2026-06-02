@@ -30,6 +30,8 @@ from core.engine.trade_priority_queue import PriorityQueue, FeedbackTracker
 
 log = logging.getLogger("zisi.cycle_manager")
 
+_LAT_LAST_ENTRY_TS: float = 0.0  # global: 60s cooldown between any two LAT entries
+
 
 class CycleManager:
     """
@@ -191,9 +193,9 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             open_price = float(klines[-1][1])
             pct_move = (pyth_price - open_price) / open_price
             
-            # Both timeframes now require a 0.4% move — weak moves are noise
-            threshold = 0.004
-            if abs(pct_move) < threshold:
+            # 5m requires a stronger 0.5% move; 15m keeps 0.4% threshold
+            _lat_threshold = 0.005 if timeframe == "5m" else 0.004
+            if abs(pct_move) < _lat_threshold:
                 return
 
             # Regime gate: if last 2 closed candles flipped direction → choppy market, skip
@@ -263,8 +265,14 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 entry_price = dn_price
                 market_id = market["dn_market"]["id"]
 
+            # Dynamic price floor: only block very-low entries on weak Pyth moves
+            if entry_price < 0.15 and abs(pct_move) < 0.004:
+                log.info("[PRICE-FLOOR] %s/%s: %.0fc with weak move %.4f%% — skip",
+                         asset, timeframe, entry_price * 100, abs(pct_move) * 100)
+                return
+
             # ATM gate — coin-flip zone is edge-negative on any timeframe
-            if 0.47 <= entry_price <= 0.53:
+            if 0.44 <= entry_price <= 0.56:
                 log.info("[LATENCY-ARB] %s/%s ATM_BLOCK: %.0f¢ in coin-flip zone, skipping.",
                          asset, timeframe, entry_price * 100)
                 return
@@ -298,8 +306,6 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             # Apply Altcoin Sizing Gates
             if asset in ["SOL", "XRP"]:
                 usd_size *= 0.60
-            elif asset in ["BNB", "LINK"]:
-                usd_size *= 0.50
             elif asset in ["ADA", "DOGE", "AVAX", "SUI"]:
                 usd_size = min(usd_size * 0.35, 35.0)
                 
@@ -319,6 +325,13 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                             time.time(), next_close, asset, timeframe)
                 return
 
+            # Global LAT cooldown: prevent simultaneous multi-asset false-signal firing
+            global _LAT_LAST_ENTRY_TS
+            if time.time() - _LAT_LAST_ENTRY_TS < 60.0:
+                log.info("[LAT-DEDUP] %s/%s: global LAT cooldown active (%.0fs remain) — skip",
+                         asset, timeframe, 60.0 - (time.time() - _LAT_LAST_ENTRY_TS))
+                return
+
             # 6. Execute order
             from infrastructure.exchange.trader import place_order
             from core.engine.session_governor import commit_trade_slot
@@ -334,6 +347,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             )
             
             if order:
+                _LAT_LAST_ENTRY_TS = time.time()
                 await commit_trade_slot(asset, timeframe, 0.85, interval_minutes, is_dual=False, direction=direction)
                 log.info("[LATENCY-ARB SUCCESSFULLY ENTERED] Entered %s/%s %s: $%.2f at %.0f¢ (implied prob: %.2f)",
                          asset, timeframe, direction, usd_size, entry_price * 100, implied_prob)
