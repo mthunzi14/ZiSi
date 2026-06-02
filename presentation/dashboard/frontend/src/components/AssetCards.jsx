@@ -12,8 +12,6 @@ const ASSETS = [
   { asset: 'XRP',  tf: '15m', color: '#006097', tier: '60%' },
   { asset: 'DOGE', tf: '5m',  color: '#e1b303', tier: '35%' },
   { asset: 'DOGE', tf: '15m', color: '#cc9e02', tier: '35%' },
-  { asset: 'BNB',  tf: '5m',  color: '#f3ba2f', tier: '50%' },
-  { asset: 'BNB',  tf: '15m', color: '#d6a325', tier: '50%' },
 ];
 
 function getAssetStats(key, positions) {
@@ -157,7 +155,7 @@ export default function AssetCards({ positions, candles, state }) {
             color: '#c59b27', background: 'rgba(197,155,39,0.1)',
             border: '1px solid rgba(197,155,39,0.25)', borderRadius: 6, padding: '2px 8px',
           }}>
-            {expanded ? '14 assets' : `${display.length} active`}
+            {expanded ? '10 assets' : `${display.length} active`}
           </span>
         </div>
         <button

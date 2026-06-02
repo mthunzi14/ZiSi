@@ -7,15 +7,13 @@ import express from 'express';
 
 const router = express.Router();
 
-const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'LINK', 'BNB'];
+const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
 const SYMBOL_MAP = {
   BTC:  'BTCUSDT',
   ETH:  'ETHUSDT',
   SOL:  'SOLUSDT',
   XRP:  'XRPUSDT',
   DOGE: 'DOGEUSDT',
-  LINK: 'LINKUSDT',
-  BNB:  'BNBUSDT',
 };
 
 async function fetchMacro(symbol) {
