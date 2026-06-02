@@ -50,6 +50,22 @@ def has_open_asset_exposure(open_positions: list, asset: str) -> bool:
     return False
 
 
+def has_open_asset_tf_exposure(open_positions: list, asset: str, timeframe: str) -> bool:
+    """True if an open position exists for this exact (asset, timeframe) pair."""
+    asset = asset.upper()
+    tf_tag = f"[{timeframe.upper()}]"
+    asset_tag = f"[{asset}]"
+    for p in open_positions:
+        t = (p.get("event_title") or "").upper()
+        p_asset = (p.get("asset") or _parse_asset_from_title(t) or "").upper()
+        p_tf = (p.get("timeframe") or "").lower()
+        has_asset = (p_asset == asset) or (asset_tag in t)
+        has_tf = (p_tf == timeframe.lower()) or (tf_tag in t)
+        if has_asset and has_tf:
+            return True
+    return False
+
+
 def has_open_btc_exposure(open_positions: list) -> bool:
     return has_open_asset_exposure(open_positions, BTC_ASSET)
 
@@ -91,8 +107,8 @@ async def request_trade_slot(
         log.warning("[GOVERNOR] Failed to read regime-based trade limit: %s", e)
 
     async with _lock:
-        if has_open_asset_exposure(open_positions, asset):
-            return False, f"open_position_{asset}"
+        if has_open_asset_tf_exposure(open_positions, asset, timeframe):
+            return False, f"open_position_{asset}_{timeframe}"
 
         # Count open positions in the same direction to enforce correlation cap (isolated from DUAL hedges)
         if not is_dual:
@@ -111,18 +127,12 @@ async def request_trade_slot(
 
 
         if asset == BTC_ASSET and bucket in _btc_bucket_trades:
-            # We already have a BTC trade in this candle bucket! Let's check if we can dedup smartly
             existing = _btc_bucket_trades[bucket]
-            # Allow concurrent BTC 5m and 15m if directions differ or confidence gap > 0.30
-            if existing["timeframe"] != timeframe:
-                if existing["direction"] != direction:
-                    log.info("[GOVERNOR] Allowing concurrent BTC trade: opposite direction (%s vs %s)", direction, existing["direction"])
-                elif abs(existing["score"] - score) > 0.30:
-                    log.info("[GOVERNOR] Allowing concurrent BTC trade: high confidence gap (%.2f vs %.2f)", score, existing["score"])
-                else:
-                    return False, "btc_duplicate_candle"
-            else:
-                return False, "btc_duplicate_candle"
+            if existing["timeframe"] == timeframe:
+                return False, "btc_duplicate_candle"  # same TF = duplicate
+            # Different TF (5m vs 15m): always allow — Bone Reaper Mode
+            log.info("[GOVERNOR] BTC concurrent %s+%s allowed (Bone Reaper Mode)",
+                     existing["timeframe"], timeframe)
 
         if is_dual:
             # Dual arb: only enforce per-asset open check
@@ -132,12 +142,15 @@ async def request_trade_slot(
         if len(entries) >= limit:
             assets_in = [e["asset"] for e in entries]
             if asset not in assets_in:
-                return False, f"candle_cap_{len(entries)}/{limit}"
+                if asset in ("BTC", "ETH"):
+                    log.info("[GOVERNOR] %s/%s: tier-1 bypass at candle cap (%d/%d)",
+                             asset, timeframe, len(entries), limit)
+                else:
+                    return False, f"candle_cap_{len(entries)}/{limit}"
 
         if asset == BTC_ASSET and bucket in _btc_bucket_trades:
-            # Recheck standard duplicate boundary
             existing = _btc_bucket_trades[bucket]
-            if existing["timeframe"] == timeframe or (existing["direction"] == direction and abs(existing["score"] - score) <= 0.30):
+            if existing["timeframe"] == timeframe:
                 return False, "btc_duplicate_candle"
 
         return True, "ok"
