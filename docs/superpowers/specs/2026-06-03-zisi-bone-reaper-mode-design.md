@@ -9,14 +9,15 @@
 
 ## Motivation
 
-Bone Reaper (0xeebde7a...) made ~$7,500 on June 2, 2026. Analysis of his June 2 trades reveals:
+Three verified bots analyzed on June 2–May 24, 2026:
 
-- 17 confirmed wins, 0 losses on closed trades
-- ~80–90% BTC/ETH 5m + 15m candle coverage
-- Concurrent 5m + 15m positions on same asset simultaneously
-- Multi-asset coordinated burst (BTC+ETH+XRP+SOL all UP at 5:15PM)
-- No direction cooldown — fires every candle regardless of prior result
-- Corroboration used as confirmation, not as a gate
+**Bone Reaper** (0xeebde7a...): $8,573 on June 2. 49,136 lifetime predictions. 80–120+ trades/day on BTC+ETH 5m and 15m. $1,000–$7,640 per trade. Near-100% WR. Fires both 5m and 15m concurrently on same asset. Makes contra-consensus entries at 14¢ when market says 86% opposite — and wins.
+
+**PBot-6** (0x21d0a97...): $2,669 on June 2. 53,718 lifetime predictions, joined March 2026. $10–$400 per trade. BTC+ETH+XRP+SOL. Near-100% WR. Same Pyth latency edge at ZiSi's capital scale.
+
+**MutlakButlan**: $5,083 in 3 days (May 22–24), then withdrew. BTC 5m ONLY. 37 trades on May 22 alone. Entry at 36–75¢. $200–$1,200/trade. Perfect WR. Proves BTC-only 5m is sufficient for massive gains.
+
+**Common thread:** All three know the candle direction before Polymarket prices it. They fire on every valid signal, concurrent across timeframes, both directions, any price point. ZiSi has the same underlying Pyth edge — we are throttling ourselves with gates.
 
 ZiSi currently achieves ~0.6% candle hit rate (8 trades in a 17-hour session).
 Bone Reaper achieves ~80%+ on BTC/ETH.
@@ -231,6 +232,70 @@ In `TradeFeed.jsx`, above the trade table, add a `EngineStatusPill` component:
 
 ---
 
+---
+
+## Addition 1: T-5s Near-Certainty Final Scanner
+
+A second candle-close scanner fires at **T-5 seconds** before each candle boundary (in addition to the existing T-15s scanner in `start_latency_edge_scanner`).
+
+**Rationale:** Bone Reaper's 98¢, 96.2¢, 95.9¢ entries and MutlakButlan's 60–75¢ entries are late-candle near-certainty plays where the direction is already determined from Pyth. At T-5s, |pct_move| of 0.3%+ means the candle close is essentially locked in. The Polymarket price lags by 1–3 seconds.
+
+**Entry criteria:**
+- `abs(pct_move) >= 0.003` (0.3% Pyth divergence — direction is clear)
+- `pythAge < 3s` (fresh oracle only)
+- No existing open position for this `(asset, timeframe)` in this candle
+- No ATM gate (can enter at any price — resolution is imminent)
+
+**Sizing:** `0.7×` normal compute_size output (late entries have small ROI; don't over-allocate)
+
+**File:** `core/engine/cycle_manager.py` — add `_t5_scanner_task` alongside existing `_lat_scanner_task` in the scanner daemon. Shares the same `scan_and_trade` function but with `t_minus=5` parameter.
+
+---
+
+## Addition 2: Cross-Asset Lag Entry
+
+When BTC fires a strong Pyth signal (`abs(pct_move) >= 0.005`, i.e., 0.5%+) and no ETH position is already open for that candle, check if ETH's current market price is **opposite to BTC's direction**:
+
+- BTC fired UP (`pct_move > 0`) AND ETH UP market is priced < 0.45¢ → ETH UP is a lag trade
+- BTC fired DOWN (`pct_move < 0`) AND ETH DOWN market is priced < 0.45¢ → ETH DN is a lag trade
+
+Enter ETH in BTC's direction. The market hasn't priced ETH's follow-through yet.
+
+**Evidence:** Bone Reaper took ETH UP at 37.5¢ while BTC was strongly UP. ETH hadn't followed. He won 166%.
+
+**Sizing:** `0.5×` normal (secondary conviction, not primary signal)
+
+**File:** `core/engine/cycle_manager.py` — add `_check_cross_asset_lag(btc_pct_move, btc_direction, session, engines)` called after any BTC LAT entry.
+
+**Symmetric:** Also works BTC↔ETH in reverse (if ETH fires strongly and BTC lags).
+
+---
+
+## Addition 3: Dynamic Price Floor (replaces hard 15¢)
+
+**Remove:** `if entry_price < 0.15: return`
+
+**Replace:**
+```python
+if entry_price < 0.15 and abs_pct_move < 0.004:
+    log.info("[PRICE-FLOOR] %s/%s: %.0f¢ with weak move %.4f%% — skip", ...)
+    return
+```
+
+**Rationale:** Hard 15¢ blocks Bone Reaper's 14¢ contra-consensus plays. The BNB 4¢ disaster had a WEAK FV signal (`pct_move` near 0). A strong Pyth divergence (0.4%+) at 14¢ is a massive edge — market is 86% wrong. Allow it. Only weak signals at very low prices get blocked.
+
+---
+
+## Addition 4: BTC/ETH Position Priority
+
+When the position cap (max 6 open) is at 5/6 or 6/6, **never let a lower-tier asset fill the last slot if a BTC or ETH signal is pending.**
+
+**Implementation:** In `session_governor.py`, add a `tier` parameter to `request_trade_slot`. BTC/ETH = tier 1, SOL/XRP = tier 2, DOGE = tier 3. If at capacity, only accept tier-1 requests (evict nothing, just don't admit tier-2/3 when full).
+
+**Rationale:** MutlakButlan proved BTC-only is sufficient. A DOGE position blocking a BTC signal is value destruction.
+
+---
+
 ## Files Modified
 
 | File | Change |
@@ -246,6 +311,8 @@ In `TradeFeed.jsx`, above the trade table, add a `EngineStatusPill` component:
 | `presentation/dashboard/frontend/src/components/TradeFeed.jsx` | Add EngineStatusPill component |
 | `presentation/dashboard/backend/routes/assetMacro.js` | Remove BNB, LINK from ASSETS array |
 | `presentation/dashboard/frontend/src/components/AssetCards.jsx` | Already has BNB removed (confirm LINK also absent) |
+| `core/engine/cycle_manager.py` (additions) | T-5s scanner task, cross-asset lag entry function, dynamic price floor |
+| `core/engine/session_governor.py` (additions) | BTC/ETH tier-1 priority at capacity |
 
 ---
 
