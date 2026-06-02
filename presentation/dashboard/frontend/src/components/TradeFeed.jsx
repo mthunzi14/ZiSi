@@ -956,6 +956,48 @@ function ClosedSummary({ closed }) {
   );
 }
 
+// ── Engine Status Pill ────────────────────────────────────────────────────────
+
+function EngineStatusPill({ status, detail, lastTradeAgo }) {
+  if (!status || status === 'SCANNING' || lastTradeAgo < 5) return null;
+
+  const COLOR = {
+    LOW_EDGE:      '#f97316',
+    CHOPPY:        '#f97316',
+    LAT_COOLDOWN:  '#f97316',
+    NO_MARKET:     '#ef4444',
+    PRICE_FLOOR:   '#f97316',
+    MACRO_BLOCK:   '#f97316',
+    CIRCUIT_BREAK: '#ef4444',
+    UNKNOWN:       '#52525b',
+    ERROR:         '#ef4444',
+  };
+  const ICON = {
+    LOW_EDGE:      '📉',
+    CHOPPY:        '🌀',
+    LAT_COOLDOWN:  '🔒',
+    NO_MARKET:     '🚫',
+    MACRO_BLOCK:   '📊',
+    CIRCUIT_BREAK: '⛔',
+    UNKNOWN:       '❓',
+    ERROR:         '⚠️',
+  };
+  const color = COLOR[status] || '#52525b';
+
+  return (
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      background: `${color}18`, border: `1px solid ${color}44`,
+      borderRadius: 8, padding: '4px 10px',
+      fontSize: 10, fontWeight: 700, color, fontFamily: 'monospace',
+      marginBottom: 8,
+    }}>
+      <span>{ICON[status] || '⏳'}</span>
+      <span>{status.replace(/_/g, ' ')} — {detail || `last trade ${lastTradeAgo}m ago`}</span>
+    </div>
+  );
+}
+
 // ── Source filter pills ───────────────────────────────────────────────────────
 
 const SRC_FILTERS = ['ALL', 'LAT', 'FV', 'REV', 'SIG'];
@@ -1020,6 +1062,15 @@ function SrcPill({ src, active, count, pnl, onClick }) {
 export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {} }) {
   const [tab, setTab] = useState('open');
   const [srcFilter, setSrcFilter] = useState('ALL');
+  const [engineStatus, setEngineStatus] = useState({ status: 'SCANNING', detail: '' });
+
+  useEffect(() => {
+    const poll = () =>
+      fetch('/api/engine-status').then(r => r.json()).then(setEngineStatus).catch(() => {});
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
+  }, []);
 
   const active = positions?.active || [];
   const closed = [...(positions?.closed || [])].sort(
@@ -1120,6 +1171,13 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
                 <AssetHeatmap closed={closed} />
               </>
             )}
+
+            {/* Engine status pill — shown when bot is idle for 5+ minutes */}
+            <EngineStatusPill
+              status={engineStatus.status}
+              detail={engineStatus.detail}
+              lastTradeAgo={closed.length > 0 ? Math.floor((Date.now() / 1000 - (typeof closed[0].exit_time === 'string' ? new Date(closed[0].exit_time).getTime() / 1000 : Number(closed[0].exit_time || 0))) / 60) : 999}
+            />
 
             {/* Trade rows */}
             <ColHeaders cols={CLOSED_COLS} grid={CLOSED_GRID} />

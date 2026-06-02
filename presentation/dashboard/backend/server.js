@@ -21,6 +21,7 @@ import regimeRouter from './routes/regime.js';
 import macroTrendRouter from './routes/macroTrend.js';
 import gateLogRouter from './routes/gateLog.js';
 import assetMacroRouter from './routes/assetMacro.js';
+import engineStatusRouter from './routes/engineStatus.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,6 +44,7 @@ app.use('/api/regime', regimeRouter);
 app.use('/api/macro-trend', macroTrendRouter);
 app.use('/api/gate-log', gateLogRouter);
 app.use('/api/asset-macro', assetMacroRouter);
+app.use('/api/engine-status', engineStatusRouter);
 // Intercept reset endpoint to cleanly stop bot process before clearing logs
 app.post('/api/control/reset', (req, res) => {
   console.log('[CONTROL] Intercepted reset request. Stopping bot engine before resetting state...');
