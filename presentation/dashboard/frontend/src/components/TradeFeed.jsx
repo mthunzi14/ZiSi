@@ -1064,8 +1064,7 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
           </div>
         </div>
 
-        {/* Gate Event Log — always visible regardless of tab */}
-        <GateEventLog events={gateLog} />
+        {/* Gate Event Log lives in Analytics tab (not here) */}
 
         {/* Open tab: unrealized P&L live strip + positions */}
         {tab === 'open' && (

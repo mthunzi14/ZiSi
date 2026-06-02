@@ -390,9 +390,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* Overview Stats Strip */}
-            {/* ── Bloomberg Stats Strip ─────────────────────────────────────── */}
-            {(() => {
+            {/* Stats strip removed — all metrics live in SystemHealth panel */}
+            {false && (() => {
               const bal      = parseFloat(state.balance ?? 0);
               const pnl      = parseFloat(state.pnl ?? 0);
               const start    = parseFloat(state.starting_balance ?? (bal - pnl)) || 1;

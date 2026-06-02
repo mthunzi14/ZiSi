@@ -101,15 +101,6 @@ export default function SystemHealth({ state = {}, positions = {}, candles = [],
             {liveLabel}
           </span>
 
-          <span style={{
-            fontFamily: 'monospace', fontSize: 11, fontWeight: 800,
-            color: pnl >= 0 ? '#10b981' : '#ef4444',
-            background: pnl >= 0 ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
-            border: `1px solid ${pnl >= 0 ? '#10b98130' : '#ef444430'}`,
-            borderRadius: 6, padding: '2px 8px',
-          }}>
-            ${balance.toFixed(2)}
-          </span>
         </div>
 
         <button onClick={() => setExpanded(e => !e)} style={{
@@ -127,10 +118,14 @@ export default function SystemHealth({ state = {}, positions = {}, candles = [],
       }}>
 
         {/* KPI row */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 12 }}>
+          <KPI label="Balance"
+            value={`$${balance.toFixed(2)}`}
+            sub={`started $${startBalance.toFixed(2)}`}
+            color={balance >= startBalance ? '#10b981' : '#ef4444'} />
           <KPI label="Net P&L"
             value={`${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`}
-            sub={`${pnl >= 0 ? '+' : ''}${startBalance > 0 ? ((pnl/startBalance)*100).toFixed(1) : 0}% return`}
+            sub={`${pnl >= 0 ? '+' : ''}${startBalance > 0 ? ((pnl/startBalance)*100).toFixed(1) : 0}%`}
             color={pnl >= 0 ? '#10b981' : '#ef4444'} />
           <KPI label="Win Rate"
             value={wr === '—' ? '—' : `${wr}%`}

@@ -12,8 +12,6 @@ const ASSETS = [
   { asset: 'XRP',  tf: '15m', color: '#006097', tier: '60%' },
   { asset: 'DOGE', tf: '5m',  color: '#e1b303', tier: '35%' },
   { asset: 'DOGE', tf: '15m', color: '#cc9e02', tier: '35%' },
-  { asset: 'LINK', tf: '5m',  color: '#2b7fff', tier: '50%' },
-  { asset: 'LINK', tf: '15m', color: '#1a5fd6', tier: '50%' },
   { asset: 'BNB',  tf: '5m',  color: '#f3ba2f', tier: '50%' },
   { asset: 'BNB',  tf: '15m', color: '#d6a325', tier: '50%' },
 ];
@@ -36,6 +34,7 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
   const candleInfo = (candles || []).find(c => c.asset === asset && c.tf === tf);
   const serverSecs = candleInfo ? candleInfo.secs : null;
   const [localSecs, setLocalSecs] = useState(null);
+  const [hovered, setHovered] = useState(false);
 
   const pythData  = state?.pythPrices?.[asset];
   const pythPrice = pythData?.price;
@@ -63,18 +62,25 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
   const pnlColor = stats.unrealizedPnl >= 0 ? '#10b981' : '#ef4444';
 
   return (
-    <div style={{
-      background: `linear-gradient(135deg, rgba(22,22,25,0.85) 0%, rgba(12,12,14,0.92) 100%)`,
-      borderRadius: 12,
-      border: `1px solid ${hasOpen ? color + '55' : 'rgba(255,255,255,0.06)'}`,
-      borderLeft: `3px solid ${color}`,
-      padding: '12px 14px',
-      minWidth: 160, flex: '1 1 calc(16% - 8px)',
-      display: 'flex', flexDirection: 'column', gap: 8,
-      backdropFilter: 'blur(12px)',
-      boxShadow: hasOpen ? `0 0 12px ${color}22` : '0 2px 8px rgba(0,0,0,0.3)',
-      transition: 'all 0.25s cubic-bezier(0.4,0,0.2,1)',
-    }}>
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        background: `linear-gradient(135deg, rgba(22,22,25,0.85) 0%, rgba(12,12,14,0.92) 100%)`,
+        borderRadius: 12,
+        border: `1px solid ${hovered ? '#c59b27' : hasOpen ? color + '55' : 'rgba(255,255,255,0.06)'}`,
+        borderLeft: `3px solid ${color}`,
+        padding: '12px 14px',
+        minWidth: 160, flex: '1 1 calc(16% - 8px)',
+        display: 'flex', flexDirection: 'column', gap: 8,
+        backdropFilter: 'blur(12px)',
+        boxShadow: hovered
+          ? `0 8px 28px rgba(0,0,0,0.55), 0 0 20px rgba(197,155,39,0.22)`
+          : hasOpen ? `0 0 12px ${color}22` : '0 2px 8px rgba(0,0,0,0.3)',
+        transform: hovered ? 'translateY(-3px)' : 'translateY(0)',
+        transition: 'all 0.25s cubic-bezier(0.4,0,0.2,1)',
+        cursor: 'default',
+      }}>
       {/* Header row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
@@ -131,7 +137,8 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
 }
 
 export default function AssetCards({ positions, candles, state }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded]       = useState(false);
+  const [btnHovered, setBtnHovered]   = useState(false);
 
   const withOpen = ASSETS.filter(a => getAssetStats(`${a.asset}/${a.tf}`, positions).count > 0);
   const fallback = ASSETS.filter(a => ['BTC', 'ETH', 'SOL'].includes(a.asset) && a.tf === '5m');
@@ -153,13 +160,20 @@ export default function AssetCards({ positions, candles, state }) {
             {expanded ? '14 assets' : `${display.length} active`}
           </span>
         </div>
-        <button onClick={() => setExpanded(e => !e)} style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
-          borderRadius: 8, padding: '5px 12px', cursor: 'pointer',
-          fontSize: 10, fontWeight: 700, color: '#a1a1aa',
-          transition: 'all 0.2s',
-        }}>
+        <button
+          onClick={() => setExpanded(e => !e)}
+          onMouseEnter={() => setBtnHovered(true)}
+          onMouseLeave={() => setBtnHovered(false)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: btnHovered ? 'rgba(192,192,215,0.08)' : 'rgba(255,255,255,0.04)',
+            border: `1px solid ${btnHovered ? 'rgba(192,192,215,0.35)' : 'rgba(255,255,255,0.08)'}`,
+            boxShadow: btnHovered ? '0 0 10px rgba(192,192,215,0.15), inset 0 1px 0 rgba(255,255,255,0.08)' : 'none',
+            borderRadius: 8, padding: '5px 12px', cursor: 'pointer',
+            fontSize: 10, fontWeight: 700,
+            color: btnHovered ? '#d4d4e8' : '#a1a1aa',
+            transition: 'all 0.2s',
+          }}>
           <span style={{ display: 'inline-block', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.25s' }}>▾</span>
           {expanded ? 'Collapse' : 'Show All'}
         </button>
