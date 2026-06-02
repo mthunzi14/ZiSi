@@ -319,46 +319,120 @@ function ColHeaders({ cols, grid }) {
   );
 }
 
+// ── P&L sparkline ─────────────────────────────────────────────────────────────
+
+function PnLSparkline({ values }) {
+  if (values.length < 2) return null;
+  const min = Math.min(...values, 0);
+  const max = Math.max(...values, 0);
+  const range = max - min || 1;
+  const W = 220, H = 28;
+  const toY = v => H - ((v - min) / range) * (H - 4) - 2;
+  const pts = values.map((v, i) => `${(i / (values.length - 1)) * W},${toY(v)}`).join(' ');
+  const zeroY = toY(0);
+  const last = values[values.length - 1];
+  const lineColor = last >= 0 ? '#00c853' : '#ff1744';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+      <span style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', flexShrink: 0 }}>P&amp;L Trail</span>
+      <svg width={W} height={H} style={{ overflow: 'visible', flexShrink: 0 }}>
+        <defs>
+          <linearGradient id="pnlGrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor={lineColor} stopOpacity="0.4" />
+            <stop offset="100%" stopColor={lineColor} stopOpacity="1" />
+          </linearGradient>
+        </defs>
+        <line x1={0} y1={zeroY} x2={W} y2={zeroY}
+              stroke="rgba(255,255,255,0.12)" strokeWidth={0.5} strokeDasharray="4,3" />
+        <polyline points={pts} fill="none" stroke="url(#pnlGrad)" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx={(values.length - 1) / (values.length - 1) * W} cy={toY(last)} r={3}
+                fill={lineColor} stroke="var(--color-bg-card, #111)" strokeWidth={1.5} />
+      </svg>
+      <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', fontWeight: 800, color: lineColor, flexShrink: 0 }}>
+        {last >= 0 ? '+' : ''}${last.toFixed(2)}
+      </span>
+    </div>
+  );
+}
+
 // ── Summary bar ──────────────────────────────────────────────────────────────
 
 function ClosedSummary({ closed }) {
-  const wins   = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).length;
-  const losses = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0).length;
+  if (closed.length === 0) return null;
+
+  const winTrades  = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0);
+  const lossTrades = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0);
+  const wins   = winTrades.length;
+  const losses = lossTrades.length;
   const evens  = closed.length - wins - losses;
   const totalPnl = closed.reduce((s, p) => s + parseFloat(p.realized_pnl ?? 0), 0);
   const wrN = wins + losses;
   const wr = wrN > 0 ? ((wins / wrN) * 100).toFixed(1) : '—';
   const [ciLo, ciHi] = wilson95(wins, wrN);
-  const gross = closed.reduce((s, p) => {
-    const pnl = parseFloat(p.realized_pnl ?? 0);
-    return { w: s.w + (pnl > 0 ? pnl : 0), l: s.l + (pnl < 0 ? Math.abs(pnl) : 0) };
-  }, { w: 0, l: 0 });
-  const pf = gross.l > 0 ? (gross.w / gross.l).toFixed(2) : '∞';
+
+  const grossW = winTrades.reduce((s, p) => s + parseFloat(p.realized_pnl ?? 0), 0);
+  const grossL = lossTrades.reduce((s, p) => s + Math.abs(parseFloat(p.realized_pnl ?? 0)), 0);
+  const pf = grossL > 0 ? (grossW / grossL).toFixed(2) : '∞';
+
+  const avgWin  = wins > 0 ? grossW / wins : 0;
+  const avgLoss = losses > 0 ? grossL / losses : 0;
+
+  // Best and worst trade
+  const sorted = [...closed].sort((a, b) => parseFloat(b.realized_pnl ?? 0) - parseFloat(a.realized_pnl ?? 0));
+  const bestPnl = parseFloat(sorted[0]?.realized_pnl ?? 0);
+  const worstPnl = parseFloat(sorted[sorted.length - 1]?.realized_pnl ?? 0);
+
+  // Current streak from most recent trades (chronological → newest first already from parent sort)
+  let streak = 0, streakWin = null;
+  for (const p of closed) {
+    const isW = parseFloat(p.realized_pnl ?? 0) > 0;
+    if (streakWin === null) { streakWin = isW; streak = 1; }
+    else if (isW === streakWin) streak++;
+    else break;
+  }
+
+  // Cumulative P&L sparkline (chronological = reversed from newest-first)
+  const chronoClosed = [...closed].reverse();
+  const cumValues = chronoClosed.reduce((acc, p) => {
+    acc.push((acc.length > 0 ? acc[acc.length - 1] : 0) + parseFloat(p.realized_pnl ?? 0));
+    return acc;
+  }, []);
+
+  const statCols = [
+    { label: 'Trades',   val: closed.length, color: 'var(--color-text-primary)' },
+    { label: 'Win Rate', val: (
+        <>{wr}%<span style={{ fontSize: 9, fontWeight: 500, color: 'var(--color-text-muted)', marginLeft: 4 }}>
+          {wrN > 4 ? `${ciLo.toFixed(0)}–${ciHi.toFixed(0)}%` : 'n<5'}
+        </span></>
+      ), color: parseFloat(wr) >= 62 ? 'var(--color-profit)' : parseFloat(wr) >= 45 ? 'var(--color-amber)' : 'var(--color-loss)' },
+    { label: 'W / L / E', val: `${wins} / ${losses} / ${evens}`, color: 'var(--color-text-secondary)' },
+    { label: 'Total P&L', val: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)' },
+    { label: 'Profit Factor', val: pf, color: parseFloat(pf) >= 1.5 ? 'var(--color-profit)' : parseFloat(pf) >= 1 ? 'var(--color-amber)' : 'var(--color-loss)' },
+    { label: 'Avg Win',   val: avgWin > 0 ? `+$${avgWin.toFixed(2)}` : '—', color: 'var(--color-profit)' },
+    { label: 'Avg Loss',  val: avgLoss > 0 ? `-$${avgLoss.toFixed(2)}` : '—', color: 'var(--color-loss)' },
+    { label: 'Best',  val: bestPnl > 0 ? `+$${bestPnl.toFixed(2)}` : '—', color: 'var(--color-profit)' },
+    { label: 'Worst', val: worstPnl < 0 ? `-$${Math.abs(worstPnl).toFixed(2)}` : '—', color: 'var(--color-loss)' },
+    { label: 'Streak', val: streak > 1
+        ? <span style={{ letterSpacing: 0 }}>{streakWin ? '🔥' : '❄️'} {streak}{streakWin ? 'W' : 'L'}</span>
+        : `${streakWin ? 'W' : 'L'}`,
+      color: streakWin ? 'var(--color-profit)' : 'var(--color-loss)' },
+  ];
 
   return (
     <div style={{
-      display: 'flex', gap: 20, padding: '8px 0 12px 0',
+      padding: '8px 0 12px 0',
       borderBottom: '1px solid rgba(255,255,255,0.06)',
-      marginBottom: 8, flexWrap: 'wrap',
+      marginBottom: 8,
     }}>
-      {[
-        { label: 'Trades', val: closed.length, color: 'var(--color-text-primary)' },
-        { label: 'Win Rate', val: (
-            <>{wr}%{wrN > 0 && (
-              <span style={{ fontSize: 9, fontWeight: 500, color: 'var(--color-text-muted)', marginLeft: 4 }}>
-                95% CI {ciLo.toFixed(0)}–{ciHi.toFixed(0)}%
-              </span>
-            )}</>
-          ), color: parseFloat(wr) >= 62 ? 'var(--color-profit)' : parseFloat(wr) >= 45 ? 'var(--color-amber)' : 'var(--color-loss)' },
-        { label: 'W / L / E', val: `${wins} / ${losses} / ${evens}`, color: 'var(--color-text-secondary)' },
-        { label: 'Total P&L', val: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)' },
-        { label: 'Profit Factor', val: pf, color: parseFloat(pf) >= 1.5 ? 'var(--color-profit)' : parseFloat(pf) >= 1 ? 'var(--color-amber)' : 'var(--color-loss)' },
-      ].map(({ label, val, color }) => (
-        <div key={label}>
-          <div style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>{label}</div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, color }}>{val}</div>
-        </div>
-      ))}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 4 }}>
+        {statCols.map(({ label, val, color }) => (
+          <div key={label}>
+            <div style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>{label}</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, color }}>{val}</div>
+          </div>
+        ))}
+      </div>
+      <PnLSparkline values={cumValues} />
     </div>
   );
 }
