@@ -161,10 +161,11 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
     Background daemon task running a T-15s candle close scanner to exploit the Pyth-vs-Polymarket latency edge.
     """
     log.info("[LATENCY-ARB] Starting T-15s latency arbitrage scanner daemon...")
-    last_scanned_close = {}  # (asset, timeframe) -> next_close_ts
-    lat_arb_count = {}      # next_close_ts -> number of tasks spawned (cap at 3)
+    last_scanned_close = {}   # (asset, timeframe) -> next_close_ts  [T-15s window]
+    last_scanned_t5 = {}      # (asset, timeframe) -> next_close_ts  [T-5s window]
+    lat_arb_count = {}        # next_close_ts -> number of tasks spawned (cap at 3)
 
-    async def scan_and_trade(engine, next_close, time_left):
+    async def scan_and_trade(engine, next_close, time_left, t_minus=15):
         asset = engine.asset
         timeframe = engine.timeframe
         interval_minutes = int(timeframe.rstrip("m"))
@@ -180,7 +181,16 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             if pyth_price <= 0.0:
                 log.warning("[LATENCY-ARB] No Pyth price available for %s", asset)
                 return
-                
+
+            # T-5s freshness gate: near-certainty requires very fresh oracle
+            if t_minus == 5:
+                pyth_ts = GLOBAL_ORACLE_CACHE.get(asset, {}).get("timestamp", 0.0)
+                pyth_age = time.time() - pyth_ts
+                if pyth_age > 3.0:
+                    log.info("[T5-SCANNER] %s/%s: Pyth stale (%.1fs > 3s) — skip",
+                             asset, timeframe, pyth_age)
+                    return
+
             # 2. Fetch candle open price (klines[-1][1])
             from core.engine.updown_engine import _fetch_klines_async
             tf_map = {"5m": ("5m", 30), "15m": ("15m", 30)}
@@ -193,13 +203,17 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             open_price = float(klines[-1][1])
             pct_move = (pyth_price - open_price) / open_price
             
-            # 5m requires a stronger 0.5% move; 15m keeps 0.4% threshold
-            _lat_threshold = 0.005 if timeframe == "5m" else 0.004
+            if t_minus == 5:
+                _lat_threshold = 0.003  # T-5s: candle direction just needs to be clear
+            elif timeframe == "5m":
+                _lat_threshold = 0.005  # T-15s 5m: stronger requirement
+            else:
+                _lat_threshold = 0.004  # T-15s 15m: standard
             if abs(pct_move) < _lat_threshold:
                 return
 
             # Regime gate: if last 2 closed candles flipped direction → choppy market, skip
-            if len(klines) >= 3:
+            if t_minus != 5 and len(klines) >= 3:
                 c_last = klines[-2]
                 c_prev = klines[-3]
                 last_bull = float(c_last[4]) > float(c_last[1])
@@ -272,7 +286,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 return
 
             # ATM gate — coin-flip zone is edge-negative on any timeframe
-            if 0.44 <= entry_price <= 0.56:
+            if t_minus != 5 and 0.44 <= entry_price <= 0.56:
                 log.info("[LATENCY-ARB] %s/%s ATM_BLOCK: %.0f¢ in coin-flip zone, skipping.",
                          asset, timeframe, entry_price * 100)
                 return
@@ -298,10 +312,14 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             current_balance = get_current_balance()
 
             normal_usd = engine.compute_size(0.85, entry_price, current_balance)
-            usd_size = max(1.0, normal_usd * 0.5)
-            if timeframe == "15m":
-                usd_size *= 1.5
-                log.info("[LATENCY-ARB] 15m premium: 1.5x size -> $%.2f", usd_size)
+            if t_minus == 5:
+                usd_size = max(1.0, normal_usd * 0.35)  # T-5s: small-ROI near-certainty
+                log.info("[T5-SCANNER] %s/%s near-certainty sizing 0.35x: $%.2f", asset, timeframe, usd_size)
+            else:
+                usd_size = max(1.0, normal_usd * 0.5)
+                if timeframe == "15m":
+                    usd_size *= 1.5
+                    log.info("[LATENCY-ARB] 15m premium: 1.5x size -> $%.2f", usd_size)
             
             # Apply Altcoin Sizing Gates
             if asset in ["SOL", "XRP"]:
@@ -408,7 +426,18 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                     # Prune stale boundary counts (keep only last 30 minutes)
                     cutoff = int(now) - 1800
                     lat_arb_count = {k: v for k, v in lat_arb_count.items() if k > cutoff}
-                    
+
+                # T-5s near-certainty window
+                elif 2.5 <= time_left <= 6.5:
+                    if last_scanned_t5.get((asset, timeframe)) == next_close:
+                        continue
+                    if asset == "DOGE":
+                        continue  # DOGE excluded: noisy Pyth
+                    last_scanned_t5[(asset, timeframe)] = next_close
+                    log.info("[T5-SCANNER] Spawning near-certainty scan %s/%s at T-%.1fs",
+                             asset, timeframe, time_left)
+                    asyncio.create_task(scan_and_trade(engine, next_close, time_left, t_minus=5))
+
         except Exception as e:
             log.error("[LATENCY-ARB] Scanner loop error: %s", e, exc_info=True)
             
