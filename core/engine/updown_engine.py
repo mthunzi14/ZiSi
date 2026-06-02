@@ -72,7 +72,7 @@ KELLY = {
     "LOW":  (0.015, 0.050),   # score 0.62-0.75: 1.5% Kelly, 5% cap
 }
 MIN_USD = 1.00
-VOLUME_GATE_FLOORS = {"BTC": 2.0, "ETH": 10.0, "SOL": 75.0, "XRP": 5000.0, "DOGE": 10000.0, "LINK": 200.0, "BNB": 10.0}
+VOLUME_GATE_FLOORS = {"BTC": 2.0, "ETH": 10.0, "SOL": 75.0, "XRP": 5000.0, "DOGE": 10000.0}
 UPDOWN_MIN_LIQUIDITY = 0.0
 
 SCORE_TO_WR = [
@@ -541,11 +541,11 @@ class UpDownEngine:
 
             _expensive_fv = _entry_price_fv > 0.50
             if _expensive_fv and _cross_tf_conflict:
-                _min_edge = 0.20
-            elif _expensive_fv or _cross_tf_conflict:
-                _min_edge = 0.18
-            else:
                 _min_edge = 0.10
+            elif _expensive_fv or _cross_tf_conflict:
+                _min_edge = 0.08
+            else:
+                _min_edge = 0.05
 
             # Macro-aware FV edge penalty: raises the edge bar when the 8-candle macro
             # trend conflicts with FV direction, preventing macro-opposing FV entries.
@@ -572,6 +572,15 @@ class UpDownEngine:
                         _fv["direction"], _min_edge,
                     )
 
+            # Dynamic price floor: only block low-priced entries on weak Pyth moves
+            _fv_pct_move = abs(float(klines[-1][4]) - float(klines[-1][1])) / max(float(klines[-1][1]), 1e-9)
+            if _entry_price_fv < 0.15 and _fv_pct_move < 0.004:
+                log.info(
+                    "[PRICE-FLOOR] %s/%s: FV entry %.0fc with weak move %.4f%% — skip",
+                    self.asset, self.timeframe, _entry_price_fv * 100, _fv_pct_move * 100,
+                )
+                _fv = {"direction": None, "edge": 0.0, "archetype": None}
+
             if _fv["edge"] < _min_edge:
                 log.info(
                     "[FV-EDGE-GATE] %s/%s: edge %.3f < required %.3f (price=%.2f) — skip",
@@ -581,11 +590,12 @@ class UpDownEngine:
 
         # Multi-asset corroboration (5m FV only): require ≥1 peer asset's last
         # closed candle to agree with the FV direction before committing.
+        _corroboration_multiplier = 1.0  # default: no corroboration effect
         if self.timeframe == "5m" and _fv.get("direction") is not None:
             _PEERS = {
                 "BTC": ["ETH", "SOL"], "ETH": ["BTC", "SOL"],
                 "SOL": ["BTC", "ETH"], "XRP": ["BTC", "ETH"],
-                "DOGE": ["BTC"], "LINK": ["BTC", "ETH"], "BNB": ["BTC"],
+                "DOGE": ["BTC"],
             }
             _corroborated = False
             for _peer in _PEERS.get(self.asset, []):
@@ -598,12 +608,14 @@ class UpDownEngine:
                             break
                 except Exception:
                     pass
-            if not _corroborated:
-                log.info(
-                    "[CORROBORATE] %s/5m: no peer asset agrees with FV %s — skip",
-                    self.asset, _fv["direction"],
-                )
-                _fv = {"direction": None, "edge": 0.0, "archetype": None}
+            _corroboration_multiplier = 1.3 if _corroborated else 0.7
+            log.info(
+                "[CORROBORATE] %s/5m: %s FV %s — size_mult=%.1f",
+                self.asset,
+                "peer agrees" if _corroborated else "no peer",
+                _fv["direction"],
+                _corroboration_multiplier,
+            )
         # ─────────────────────────────────────────────────────────────────────
 
         # Track whether this entry is driven by fair-value or pure RSI/OFI signal
@@ -625,15 +637,7 @@ class UpDownEngine:
         if self.invert_signal:
             direction = "DOWN" if direction == "UP" else "UP"
 
-        # Same-asset direction cooldown: after a trade on this asset closes in direction D,
-        # block new trades in direction D for 15 minutes to prevent chasing.
-        if self._is_dir_cooldown_active(direction):
-            log.info(
-                "[DIR-COOLDOWN] %s/%s: %s blocked — same asset+direction within 15 min",
-                self.asset, self.timeframe, direction,
-            )
-            _write_gate_event(self.asset, self.timeframe, "DIR-COOLDOWN", direction, "same asset+direction within 15 min")
-            return None
+        # DIR-COOLDOWN removed: Bone Reaper Mode fires every candle regardless of prior direction
 
         # ── Real-time trend gate + per-asset choppy detection ────────────────
         # Slope of closes[-5:] measures current 5-candle drift.
@@ -914,6 +918,7 @@ class UpDownEngine:
             "is_dual_eligible": is_dual_eligible,
             "edge_context": edge_ctx,
             "entry_source": entry_source,
+            "corroboration_multiplier": _corroboration_multiplier,
         }
 
     async def _resolve_l2_prices(
