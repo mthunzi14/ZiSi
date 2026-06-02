@@ -232,7 +232,18 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             if already_entered:
                 log.info("[LATENCY-ARB] Already entered market for %s/%s in this candle, skipping.", asset, timeframe)
                 return
-                
+
+            # Same-direction exposure cap: max 2 open positions in same direction
+            signal_is_up = direction == "UP"
+            same_dir_open = sum(
+                1 for p in open_positions
+                if (p.get("direction") in ("YES", "UP")) == signal_is_up
+            )
+            if same_dir_open >= 2:
+                log.info("[LATENCY-ARB] %s/%s SAME_DIR_CAP: %d open %s positions — skip",
+                         asset, timeframe, same_dir_open, direction)
+                return
+
             # 4. Check prices and implied probability
             abs_move = abs(pct_move)
             if abs_move >= 0.004:

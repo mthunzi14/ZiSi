@@ -267,6 +267,21 @@ async def _validate_trade_slot(
         is_dual = False
 
     open_positions = state_manager.get_open_positions()
+
+    # Same-direction exposure cap: max 2 open positions in same direction at once.
+    # Prevents piling into an exhausted trend and magnifying directional loss clusters.
+    signal_is_up = direction == "UP"
+    same_dir_open = sum(
+        1 for p in open_positions
+        if (p.get("direction") in ("YES", "UP")) == signal_is_up
+    )
+    if same_dir_open >= 2:
+        context.log_skip("same_dir_cap", asset, timeframe,
+                         {"direction": direction, "open_same_dir": same_dir_open})
+        log.info("[RISK] %s/%s SAME_DIR_CAP: already %d open %s positions — skip",
+                 asset, timeframe, same_dir_open, direction)
+        return False, {}
+
     allowed, slot_reason = await request_trade_slot(
         asset, timeframe, score, interval_minutes, open_positions, is_dual=is_dual, direction=direction,
     )

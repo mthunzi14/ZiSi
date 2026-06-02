@@ -690,6 +690,24 @@ class UpDownEngine:
         if score < 0.50 and not is_dual_eligible:
             return None
 
+        # Directional saturation gate: prevent doubling-down on exhausted trends.
+        # After 3 consecutive same-direction closed trades → reduce size via score.
+        # After 4+ → skip entirely (trend is overextended, reversal risk is high).
+        _dir_streak = self._recent_same_direction_streak(direction, n=6)
+        if _dir_streak >= 4:
+            log.info(
+                "[DIR-SAT] %s/%s: %d consecutive %s entries — directional saturation, SKIP",
+                self.asset, self.timeframe, _dir_streak, direction,
+            )
+            return None
+        elif _dir_streak == 3:
+            old_score = score
+            score = max(0.50, score - 0.12)
+            log.info(
+                "[DIR-SAT] %s/%s: 3 consecutive %s — soft penalty %.2f -> %.2f (smaller size)",
+                self.asset, self.timeframe, direction, old_score, score,
+            )
+
         log.info(
             "[ENGINE] %s/%s SIGNAL: %s | Score=%.2f | up=%.0fc dn=%.0fc | dual=%s | %s",
             self.asset, self.timeframe, direction, score,
@@ -1148,6 +1166,29 @@ class UpDownEngine:
         
         shares = round(usd / price)
         return shares * price  # actual cost from shares-first rounding
+
+    def _recent_same_direction_streak(self, direction: str, n: int = 6) -> int:
+        """Count consecutive recent closed trades in the same direction as signal."""
+        try:
+            import json
+            from pathlib import Path
+            path = Path(__file__).parent.parent.parent / "infrastructure" / "exchange" / "positions_state.json"
+            if not path.exists():
+                return 0
+            data = json.loads(path.read_text(encoding="utf-8"))
+            closed = data.get("closed", [])[:n]
+        except Exception:
+            return 0
+        signal_up = direction == "UP"
+        streak = 0
+        for trade in closed:
+            trade_dir = trade.get("direction", "")
+            trade_is_up = trade_dir in ("YES", "UP")
+            if trade_is_up == signal_up:
+                streak += 1
+            else:
+                break
+        return streak
 
     def _recent_closed_loss_streak(self, n: int = 3) -> int:
         """Return consecutive recent closed losses from positions_state.json."""
