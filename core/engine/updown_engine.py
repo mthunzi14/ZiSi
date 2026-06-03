@@ -850,8 +850,8 @@ class UpDownEngine:
             log.warning("[EDGE] Failed to query EdgeOrchestrator in generate_signal: %s", e)
             self.last_edge_context = None
 
-        # Confluence-Veto Gate: Block directional SINGLE trades if confluence score is 0 (complete macro trend conflict)
-        if not is_dual_eligible and edge_ctx and edge_ctx.get("confluence_score", 2) == 0:
+        # Confluence-Veto Gate: SIG-only — FV signal is Pyth divergence, not multi-TF RSI consensus
+        if entry_source != "FAIR_VAL" and not is_dual_eligible and edge_ctx and edge_ctx.get("confluence_score", 2) == 0:
             log.warning(
                 "[CONFLUENCE-VETO] %s/%s: Blocking directional entry due to complete lack of multi-timeframe agreement (score = 0)",
                 self.asset, self.timeframe
@@ -861,17 +861,15 @@ class UpDownEngine:
         if score < 0.50 and not is_dual_eligible:
             return None
 
-        # Directional saturation gate: prevent doubling-down on exhausted trends.
-        # After 3 consecutive same-direction closed trades → reduce size via score.
-        # After 4+ → skip entirely (trend is overextended, reversal risk is high).
+        # Directional saturation gate: SIG-only — FV fires on Pyth divergence every candle like Bone Reaper
         _dir_streak = self._recent_same_direction_streak(direction, n=6)
-        if _dir_streak >= 4:
+        if entry_source != "FAIR_VAL" and _dir_streak >= 4:
             log.info(
                 "[DIR-SAT] %s/%s: %d consecutive %s entries — directional saturation, SKIP",
                 self.asset, self.timeframe, _dir_streak, direction,
             )
             return None
-        elif _dir_streak == 3:
+        elif entry_source != "FAIR_VAL" and _dir_streak == 3:
             old_score = score
             score = max(0.50, score - 0.12)
             log.info(

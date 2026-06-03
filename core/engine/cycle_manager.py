@@ -212,8 +212,9 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             if abs(pct_move) < _lat_threshold:
                 return
 
-            # Regime gate: if last 2 closed candles flipped direction → choppy market, skip
-            if t_minus != 5 and len(klines) >= 3:
+            # Regime gate: if last 2 closed candles flipped direction → choppy market, skip (XRP/SOL only)
+            # BTC/ETH exempt — Bone Reaper fires every candle regardless of prior candle direction
+            if t_minus != 5 and asset not in ("BTC", "ETH") and len(klines) >= 3:
                 c_last = klines[-2]
                 c_prev = klines[-3]
                 last_bull = float(c_last[4]) > float(c_last[1])
@@ -249,13 +250,13 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 log.info("[LATENCY-ARB] Already entered market for %s/%s in this candle, skipping.", asset, timeframe)
                 return
 
-            # Same-direction exposure cap: max 2 open positions in same direction
+            # Same-direction exposure cap: max 5 open positions in same direction
             signal_is_up = direction == "UP"
             same_dir_open = sum(
                 1 for p in open_positions
                 if (p.get("direction") in ("YES", "UP")) == signal_is_up
             )
-            if same_dir_open >= 2:
+            if same_dir_open >= 5:
                 log.info("[LATENCY-ARB] %s/%s SAME_DIR_CAP: %d open %s positions — skip",
                          asset, timeframe, same_dir_open, direction)
                 return
@@ -285,26 +286,13 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                          asset, timeframe, entry_price * 100, abs(pct_move) * 100)
                 return
 
-            # ATM gate — coin-flip zone is edge-negative on any timeframe
-            if t_minus != 5 and 0.44 <= entry_price <= 0.56:
-                log.info("[LATENCY-ARB] %s/%s ATM_BLOCK: %.0f¢ in coin-flip zone, skipping.",
-                         asset, timeframe, entry_price * 100)
-                return
+            # ATM gate removed — at T-15s Pyth signal IS the edge regardless of current market price
 
-            # Retrieve active session discount hurdle (Sprint 11)
-            discount_hurdle = 0.06
-            try:
-                from core.shared.session_manager import TradingSessionManager
-                session_params = TradingSessionManager.get_active_session_params()
-                discount_hurdle = session_params.get("discount_hurdle", 0.06)
-                log.info("[LATENCY-ARB] Active session discount hurdle is %.2fc", discount_hurdle * 100)
-            except Exception as e:
-                log.warning("[LATENCY-ARB] Failed to load session discount hurdle: %s", e)
-
-            # Arbitrage entry discount gate check
-            if entry_price >= (implied_prob - discount_hurdle):
-                log.info("[LATENCY-ARB] %s/%s %s price %.2f does not offer enough discount vs implied prob %.2f (requires < %.2f)",
-                         asset, timeframe, direction, entry_price, implied_prob, implied_prob - discount_hurdle)
+            # Discount gate: only block if we'd have negative EV (entry >= our own probability estimate)
+            # At 99% confidence, any entry < 99c is positive EV — Bone Reaper enters at 72-99c
+            if entry_price >= implied_prob:
+                log.info("[LATENCY-ARB] %s/%s %s price %.2f >= implied_prob %.2f — negative EV, skip",
+                         asset, timeframe, direction, entry_price, implied_prob)
                 return
                 
             # 5. Position sizing — 15m gets 1.5× premium (82% WR earns it), 5m stays conservative
