@@ -1,179 +1,169 @@
-# 🧬 ZiSi v2 — Autonomous Prediction Market Trading Workstation
-## Powered by the ZiSi Edge Architecture
+# ZiSi — Autonomous Paper Trading Bot
 
-ZiSi v2 is an institutional-grade, high-frequency, multi-source quantitative trading workstation designed for high-velocity predictive arbitrage on **Polymarket** and **Kalshi**. 
+ZiSi is a fully autonomous paper trading bot for [Polymarket](https://polymarket.com) binary prediction markets. It trades crypto Up/Down markets — 5-minute and 15-minute binary outcomes on BTC, ETH, SOL, XRP, and DOGE.
 
-Equipped with the **ZiSi Edge Architecture**, this workstation operates fully autonomously 24/7, employing a multi-layered matrix of 11 mathematical advancements that optimize entry timing, execute predictive hedging, dynamically size bets based on edge, manage portfolio heat, and calibrate optimal exits.
+Built from the ground up over several months, ZiSi combines real-time oracle pricing, multi-timeframe signal analysis, adaptive position sizing, and a full Bloomberg-style monitoring dashboard.
+
+---
+
+## Architecture
 
 ```
-                      ┌────────────────────────────────────────┐
-                      │   News Harvest (11 channels, 24/7)     │
-                      │   CoinTelegraph · Decrypt · Reddit...  │
-                      └───────────────────┬────────────────────┘
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │  Vol Surface (E) & Whale Tracker (J)   │
-                      │  Funding Rates · Open Interest · Flow  │
-                      └───────────────────┬────────────────────┘
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │  Regime-Shift (A) & Confluence (G)     │
-                      │  TRENDING · MEAN_REVERT · COMPRESS...  │
-                      │  1m / 5m / 15m / 1h Timeframe Engine   │
-                      └───────────────────┬────────────────────┘
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │   Adaptive Kelly (D) & Anti-Fragile(M) │
-                      │   Half-Kelly · Correlation Heat (L)    │
-                      └───────────────────┬────────────────────┘
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │        Active Order Execution          │
-                      │  Polymarket UP/DOWN · Kalshi Events    │
-                      │  Dual-Arbitrage · Private RPC Bundles  │
-                      └───────────────────┬────────────────────┘
-                                          ▼
-                      ┌────────────────────────────────────────┐
-                      │      RL Exit (I) & ML Retrain (H)      │
-                      │  Q-Learning Exits · PyTorch LSTM       │
-                      └────────────────────────────────────────┘
+app/
+  main.py                  — Asyncio entry point, trade execution, risk gates
+core/
+  engine/
+    updown_engine.py       — Primary signal engine (FV signal, confluence cascade)
+    cycle_manager.py       — Candle-boundary LAT scanner daemon
+    session_governor.py    — Cross-asset trade slot coordination
+    confluence_engine.py   — Multi-timeframe RSI/momentum confluence scoring
+    regime_filter.py       — Market regime detection (Trending / Mean-Rev / Chaos)
+  risk/
+    risk_manager.py        — Kelly sizing, daily loss gate, entry price gate
+  pyth_oracle_service.py   — Real-time Pyth oracle price feed
+infrastructure/
+  websocket/               — Polymarket L2 CLOB WebSocket gateway
+  exchange/                — Order placement, positions state
+  state/                   — Account state, engine status, balance history
+presentation/
+  dashboard/
+    backend/               — Express.js API server (Node.js)
+    frontend/              — React + Recharts Bloomberg terminal UI
+miscellaneous/
+  clean_slate.py           — Session archive + state reset utility
 ```
 
 ---
 
-## 🏗️ Technical Architecture & Project Structure
+## Trade Types
 
-The codebase has been refactored into a clean, modular structure. All scratchscripts, obsolete archives, and non-essential documentation files have been consolidated into dedicated folders to maintain a highly professional repository layout:
+ZiSi executes four distinct trade types, each tracked separately:
 
+| Type | Label | Description |
+|------|-------|-------------|
+| Fair Value | `FV` | Enters when the Pyth oracle price diverges from the Polymarket contract's implied fair value |
+| Latency Arbitrage | `LAT` | Fires at T-15s or T-5s before candle close when Pyth shows a clear directional edge |
+| Reversal Snipe | `REV` | Counter-trend entry on exhausted momentum |
+| Signal | `SIG` | Full 18-layer confluence cascade: RSI, OFI, FinBERT, Markov chain, multi-TF alignment |
+
+---
+
+## Signal Engine
+
+### Fair Value (FV) Signal
+Compares the real-time Pyth oracle price against the current Polymarket contract price. When the market's implied probability diverges from Pyth's directional signal by at least 5c, a fair-value entry is triggered.
+
+**FV protection gates:**
+- Macro-aware edge penalty: when 5+/8 prior candles oppose the FV direction, the edge bar raises to 18c or 25c
+- Cross-TF conflict: when the 15m candle contradicts the 5m FV signal, edge bar raises
+- Price floor: entries below 15c contract price are blocked unless the Pyth move is >= 0.4%
+
+### Latency Arbitrage (LAT) Scanner
+A background daemon fires at two candle-close windows:
+- **T-15s**: Standard scan — Pyth divergence >= 0.3% (15m) or >= 0.5% (5m)
+- **T-5s**: Near-certainty scan — candle direction is locked in, Pyth freshness < 3s required
+
+LAT includes a 60-second global cooldown to prevent simultaneous multi-asset false-signal entries.
+
+### Confluence Cascade (SIG)
+18 signals evaluated and scored:
+- RSI (1m, 5m, 15m, 1h)
+- Order Flow Imbalance (OFI)
+- FinBERT sentiment (crypto news)
+- Markov chain state transitions
+- Volume relative to 14-period average
+- Multi-timeframe momentum alignment
+
+Minimum score of 6/18 required to fire a SIG trade.
+
+---
+
+## Risk Management
+
+**Position sizing:** Adaptive Kelly Criterion — scales with signal confidence, current balance, and session multiplier.
+
+**Gates (in order of evaluation):**
+1. Regime filter — VOLATILE CHAOS reduces sizing 70%, blocks SIG entirely
+2. Timing gate — entries only within the first 15s of a candle (engine) or T-15s/T-5s windows (LAT)
+3. Fair value edge gate — minimum FV edge required (5c base, raised by macro conflict)
+4. Macro gate — blocks directional trades when 6+/8 candles strongly oppose signal direction
+5. Corroboration — peer asset agreement adjusts sizing (1.3x with peer, 0.7x without)
+6. Spread gate — maximum 15% bid-ask spread enforced
+7. ATM gate — LAT entries blocked in 44-56c zone (coin-flip territory)
+8. Price floor — dynamic: weak signals below 15c contract price blocked
+9. Session governor — concurrent position limits, BTC/ETH tier-1 priority
+10. Daily loss circuit breaker — configurable halt threshold
+
+**Concurrent position support:** BTC/ETH 5m and 15m markets run simultaneously. BTC and ETH are always allocated a slot ahead of lower-tier assets.
+
+**Cross-asset lag entry:** When BTC fires a strong directional signal (>= 0.5% Pyth move) and ETH hasn't priced in the move yet, ETH is automatically entered in BTC's direction.
+
+---
+
+## Dashboard
+
+Bloomberg-style monitoring terminal built in React + Recharts, served via Express.
+
+**Real-time panels:**
+- **Trade Ledger** — full trade history with entry/exit/hold/reason, session analytics, asset heatmap, "Why No Trade" status pill
+- **Portfolio Performance** — equity curve, win rate chart, per-type breakdown (LAT/FV/SIG/REV)
+- **System Health** — heartbeat, uptime, open positions, circuit breaker status, session KPIs
+- **Scanning Grid** — per-asset/timeframe cards with live Pyth oracle price, candle countdown timer, unrealized P&L
+- **Gate Event Log** — real-time stream of gate blocks with reason codes
+- **Session Analytics** — peak P&L, max drawdown, LAT/FV/SIG equity sparklines
+
+**Dashboard API** (port 5000):
 ```
-ZiSi_Bot/
-├── app/                        # Bootstrapping and orchestration
-│   ├── main.py                 # Core asyncio loop (staggered 15s checks)
-│   ├── sovereign_runner.py     # Independent daemon lifecycler
-│   └── telegram_bot.py         # Chat ops command & control interface
-├── core/                       # Quantitative decision engine
-│   ├── engine/                 # Market classifiers, order executors, and cycle control
-│   │   ├── confluence_engine.py  # Asynchronous multi-timeframe confluent scanner
-│   │   ├── cross_asset_propagator.py # Lead-lag velocity cascade propagator
-│   │   ├── edge_orchestrator.py  # Master integration & context builder
-│   │   ├── liquidity_heatmap.py  # L2 book stop-hunt & magnet cluster mapper
-│   │   ├── polytope_solver.py    # Simplex & Bregman KL projection solver
-│   │   ├── regime_detector.py    # 4-state advanced market regime classifier
-│   │   └── updown_engine.py      # Per-asset async trading engine & signal generator
-│   ├── ml/                     # Machine learning models, outcome loggers, and pipelines
-│   │   ├── ai_injector.py        # In-memory LSTM model inference wrapper
-│   │   ├── ml_pipeline.py        # Ensemble logistic regression retraining engine
-│   │   ├── rl_exit_optimizer.py  # Tabular Q-learning reinforcement exit trainer
-│   │   └── training_pipeline.py  # PyTorch LSTM network training pipeline
-│   ├── risk/                   # Gating chains and position sizing models
-│   │   ├── antifragile.py        # Streak-based dynamic aggression multiplier
-│   │   ├── portfolio_heat.py     # Correlation-based position sizer dampener
-│   │   └── position_sizer.py     # Math-optimal half-Kelly adaptive position sizer
-│   └── shared/                 # Config loaders, telemetry, and common utilities
-├── infrastructure/             # Native API connectors and state managers
-│   ├── exchange/               # Kalshi & Polymarket orderbook REST connectors
-│   │   └── trader.py           # Execution ledger and atomic transaction builder
-│   ├── state/                  # Heartbeat watchdogs and local database state files
-│   │   └── balance_history.py  # Equity tracking and chronological balance snapshots
-│   └── websocket/              # High-frequency WS ingest feeds
-├── presentation/               # Multi-platform visual console
-│   └── dashboard/              # Bento-style administrative control deck
-│       ├── backend/            # Express.js API gateway + process controller
-│       └── frontend/           # Premium Vite + React Obsidian-Gold HUD
-├── tests/                      # Unified unit and integration test suite
-│   ├── test_edge_integration.py # Integration validation for all new Edge modules
-│   └── test_*.py               # Component-level verification tests
-├── miscellaneous/              # Consolidation folder for design, prompt, logo, and utility files
-└── scratch/                    # Temporary developer debug scripts
+GET /api/positions       — all active + closed trades
+GET /api/state           — account balance, engine heartbeat
+GET /api/engine-status   — current scanner state (why no trade)
+GET /api/gate-log        — recent gate blocking events
+GET /api/asset-macro     — per-asset 8-candle macro direction
+GET /api/bot-logs        — live log tail (?lines=N&filter=keyword)
 ```
 
 ---
 
-## 🧬 The 11 Mathematical Edge Advancements
+## Infrastructure
 
-ZiSi v2 implements 11 specialized algorithmic models, completely integrated into the core pipeline:
-
-### 📊 1. [A] Enhanced Regime-Shift Detector (`core/engine/regime_detector.py`)
-Classifies the market in real-time into one of four statistical states:
-*   `TRENDING`: Strong directional price velocity (lower entry hurdles, trailing stops, aggressive sizing).
-*   `MEAN_REVERTING`: Oscillating price action (tighter entry hurdles, fixed target exits, standard sizing).
-*   `VOLATILE_CHAOS`: Unpredictable high-velocity swings (extremely tight hurdles, immediate stops, minimal sizing).
-*   `COMPRESSION`: Low-volatility range squeeze (reduced entry hurdles, breakout-hold exits, moderate sizing).
-*   *Parameters*: Utilizes Average True Range (ATR) percentiles, Bollinger Band Width compression, Order Book Imbalance (OBI), and volume profiles.
-
-### 📈 2. [B] Cross-Asset Signal Propagation (`core/engine/cross_asset_propagator.py`)
-Exploits inter-asset lead-lag dynamics by tracking BTC price velocity. When BTC moves $>0.15\%$ in $<30$ seconds, the module calculates the Pearson correlation coefficient with lagging alts (ETH, SOL, XRP) and issues pre-emptive directional entries *before* the altcoin's own indicators register.
-
-### 📐 3. [D] Adaptive Kelly Sizing (`core/risk/position_sizer.py`)
-Computes the mathematically optimal bet allocation using the **half-Kelly criterion**:
-$$f^* = \frac{bp - q}{2b}$$
-where $p$ is the dynamic win probability (calibrated via Multi-TF confluence, derivatives sentiment, and historical performance), and $b$ is the current Polymarket payout ratio. It enforces a strict $0.50$ floor, $5.00$ ceiling, and caps risk at $5.0\%$ of total bankroll.
-
-### 🌊 4. [E] Volatility Surface Analysis (`core/engine/volatility_surface.py`)
-Integrates derivatives-market funding rates and Open Interest (OI) changes. Positive funding rate extremes ($>0.05\%$ per 8h) act as contrarian indicators, while rising OI confirms trend momentum, modifying quant confidence scores dynamically.
-
-### 🗺️ 5. [F] Liquidity Heatmap / Stop-Hunt Detection (`core/engine/liquidity_heatmap.py`)
-Scans the L2 order book to locate depth clusters (volumes $>3\times$ average). It uses these clusters to:
-*   Identify price levels acting as short-term magnets.
-*   Place smart stop-losses safely behind order walls.
-*   Detect typical stop-hunt setups, skipping high-risk entry zones.
-
-### ⏱️ 6. [G] Multi-Timeframe Confluence Engine (`core/engine/confluence_engine.py`)
-Asynchronously queries Binance endpoints to compute RSI and Momentum signals across 1m, 5m, 15m, and 1h intervals. Generates a Confluence Score (0 to 4) representing timeframe alignment, which feeds directly into the Kelly win-rate model.
-
-### 🧠 7. [H] Trained LSTM/Transformer Predictor (`core/ml/training_pipeline.py`)
-Upgrades the machine learning layer to train a PyTorch LSTM model on historical candle data annotated with the active regime label. The trained model acts as a high-conviction veto or confidence booster.
-
-### 🎮 8. [I] Reinforcement Learning Exit Optimizer (`core/ml/rl_exit_optimizer.py`)
-Implements a tabular Q-learning model that learns optimal exit timing based on time elapsed, current P&L, market regime, and momentum direction, dynamically adjusting standard targets.
-
-### 🐳 9. [J] On-Chain Whale Tracking (`core/engine/whale_tracker.py`)
-Tracks large-size market orders ($>10\times$ median trade volume) to evaluate whale buyer/seller pressure ratios, generating signal multipliers to verify institutional momentum.
-
-### 🌡️ 10. [L] Portfolio Heat Management (`core/risk/portfolio_heat.py`)
-Aggregates rolling correlation scores between open positions and dampens new bet sizes proportionally when correlated directional exposure builds up, preventing black-swan account drawdowns.
-
-### 🛡️ 11. [M] Anti-Fragile Recovery System (`core/risk/antifragile.py`)
-Implements a streak-based aggression sizer. A 5-trade winning streak unlocks a $1.2\times$ sizing multiplier for compounding. A 3-trade losing streak triggers a $0.6\times$ defensive size reduction, and drawdowns $>10.0\%$ restrict sizes to $0.3\times$ to guarantee account preservation.
+- **VPS:** Ubuntu, Python 3.13, Node.js v20, PM2 process manager
+- **Oracle:** Pyth Network (real-time price feeds, < 2s latency)
+- **L2 Books:** Polymarket CLOB WebSocket gateway (live bid-ask, no phantom entries)
+- **Regime detection:** ATR-based volatility classification updated each candle
+- **Session management:** Archive system preserves full session history; clean slate resets all state files
 
 ---
 
-## 🔒 Verification & Test Success
+## Session Workflow
 
-ZiSi v2 is fully verified. To run the unified unit and integration test suite, run:
+```bash
+# Deploy updates
+cd /root/ZiSi && git pull origin main && pm2 restart 3
 
-```powershell
-python -m unittest discover tests
+# Clean slate — archive session + reset balance
+python3 miscellaneous/clean_slate.py --force --balance 50 && pm2 restart 3
+
+# View live logs
+pm2 logs 3 --lines 100
 ```
-
-Output:
-```text
-Ran 44 tests in 2.508s
-
-OK
-```
-
-The test suite includes a new comprehensive integration test (`tests/test_edge_integration.py`) verifying that the `UpDownEngine` successfully coordinates with the `EdgeOrchestrator`, queries derivatives sentiment, adjusts sizes via `PositionSizer`, and feeds trade outcomes back into the `AntifragileSystem`.
 
 ---
 
-## 🖥️ Obsidian-Gold UI Dashboard Build
+## Performance Targets
 
-The premium Bento-style React control deck has been fully updated. The **RegimeRadarHUD** component renders all 4 Edge Architecture market regimes, accompanied by golden gradient intensity gauges representing real-time volatility.
-
-To build the React production assets and launch the unified workstation:
-
-```powershell
-# Compile the React frontend assets
-npm run build
-
-# Start the Node.js API server, watchdog, and Python bot process
-npm start
-```
-
-Navigate to **`http://localhost:5000`** in your browser to access the active workstations console.
+| Metric | Target |
+|--------|--------|
+| Trades per day | >= 15 |
+| Win rate | 65-75% |
+| Profit factor | > 1.5 |
+| Max daily drawdown | < 15% |
 
 ---
 
-## 🛡️ License & Attributions
-**ZiSi v2** is a proprietary high-frequency predictive arbitrage engine. Developed with deep mathematical rigor and state-of-the-art AI-assisted pairs coding.
+## Status
+
+Active paper trading. Targeting transition to live capital after consistent multi-session win rate >= 65% is demonstrated across diverse market conditions.
+
+---
+
+*Built by Mthunzi Sibiya*
