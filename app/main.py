@@ -375,7 +375,7 @@ async def asset_loop(
     if offset_seconds > 0:
         await asyncio.sleep(offset_seconds)
 
-    interval_minutes = int(timeframe.rstrip("m"))
+    interval_minutes = 60 if timeframe == "1h" else int(timeframe.rstrip("m"))
     engine = context.get_engine(asset, timeframe)
     if not engine:
         log.error("[MAIN] Engine not found for %s/%s", asset, timeframe)

@@ -313,7 +313,7 @@ class UpDownEngine:
             s_0 = float(klines[-1][1])          # current window open = strike
         except (IndexError, ValueError, TypeError):
             return {"direction": None, "edge": 0.0, "archetype": None, "fp_up": 0.5, "sigma_frac": 0.0}
-        total_min = float(int(self.timeframe.rstrip("m")))
+        total_min = 60.0 if self.timeframe == "1h" else float(int(self.timeframe.rstrip("m")))
         trs = []
         for i in range(max(1, len(klines) - 14), len(klines)):
             h, l, pc = float(klines[i][2]), float(klines[i][3]), float(klines[i - 1][4])
@@ -340,7 +340,7 @@ class UpDownEngine:
             return None
 
         # Fetch klines for the primary timeframe
-        tf_map = {"5m": ("5m", 30), "15m": ("15m", 30)}
+        tf_map = {"5m": ("5m", 30), "15m": ("15m", 30), "1h": ("1h", 30)}
         interval, limit = tf_map.get(self.timeframe, ("5m", 30))
         klines = await _fetch_klines_async(session, self.asset, interval, limit)
         if len(klines) < 16:
@@ -486,23 +486,24 @@ class UpDownEngine:
         if FAIR_VALUE_MODE and not _dec["is_reversal"]:
             _now_ts = datetime.now(timezone.utc).timestamp()
             _candle_open_ts = float(klines[-1][0]) / 1000.0
-            # Guard: if candle open is more than 2h ago the timestamp is bad data — use 0
-            if _candle_open_ts < (_now_ts - 7200):
+            # Guard: if candle open is older than 2× the candle duration it's bad data — use now
+            _candle_duration_s = 3600 if self.timeframe == "1h" else (900 if self.timeframe == "15m" else 300)
+            if _candle_open_ts < (_now_ts - _candle_duration_s * 2):
                 _candle_open_ts = _now_ts
             _elapsed_min = max(0.0, (_now_ts - _candle_open_ts) / 60.0)
-            # Candle timing gate (5m only): FV edge decays in the final 60s —
-            # entering after 4min means <60s runway, skip.
+            # Candle timing gate: FV edge decays near candle close — check max elapsed
             if self.timeframe == "5m" and _elapsed_min > 4.5:
-                log.info(
-                    "[TIMING-GATE] %s/5m: %.1f min elapsed — entry too late (<30s left), skip",
-                    self.asset, _elapsed_min,
-                )
+                log.info("[TIMING-GATE] %s/5m: %.1f min — too late, skip", self.asset, _elapsed_min)
                 return None
-            # Minimum time gate: FV at <60s into candle is pure noise — need real price movement
-            if self.timeframe == "5m" and _elapsed_min < 1.0:
+            if self.timeframe == "1h" and _elapsed_min > 59.5:
+                log.info("[TIMING-GATE] %s/1h: %.1f min — too late, skip", self.asset, _elapsed_min)
+                return None
+            # Minimum time gate: need real price movement before FV can be meaningful
+            _fv_min = 5.0 if self.timeframe == "1h" else 1.0
+            if _elapsed_min < _fv_min:
                 log.info(
-                    "[TIMING-GATE-MIN] %s/5m: %.1f min elapsed — FV needs ≥60s of candle data",
-                    self.asset, _elapsed_min,
+                    "[TIMING-GATE-MIN] %s/%s: %.1f min — FV needs ≥%.0fmin of data",
+                    self.asset, self.timeframe, _elapsed_min, _fv_min,
                 )
                 _fv = {"direction": None, "edge": 0.0, "archetype": None}
             else:
@@ -1031,7 +1032,7 @@ class UpDownEngine:
     async def prefetch_upcoming_market(self, session: aiohttp.ClientSession, next_boundary: int) -> None:
         """Prefetch token IDs for the upcoming market 20s before start and warm WebSocket."""
         coin_lower = self.asset.lower()
-        dur_min = 5 if self.timeframe == "5m" else 15
+        dur_min = 60 if self.timeframe == "1h" else (5 if self.timeframe == "5m" else 15)
         slug = f"{coin_lower}-updown-{dur_min}m-{next_boundary}"
         
         gamma_url = "https://gamma-api.polymarket.com/events"
@@ -1115,7 +1116,7 @@ class UpDownEngine:
     async def _fetch_market(self, session: aiohttp.ClientSession, is_latency_scan: bool = False) -> Optional[dict]:
         """Fetch active Up/Down market with verified L2/REST pricing (no 50c fallback)."""
         coin_lower = self.asset.lower()
-        dur_min = 5 if self.timeframe == "5m" else 15
+        dur_min = 60 if self.timeframe == "1h" else (5 if self.timeframe == "5m" else 15)
         now_ts = int(time.time())
         interval = dur_min * 60
         boundary = ((now_ts + interval) // interval) * interval

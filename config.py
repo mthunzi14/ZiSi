@@ -15,8 +15,8 @@ ASSETS: list = ["BTC", "ETH", "SOL", "XRP", "DOGE"]
 FUTURE_ASSETS: list = []
 
 TIMEFRAMES: dict = {
-    "BTC": ["5m", "15m"],
-    "ETH": ["5m", "15m"],
+    "BTC": ["5m", "15m", "1h"],   # 1h = BoneReaper hourly markets
+    "ETH": ["5m", "15m", "1h"],   # 1h = BoneReaper hourly markets
     "SOL": ["5m", "15m"],
     "XRP": ["5m", "15m"],
     "DOGE": ["5m", "15m"],

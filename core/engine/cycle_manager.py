@@ -31,6 +31,7 @@ from core.engine.trade_priority_queue import PriorityQueue, FeedbackTracker
 log = logging.getLogger("zisi.cycle_manager")
 
 _LAT_LAST_ENTRY_TS: float = 0.0  # global: 2s cooldown — only blocks exact same-second double fires
+_ACTIVE_MARKET_IDS: set = set()  # prevents FV + LAT-ARB race condition entering same market twice
 
 
 class CycleManager:
@@ -171,10 +172,21 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
     async def scan_and_trade(engine, next_close, time_left, t_minus=15):
         asset = engine.asset
         timeframe = engine.timeframe
-        interval_minutes = int(timeframe.rstrip("m"))
+        interval_minutes = 60 if timeframe == "1h" else int(timeframe.rstrip("m"))
 
         # DOGE excluded — Pyth signal too noisy for reliable latency edge
         if asset == "DOGE":
+            return
+
+        # 5m candles at T-15s: no real edge at ATM prices (25% WR confirmed)
+        # FV model handles 5m entries with proper statistical edge
+        # T-5s and T-2s still fire on 5m (near-certainty and sweep)
+        if timeframe == "5m" and t_minus == 15:
+            return
+
+        # SOL excluded from LAT-ARB T-15s — Pyth signal too noisy (20% WR)
+        # SOL still runs through FV model which handles it correctly
+        if asset == "SOL" and t_minus == 15:
             return
 
         try:
@@ -203,7 +215,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
 
             # 2. Fetch candle open price (klines[-1][1])
             from core.engine.updown_engine import _fetch_klines_async
-            tf_map = {"5m": ("5m", 30), "15m": ("15m", 30)}
+            tf_map = {"5m": ("5m", 30), "15m": ("15m", 30), "1h": ("1h", 30)}
             interval, limit = tf_map.get(timeframe, ("5m", 30))
             klines = await _fetch_klines_async(session, asset, interval, limit)
             if len(klines) < 2:
@@ -298,6 +310,17 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 log.info("[LATENCY-ARB] Already entered market for %s/%s in this candle, skipping.", asset, timeframe)
                 return
 
+            # Global market-level dedup: prevents FV engine + LAT-ARB race condition entering same market
+            global _ACTIVE_MARKET_IDS
+            _event_id = market.get("event_id", "")
+            if _event_id and _event_id in _ACTIVE_MARKET_IDS:
+                log.info("[MARKET-DEDUP] %s/%s: market %s already being entered — skip duplicate",
+                         asset, timeframe, _event_id[:12])
+                return
+            if _event_id:
+                _ACTIVE_MARKET_IDS.add(_event_id)
+                asyncio.create_task(_expire_market_lock(_event_id))
+
             # Same-direction exposure cap: max 5 open positions in same direction
             signal_is_up = direction == "UP"
             same_dir_open = sum(
@@ -334,7 +357,13 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                          asset, timeframe, entry_price * 100, abs(pct_move) * 100)
                 return
 
-            # ATM gate removed — at T-15s Pyth signal IS the edge regardless of current market price
+            # BoneReaper confirmation gate: on 15m and 1h candles at T-15s, only enter when
+            # market already agrees (65%+). ATM guessing at 43-55¢ on these candles has no edge.
+            # T-5s and T-2s bypass this — near-certainty entries are different
+            if t_minus == 15 and timeframe in ("15m", "1h") and entry_price < 0.65:
+                log.info("[BONE-CONFIRM] %s/%s: entry %.0fc below 65c floor for T-15s — skip ATM guess",
+                         asset, timeframe, entry_price * 100)
+                return
 
             # Discount gate: only block if we'd have negative EV (entry >= our own probability estimate)
             # At 99% confidence, any entry < 99c is positive EV — Bone Reaper enters at 72-99c
@@ -454,9 +483,9 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                         )
                     )
 
-                # Cross-asset lag: if BTC/ETH fired strongly, check if peer is lagging
-                # Skip at T-2s — no time to enter a second asset with 2s to close
-                if asset in ("BTC", "ETH") and abs(pct_move) >= 0.005 and t_minus not in (5, 2):
+                # LAG_TRADE removed — spawning concurrent bets on peer asset causes
+                # 3 simultaneous DOWN entries during recoveries, catastrophic when wrong
+                if False and asset in ("BTC", "ETH") and abs(pct_move) >= 0.005 and t_minus not in (5, 2):
                     asyncio.create_task(
                         check_cross_asset_lag(asset, direction, next_close)
                     )
@@ -531,6 +560,11 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
         except Exception as e:
             log.warning("[LAG-TRADE] %s→%s check failed: %s", lead_asset, peer, e)
 
+    async def _expire_market_lock(event_id: str, delay: float = 15.0) -> None:
+        """Release the market dedup lock after delay seconds."""
+        await asyncio.sleep(delay)
+        _ACTIVE_MARKET_IDS.discard(event_id)
+
     while True:
         try:
             now = time.time()
@@ -538,9 +572,9 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             for key, engine in engines.items():
                 asset = engine.asset
                 timeframe = engine.timeframe
-                interval_minutes = int(timeframe.rstrip("m"))
+                interval_minutes = 60 if engine.timeframe == "1h" else int(engine.timeframe.rstrip("m"))
                 interval_secs = interval_minutes * 60
-                
+
                 next_close = ((int(now) // interval_secs) + 1) * interval_secs
                 time_left = next_close - now
                 
@@ -658,7 +692,7 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
                 return
 
             from core.engine.updown_engine import _fetch_klines_async
-            tf_map = {"5m": ("5m", 30), "15m": ("15m", 30)}
+            tf_map = {"5m": ("5m", 30), "15m": ("15m", 30), "1h": ("1h", 30)}
             interval, limit = tf_map.get(timeframe, ("5m", 30))
             klines = await _fetch_klines_async(session, asset, interval, limit)
             if len(klines) < 2:
