@@ -387,8 +387,82 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                             boundary_ts=next_close,
                         )
                     )
+
+                # Cross-asset lag: if BTC/ETH fired strongly, check if peer is lagging
+                if asset in ("BTC", "ETH") and abs(pct_move) >= 0.005 and t_minus != 5:
+                    asyncio.create_task(
+                        check_cross_asset_lag(asset, direction, next_close)
+                    )
         except Exception as e:
             log.error("[LATENCY-ARB] Error scanning %s/%s: %s", asset, timeframe, e, exc_info=True)
+
+    async def check_cross_asset_lag(lead_asset: str, lead_direction: str, next_close: float):
+        """Enter the peer asset when it hasn't priced in the lead asset's strong move yet."""
+        peer = "ETH" if lead_asset == "BTC" else ("BTC" if lead_asset == "ETH" else None)
+        if peer is None:
+            return
+
+        peer_engine = engines.get(f"{peer}/5m")
+        if peer_engine is None:
+            return
+
+        try:
+            import infrastructure.state.state_manager as state_mgr
+            open_positions = state_mgr.get_open_positions()
+            from core.engine.session_governor import has_open_asset_tf_exposure
+            if has_open_asset_tf_exposure(open_positions, peer, "5m"):
+                log.info("[LAG-TRADE] %s/5m already open — skip lag from %s", peer, lead_asset)
+                return
+
+            market = await peer_engine._fetch_market(session, is_latency_scan=True)
+            if not market:
+                return
+
+            up_price = market["up_price"]
+            dn_price = market["dn_price"]
+
+            # Lag condition: peer market priced OPPOSITE to lead direction (hasn't followed yet)
+            if lead_direction == "UP":
+                peer_entry_price = up_price
+                market_id = market["up_market"]["id"]
+                order_direction = "YES"
+                if up_price >= 0.45:
+                    return  # Market already agrees — not a lag
+            else:
+                peer_entry_price = dn_price
+                market_id = market["dn_market"]["id"]
+                order_direction = "NO"
+                if dn_price >= 0.45:
+                    return  # Not a lag
+
+            if peer_entry_price < 0.05:
+                return  # Too extreme
+
+            if time.time() >= next_close:
+                return  # Candle already closed
+
+            from infrastructure.state.state_manager import get_current_balance
+            current_balance = get_current_balance()
+            normal_usd = peer_engine.compute_size(0.80, peer_entry_price, current_balance)
+            usd_size = max(1.0, normal_usd * 0.50)
+
+            from infrastructure.exchange.trader import place_order
+            from core.engine.session_governor import commit_trade_slot
+            order = place_order(
+                event_id=market["event_id"],
+                market_id=market_id,
+                amount_dollars=usd_size,
+                direction=order_direction,
+                entry_price=peer_entry_price,
+                event_title=f"[UPDOWN][{peer}][5m][LAG_TRADE] {market['event_title']}",
+                expiry_ts=market["expiry_ts"],
+            )
+            if order:
+                await commit_trade_slot(peer, "5m", 0.80, 5, is_dual=False, direction=lead_direction)
+                log.info("[LAG-TRADE] %s follows %s %s: $%.2f @ %.0f¢",
+                         peer, lead_asset, lead_direction, usd_size, peer_entry_price * 100)
+        except Exception as e:
+            log.warning("[LAG-TRADE] %s→%s check failed: %s", lead_asset, peer, e)
 
     while True:
         try:
