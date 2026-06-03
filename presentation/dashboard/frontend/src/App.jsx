@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import GhostCursor from './components/common/GhostCursor';
+// GhostCursor removed — WebGL ShaderPass crashes entire app on GPU context loss
 import AssetCards     from './components/AssetCards';
 import TradeFeed      from './components/TradeFeed';
 import PortfolioPerformance from './components/PortfolioPerformance';
@@ -146,7 +146,7 @@ export default function App() {
 
   return (
     <div className="dashboard-container relative overflow-x-hidden min-h-screen">
-      <GhostCursor />
+      {/* GhostCursor removed */}
       
       {/* Background drifting symbols */}
       {bgSymbols.map((sym, idx) => (
