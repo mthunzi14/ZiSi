@@ -227,9 +227,45 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                     return
 
             direction = "UP" if pct_move > 0 else "DOWN"
+
+            # TREND-BIAS: 3-candle trend check — require 0.8%+ move to bet against trend
+            # Catches the pattern: market recovering UP, each candle opens high, pct_move<0 → bad DOWN signal
+            if len(klines) >= 4 and t_minus != 5:
+                c1 = float(klines[-2][4])  # last closed candle close
+                c2 = float(klines[-3][4])  # 2nd last closed
+                c3 = float(klines[-4][4])  # 3rd last closed
+                trend_is_up = (c1 > c2) and (c2 > c3)
+                trend_is_dn = (c1 < c2) and (c2 < c3)
+                _contra_threshold = 0.008  # 0.8%+ move needed to contradict clear 3-candle trend
+                if trend_is_up and direction == "DOWN" and abs(pct_move) < _contra_threshold:
+                    log.info("[TREND-BIAS] %s/%s: 3-candle UP trend (%.0f→%.0f→%.0f) contradicts DOWN %.4f%% — need 0.8%% — skip",
+                             asset, timeframe, c3, c2, c1, abs(pct_move) * 100)
+                    return
+                if trend_is_dn and direction == "UP" and abs(pct_move) < _contra_threshold:
+                    log.info("[TREND-BIAS] %s/%s: 3-candle DN trend (%.0f→%.0f→%.0f) contradicts UP %.4f%% — need 0.8%% — skip",
+                             asset, timeframe, c3, c2, c1, abs(pct_move) * 100)
+                    return
+
+            # WHALE-VETO in LAT-ARB: use cached whale data from last engine cycle
+            try:
+                from core.engine.edge_orchestrator import edge_orchestrator as _eo
+                if _eo and _eo._whale_tracker:
+                    _whale = _eo._whale_tracker.get_whale_signal(asset)
+                    _whale_pressure = _whale.get("whale_pressure", 0.0)
+                    if _whale_pressure > 0.70 and direction == "DOWN":
+                        log.warning("[LAT-ARB WHALE-VETO] %s/%s: bullish pressure %.2f contradicts DOWN — skip",
+                                    asset, timeframe, _whale_pressure)
+                        return
+                    elif _whale_pressure < -0.70 and direction == "UP":
+                        log.warning("[LAT-ARB WHALE-VETO] %s/%s: bearish pressure %.2f contradicts UP — skip",
+                                    asset, timeframe, abs(_whale_pressure))
+                        return
+            except Exception:
+                pass
+
             log.info("[LATENCY-ARB] Potential %s move detected for %s/%s (move: %.4f%%, Pyth: %.4f, Open: %.4f)",
                      direction, asset, timeframe, pct_move * 100, pyth_price, open_price)
-            
+
             # 3. Check if we already have an active position for this candle
             import infrastructure.state.state_manager as state_mgr
             open_positions = state_mgr.get_open_positions()
@@ -321,12 +357,16 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 usd_size *= 0.60
             elif asset in ["ADA", "DOGE", "AVAX", "SUI"]:
                 usd_size = min(usd_size * 0.35, 35.0)
-                
+
+            # Re-apply minimum after altcoin discount — VOLATILE_CHAOS (0.30x) + altcoin (0.60x)
+            # can compound to $0.90 which gets skipped. Floor at $1.50 to keep trades alive.
+            usd_size = max(1.50, usd_size)
+
             # Safety cap
             max_safety_size = current_balance * 0.15
             if usd_size > max_safety_size:
                 usd_size = max_safety_size
-                
+
             if usd_size < 1.00:
                 log.info("[LATENCY-ARB] Position size $%.2f too small, skipping.", usd_size)
                 return
