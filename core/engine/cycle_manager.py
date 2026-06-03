@@ -30,7 +30,7 @@ from core.engine.trade_priority_queue import PriorityQueue, FeedbackTracker
 
 log = logging.getLogger("zisi.cycle_manager")
 
-_LAT_LAST_ENTRY_TS: float = 0.0  # global: 60s cooldown between any two LAT entries
+_LAT_LAST_ENTRY_TS: float = 0.0  # global: 2s cooldown — only blocks exact same-second double fires
 
 
 class CycleManager:
@@ -163,7 +163,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
     log.info("[LATENCY-ARB] Starting T-15s latency arbitrage scanner daemon...")
     last_scanned_close = {}   # (asset, timeframe) -> next_close_ts  [T-15s window]
     last_scanned_t5 = {}      # (asset, timeframe) -> next_close_ts  [T-5s window]
-    lat_arb_count = {}        # next_close_ts -> number of tasks spawned (cap at 3)
+    lat_arb_count = {}        # next_close_ts -> number of tasks spawned (no cap)
 
     async def scan_and_trade(engine, next_close, time_left, t_minus=15):
         asset = engine.asset
@@ -343,11 +343,12 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                             time.time(), next_close, asset, timeframe)
                 return
 
-            # Global LAT cooldown: prevent simultaneous multi-asset false-signal firing
+            # Same-second dedup only: 2s window prevents exact same-signal double fires
+            # 60s was killing multi-asset concurrent entries (BTC fires, ETH blocked for 60s)
             global _LAT_LAST_ENTRY_TS
-            if time.time() - _LAT_LAST_ENTRY_TS < 60.0:
-                log.info("[LAT-DEDUP] %s/%s: global LAT cooldown active (%.0fs remain) — skip",
-                         asset, timeframe, 60.0 - (time.time() - _LAT_LAST_ENTRY_TS))
+            if time.time() - _LAT_LAST_ENTRY_TS < 2.0:
+                log.info("[LAT-DEDUP] %s/%s: same-second dedup (%.1fs) — skip",
+                         asset, timeframe, time.time() - _LAT_LAST_ENTRY_TS)
                 return
 
             # 6. Execute order
@@ -482,16 +483,10 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                     if last_scanned_close.get((asset, timeframe)) == next_close:
                         continue  # Already scanned this candle
 
-                    # Concurrent cap: max 3 assets per candle boundary to prevent
-                    # catastrophic loss clusters when wrong on a single direction
-                    if lat_arb_count.get(next_close, 0) >= 3:
-                        log.info("[LATENCY-ARB] %s/%s: concurrent cap reached (3 tasks already spawned for boundary %d), skipping",
-                                 asset, timeframe, next_close)
-                        continue
-
+                    # Concurrent cap REMOVED — fire all assets every candle like Bone Reaper
                     last_scanned_close[(asset, timeframe)] = next_close
                     lat_arb_count[next_close] = lat_arb_count.get(next_close, 0) + 1
-                    log.info("[LATENCY-ARB] Spawning concurrent scan for %s/%s at T-%.1fs before close (slot %d/3)",
+                    log.info("[LATENCY-ARB] Spawning concurrent scan for %s/%s at T-%.1fs before close (slot %d)",
                              asset, timeframe, time_left, lat_arb_count[next_close])
 
                     # Spawn concurrently!
