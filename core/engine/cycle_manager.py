@@ -684,7 +684,7 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
     async def _snipe(engine, next_close):
         asset = engine.asset
         timeframe = engine.timeframe
-        interval_minutes = int(timeframe.rstrip("m"))
+        interval_minutes = 60 if timeframe == "1h" else int(timeframe.rstrip("m"))
         try:
             from core.pyth_oracle_service import GLOBAL_ORACLE_CACHE
             pyth_price = GLOBAL_ORACLE_CACHE.get(asset, {}).get("price", 0.0)
@@ -775,7 +775,7 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             for key, engine in engines.items():
                 asset = engine.asset
                 timeframe = engine.timeframe
-                interval_minutes = int(timeframe.rstrip("m"))
+                interval_minutes = 60 if timeframe == "1h" else int(timeframe.rstrip("m"))
                 interval_secs = interval_minutes * 60
 
                 next_close = ((int(now) // interval_secs) + 1) * interval_secs
