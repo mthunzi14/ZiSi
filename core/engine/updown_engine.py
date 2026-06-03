@@ -498,7 +498,15 @@ class UpDownEngine:
                     self.asset, _elapsed_min,
                 )
                 return None
-            _fv = self._fair_value_entry(klines, closes[-1], up_price, dn_price, _elapsed_min)
+            # Minimum time gate: FV at <60s into candle is pure noise — need real price movement
+            if self.timeframe == "5m" and _elapsed_min < 1.0:
+                log.info(
+                    "[TIMING-GATE-MIN] %s/5m: %.1f min elapsed — FV needs ≥60s of candle data",
+                    self.asset, _elapsed_min,
+                )
+                _fv = {"direction": None, "edge": 0.0, "archetype": None}
+            else:
+                _fv = self._fair_value_entry(klines, closes[-1], up_price, dn_price, _elapsed_min)
             if _fv["direction"] is not None:
                 raw_dir = _fv["direction"]
                 score_base = min(0.90, 0.55 + min(0.30, _fv["edge"]) +
@@ -850,6 +858,18 @@ class UpDownEngine:
         except Exception as e:
             log.warning("[EDGE] Failed to query EdgeOrchestrator in generate_signal: %s", e)
             self.last_edge_context = None
+
+        # Whale-Veto: block when whale pressure strongly contradicts trade direction
+        # e.g. 11 whales buying (pressure=0.81) but we're entering DOWN → bad trade
+        _whale_pressure = edge_ctx.get("whale_pressure", 0.0) if edge_ctx else 0.0
+        if _whale_pressure > 0.70 and direction == "DOWN":
+            log.warning("[WHALE-VETO] %s/%s: bullish whale pressure %.2f contradicts DOWN — skip",
+                        self.asset, self.timeframe, _whale_pressure)
+            return None
+        elif _whale_pressure < -0.70 and direction == "UP":
+            log.warning("[WHALE-VETO] %s/%s: bearish whale pressure %.2f contradicts UP — skip",
+                        self.asset, self.timeframe, abs(_whale_pressure))
+            return None
 
         # Confluence-Veto Gate: SIG-only — FV signal is Pyth divergence, not multi-TF RSI consensus
         if entry_source != "FAIR_VAL" and not is_dual_eligible and edge_ctx and edge_ctx.get("confluence_score", 2) == 0:

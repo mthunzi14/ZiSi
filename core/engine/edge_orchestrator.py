@@ -212,8 +212,20 @@ class EdgeOrchestrator:
             if self._whale_tracker:
                 await self._whale_tracker.update(session, asset)
                 whale = self._whale_tracker.get_whale_signal(asset)
-                ctx["whale_mult"] = whale.get("confidence_multiplier", 1.0)
-                ctx["whale_pressure"] = whale.get("whale_pressure", 0.0)
+                whale_dir = whale.get("direction", "neutral")
+                whale_pressure = whale.get("whale_pressure", 0.0)
+                ctx["whale_pressure"] = whale_pressure
+
+                # Direction-aware multiplier: only boost when whale CONFIRMS trade direction
+                if whale_dir == "neutral":
+                    ctx["whale_mult"] = 1.0
+                elif (whale_dir == "bullish" and direction == "UP") or \
+                     (whale_dir == "bearish" and direction == "DOWN"):
+                    ctx["whale_mult"] = 1.10  # whale confirms trade → boost
+                elif abs(whale_pressure) > 0.6:
+                    ctx["whale_mult"] = 0.75  # strong whale contradiction → hard penalty
+                else:
+                    ctx["whale_mult"] = 0.90  # mild whale contradiction → soft penalty
         except Exception as e:
             log.debug("[EDGE] Whale tracker query failed: %s", e)
 
@@ -249,7 +261,8 @@ class EdgeOrchestrator:
         ctx["combined_confidence_boost"] = round(
             ctx["confluence_boost"]
             + (ctx["sentiment_modifier"] - 1.0)
-            + (0.03 if ctx["whale_mult"] > 1.0 else -0.02 if ctx["whale_mult"] < 1.0 else 0.0),
+            + (0.05 if ctx["whale_mult"] >= 1.10 else 0.03 if ctx["whale_mult"] > 1.0 else
+               -0.08 if ctx["whale_mult"] <= 0.75 else -0.03 if ctx["whale_mult"] < 1.0 else 0.0),
             4,
         )
 
