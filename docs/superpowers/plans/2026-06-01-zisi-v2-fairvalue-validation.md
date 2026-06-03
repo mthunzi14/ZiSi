@@ -636,3 +636,18 @@ The results JSON is git-ignored under `tools/backtest/results/` (already ignored
 
 ## Notes for Plan 2 (after GO)
 The resolution model in `value_simulator` uses **Binance close-vs-open as a proxy** for the Pyth-resolved outcome (we lack historical Pyth) — acceptable for 15m BTC except rare wicks; the *live* signal will read true Pyth. `adverse_selection` is carried as a stress field but applied only as a reporting stress in Plan 2's deeper validation (it needs order-book data to model fully). Plan 2 covers: caps→capital-risk-model, hold-to-resolution exits + remove salvage, session integration, near-certainty + reversal archetypes in the live engine, and wiring the validated signal into the demo engine.
+
+---
+
+## RESULT (2026-06-01): lookahead corrected + real lag-sensitivity
+
+The original kline value-sim had **lookahead bias** (open->close interpolation) and a degenerate quote model. Rewritten to replay **real 1-minute closes** with a **market-lag model** (Tasks 4-6 corrected). Real 7-day BTC+ETH run:
+
+| lag_min | trades | win_rate | avg_entry | verdict |
+|--|--|--|--|--|
+| 0 | 0 | 0.000 | - | efficient market -> ZERO edge (no-lookahead sanity PASSES) |
+| 1 | 1338 | 0.625 | 0.511 | profitable IF we have >=1min lead |
+| 2 | 1338 | 0.623 | 0.508 | |
+| 3 | 1338 | 0.626 | 0.509 | |
+
+**Honest read:** logic is sound (lag=0 -> no fake edge). WR ~62.5%% at ~0.51 entry clears breakeven by ~11pts WITH good volume (1338/wk) — but ONLY if the Polymarket book lags Binance by >=1 min. That is optimistic on liquid crypto; 1m candles cannot probe sub-minute lags where reality likely sits. total_pnl $ figures are compounding artifacts — ignore them. **The real go/no-go is the Ireland VPS demo measuring our true lead.** Proceed to Plan 2 (VPS demo deployment) to measure it.
