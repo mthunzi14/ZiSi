@@ -163,7 +163,10 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
     log.info("[LATENCY-ARB] Starting T-15s latency arbitrage scanner daemon...")
     last_scanned_close = {}   # (asset, timeframe) -> next_close_ts  [T-15s window]
     last_scanned_t5 = {}      # (asset, timeframe) -> next_close_ts  [T-5s window]
+    last_scanned_t2 = {}      # (asset, timeframe) -> next_close_ts  [T-2s sweeper window]
     lat_arb_count = {}        # next_close_ts -> number of tasks spawned (no cap)
+    # Cache T-5s market data so T-2s sweeper can reuse without a new HTTP call
+    _t5_market_cache: dict = {}  # (asset, timeframe, next_close) -> market dict
 
     async def scan_and_trade(engine, next_close, time_left, t_minus=15):
         asset = engine.asset
@@ -182,12 +185,19 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 log.warning("[LATENCY-ARB] No Pyth price available for %s", asset)
                 return
 
-            # T-5s freshness gate: near-certainty requires very fresh oracle
+            # T-5s / T-2s freshness gate: near-certainty requires very fresh oracle
             if t_minus == 5:
                 pyth_ts = GLOBAL_ORACLE_CACHE.get(asset, {}).get("timestamp", 0.0)
                 pyth_age = time.time() - pyth_ts
                 if pyth_age > 3.0:
                     log.info("[T5-SCANNER] %s/%s: Pyth stale (%.1fs > 3s) — skip",
+                             asset, timeframe, pyth_age)
+                    return
+            elif t_minus == 2:
+                pyth_ts = GLOBAL_ORACLE_CACHE.get(asset, {}).get("timestamp", 0.0)
+                pyth_age = time.time() - pyth_ts
+                if pyth_age > 1.0:
+                    log.info("[T2-SWEEPER] %s/%s: Pyth stale (%.1fs > 1s) — skip",
                              asset, timeframe, pyth_age)
                     return
 
@@ -203,7 +213,9 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             open_price = float(klines[-1][1])
             pct_move = (pyth_price - open_price) / open_price
             
-            if t_minus == 5:
+            if t_minus == 2:
+                _lat_threshold = 0.008  # T-2s sweeper: need 0.8%+ move for near-certainty
+            elif t_minus == 5:
                 _lat_threshold = 0.003  # T-5s: candle direction just needs to be clear
             elif timeframe == "5m":
                 _lat_threshold = 0.005  # T-15s 5m: stronger requirement
@@ -213,8 +225,8 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 return
 
             # Regime gate: if last 2 closed candles flipped direction → choppy market, skip (XRP/SOL only)
-            # BTC/ETH exempt — Bone Reaper fires every candle regardless of prior candle direction
-            if t_minus != 5 and asset not in ("BTC", "ETH") and len(klines) >= 3:
+            # BTC/ETH and T-2s exempt — at T-2s the candle is already decided
+            if t_minus not in (5, 2) and asset not in ("BTC", "ETH") and len(klines) >= 3:
                 c_last = klines[-2]
                 c_prev = klines[-3]
                 last_bull = float(c_last[4]) > float(c_last[1])
@@ -230,7 +242,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
 
             # TREND-BIAS: 3-candle trend check — require 0.8%+ move to bet against trend
             # Catches the pattern: market recovering UP, each candle opens high, pct_move<0 → bad DOWN signal
-            if len(klines) >= 4 and t_minus != 5:
+            if len(klines) >= 4 and t_minus not in (5, 2):
                 c1 = float(klines[-2][4])  # last closed candle close
                 c2 = float(klines[-3][4])  # 2nd last closed
                 c3 = float(klines[-4][4])  # 3rd last closed
@@ -331,12 +343,20 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                          asset, timeframe, direction, entry_price, implied_prob)
                 return
                 
+            # For T-2s sweeper: implied_prob is always 0.999 — any price < 99.9¢ is positive EV
+            if t_minus == 2:
+                implied_prob = 0.999
+
             # 5. Position sizing — 15m gets 1.5× premium (82% WR earns it), 5m stays conservative
             from infrastructure.state.state_manager import get_current_balance
             current_balance = get_current_balance()
 
             normal_usd = engine.compute_size(0.85, entry_price, current_balance)
-            if t_minus == 5:
+            if t_minus == 2:
+                # Sweeper: 0.5x sizing, cap at 2% of balance — low ROI (1-5%) but near-zero risk
+                usd_size = max(1.50, min(normal_usd * 0.5, current_balance * 0.02))
+                log.info("[T2-SWEEPER] %s/%s sweep sizing 0.5x capped 2%%: $%.2f", asset, timeframe, usd_size)
+            elif t_minus == 5:
                 if entry_price < 0.10:
                     usd_size = max(1.0, normal_usd * 1.0)
                     log.info("[T5-SCANNER] %s/%s near-certainty <10c: full sizing 1.0x: $%.2f", asset, timeframe, usd_size)
@@ -389,30 +409,40 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             # 6. Execute order
             from infrastructure.exchange.trader import place_order
             from core.engine.session_governor import commit_trade_slot
-            
+
+            _trade_tag = "T2_SWEEPER" if t_minus == 2 else "LATENCY_ARB"
             order = place_order(
                 event_id=market["event_id"],
                 market_id=market_id,
                 amount_dollars=usd_size,
                 direction="YES" if direction == "UP" else "NO",
                 entry_price=entry_price,
-                event_title=f"[UPDOWN][{asset}][{timeframe}][LATENCY_ARB] {market['event_title']}",
+                event_title=f"[UPDOWN][{asset}][{timeframe}][{_trade_tag}] {market['event_title']}",
                 expiry_ts=market["expiry_ts"],
             )
-            
+
             if order:
                 _LAT_LAST_ENTRY_TS = time.time()
                 await commit_trade_slot(asset, timeframe, 0.85, interval_minutes, is_dual=False, direction=direction)
-                log.info("[LATENCY-ARB SUCCESSFULLY ENTERED] Entered %s/%s %s: $%.2f at %.0f¢ (implied prob: %.2f)",
-                         asset, timeframe, direction, usd_size, entry_price * 100, implied_prob)
-                try:
-                    from app.telegram_bot import send_alert
-                    send_alert(f"LATENCY ARB {asset}/{timeframe} {direction} | ${usd_size:.2f} @ {entry_price*100:.0f}c")
-                except Exception:
-                    pass
+                if t_minus == 2:
+                    log.info("[T2-SWEEPER ENTERED] %s/%s %s: $%.2f at %.0f¢ — sweeping winning side",
+                             asset, timeframe, direction, usd_size, entry_price * 100)
+                    try:
+                        from app.telegram_bot import send_alert
+                        send_alert(f"SWEEP {asset}/{timeframe} {direction} | ${usd_size:.2f} @ {entry_price*100:.0f}c")
+                    except Exception:
+                        pass
+                else:
+                    log.info("[LATENCY-ARB SUCCESSFULLY ENTERED] Entered %s/%s %s: $%.2f at %.0f¢ (implied prob: %.2f)",
+                             asset, timeframe, direction, usd_size, entry_price * 100, implied_prob)
+                    try:
+                        from app.telegram_bot import send_alert
+                        send_alert(f"LATENCY ARB {asset}/{timeframe} {direction} | ${usd_size:.2f} @ {entry_price*100:.0f}c")
+                    except Exception:
+                        pass
 
-                # Spawn early-exit monitor for 15m positions only — enough runway to act.
-                if timeframe == "15m":
+                # Spawn early-exit monitor for 15m LAT-ARB only — sweeper holds to expiry (2s left anyway)
+                if timeframe == "15m" and t_minus != 2:
                     asyncio.create_task(
                         _monitor_lat_exit(
                             order_id=order["order_id"],
@@ -425,7 +455,8 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                     )
 
                 # Cross-asset lag: if BTC/ETH fired strongly, check if peer is lagging
-                if asset in ("BTC", "ETH") and abs(pct_move) >= 0.005 and t_minus != 5:
+                # Skip at T-2s — no time to enter a second asset with 2s to close
+                if asset in ("BTC", "ETH") and abs(pct_move) >= 0.005 and t_minus not in (5, 2):
                     asyncio.create_task(
                         check_cross_asset_lag(asset, direction, next_close)
                     )
@@ -541,6 +572,17 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                     log.info("[T5-SCANNER] Spawning near-certainty scan %s/%s at T-%.1fs",
                              asset, timeframe, time_left)
                     asyncio.create_task(scan_and_trade(engine, next_close, time_left, t_minus=5))
+
+                # T-2s sweeper window — Punisher strategy, enter winning side at 95-99¢
+                elif 0.3 <= time_left <= 2.4:
+                    if last_scanned_t2.get((asset, timeframe)) == next_close:
+                        continue
+                    if asset == "DOGE":
+                        continue  # DOGE excluded: noisy Pyth
+                    last_scanned_t2[(asset, timeframe)] = next_close
+                    log.info("[T2-SWEEPER] Spawning sweeper scan %s/%s at T-%.1fs before close",
+                             asset, timeframe, time_left)
+                    asyncio.create_task(scan_and_trade(engine, next_close, time_left, t_minus=2))
 
         except Exception as e:
             log.error("[LATENCY-ARB] Scanner loop error: %s", e, exc_info=True)

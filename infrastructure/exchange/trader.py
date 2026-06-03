@@ -54,6 +54,8 @@ def _get_config() -> dict:
 
 def _derive_entry_type(title: str) -> str:
     t = (title or "").upper()
+    if "T2_SWEEPER" in t or "SWEEP" in t:
+        return "SWEEP"
     if "LATENCY_ARB" in t or "LAT_ARB" in t:
         return "LAT-ARB"
     if "FAIR_VAL" in t or "FAIR-VAL" in t:
@@ -66,6 +68,10 @@ def _derive_entry_type(title: str) -> str:
 def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, title: str = "") -> tuple[Optional[float], Optional[float]]:
     try:
         _title_upper = (title or "").upper()
+        # Sweeper entries at 90-99¢: target is resolution (0.99), no stop — hold to expiry
+        if entry_price >= 0.90 or "T2_SWEEPER" in _title_upper or "SWEEP" in _title_upper:
+            log.info("[SL-CALIB] Sweeper/near-certain trade '%s' entry=%.2f -> target 0.99, hold to expiry", title, entry_price)
+            return 0.99, -1.0
         _is_short_tf = "5M" in _title_upper or "15M" in _title_upper or "UPDOWN" in _title_upper
         if _is_short_tf:
             # 5m gets a tighter target (72¢) — achievable in 5 minutes

@@ -970,21 +970,24 @@ class UpDownEngine:
             up_price, up_spread = polymarket_l2_gateway.get_price(up_tk)
             dn_price, dn_spread = polymarket_l2_gateway.get_price(dn_tk)
             
+            # Near-certain L2 gate: sweeper entries at 95-99¢ need a wider validity window
+            _price_ceil = 0.99 if is_latency_scan else 0.97
+
             # 1. If we have both prices, verify and use them
-            if up_price and dn_price and 0.03 < up_price < 0.97 and 0.03 < dn_price < 0.97:
+            if up_price and dn_price and 0.03 < up_price < _price_ceil and 0.03 < dn_price < _price_ceil:
                 spread = (up_spread or 0.02) + (dn_spread or 0.02)
                 if spread <= effective_max_spread:
                     return up_price, dn_price, spread
-            
+
             # 2. Derive DOWN price if only UP exists and is valid
-            if up_price and 0.03 < up_price < 0.97 and (not dn_price or dn_price <= 0.03 or dn_price >= 0.97):
+            if up_price and 0.03 < up_price < _price_ceil and (not dn_price or dn_price <= 0.03 or dn_price >= _price_ceil):
                 derived_dn = round(1.0 - up_price, 4)
                 spread = (up_spread or 0.02) + 0.02
                 if spread <= effective_max_spread:
                     return up_price, derived_dn, spread
 
             # 3. Derive UP price if only DOWN exists and is valid
-            if dn_price and 0.03 < dn_price < 0.97 and (not up_price or up_price <= 0.03 or up_price >= 0.97):
+            if dn_price and 0.03 < dn_price < _price_ceil and (not up_price or up_price <= 0.03 or up_price >= _price_ceil):
                 derived_up = round(1.0 - dn_price, 4)
                 spread = (dn_spread or 0.02) + 0.02
                 if spread <= effective_max_spread:
