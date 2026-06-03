@@ -234,29 +234,12 @@ async def _validate_trade_slot(
     if is_dual and (up_price + dn_price) >= DUAL_ENTRY_MAX_COMBINED:
         is_dual = False
 
-    # ATM gate — single entries in the 47-53¢ coin-flip zone have no edge on any timeframe
-    if not is_dual and 0.47 <= entry_price <= 0.53:
-        context.log_skip("atm_blocked", asset, timeframe, {"price": entry_price})
-        log.info("[MAIN] %s/%s ATM_BLOCK: %.0f¢ in coin-flip zone", asset, timeframe, entry_price * 100)
-        return False, {}
+    # ATM gate removed — PBot enters at 47-52¢ with high WR; FV/SIG signal already validated edge
 
     # Score-Tiered Price Ceiling — preserves edge on high-conviction signals while
     # still protecting against buying near-resolved expensive contracts on weak signals.
     # EV analysis: score=0.76 at 58¢ DOWN → est WR 65% → EV = 0.65×0.42 - 0.35×0.58 = +8.7¢/$ edge.
-    if not is_dual and (timeframe in ("5m", "15m")):
-        if score >= 0.70:
-            price_ceiling = 0.62   # High conviction: allow up to 62¢
-        elif score >= 0.62:
-            price_ceiling = 0.57   # Moderate conviction: up to 57¢
-        else:
-            price_ceiling = 0.53   # Low conviction: original strict ceiling
-        if entry_price > price_ceiling:
-            context.log_skip("entry_price_expensive", asset, timeframe, {"price": entry_price, "ceiling": price_ceiling, "score": score})
-            log.info(
-                "[MAIN] %s/%s PRICE_CEILING_ABORT: entry price %.4f exceeds %.2f¢ ceiling for score=%.2f. Skipping.",
-                asset, timeframe, entry_price, price_ceiling * 100, score
-            )
-            return False, {}
+    # Price ceiling removed — BoneReaper enters at 62-99¢; FV/LAT-ARB signal carries the edge
 
     if not is_dual and not entry_price_gate(entry_price, score, is_dual=False):
         context.log_skip("entry_price", asset, timeframe, {"price": entry_price, "score": score})
