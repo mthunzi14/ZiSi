@@ -492,9 +492,9 @@ class UpDownEngine:
             _elapsed_min = max(0.0, (_now_ts - _candle_open_ts) / 60.0)
             # Candle timing gate (5m only): FV edge decays in the final 60s —
             # entering after 4min means <60s runway, skip.
-            if self.timeframe == "5m" and _elapsed_min > 4.0:
+            if self.timeframe == "5m" and _elapsed_min > 4.5:
                 log.info(
-                    "[TIMING-GATE] %s/5m: %.1f min elapsed — entry too late (<60s left), skip",
+                    "[TIMING-GATE] %s/5m: %.1f min elapsed — entry too late (<30s left), skip",
                     self.asset, _elapsed_min,
                 )
                 return None
@@ -550,7 +550,7 @@ class UpDownEngine:
             # Macro-aware FV edge penalty: raises the edge bar when the 8-candle macro
             # trend conflicts with FV direction, preventing macro-opposing FV entries.
             # 5+/8 conflict (soft) → +0.08 penalty; 6+/8 conflict (hard) → +0.15 penalty.
-            if len(klines) >= 10:
+            if self.asset == "DOGE" and len(klines) >= 10:
                 _fv_m8 = klines[-9:-1]
                 _fv_m_up = sum(1 for k in _fv_m8 if float(k[4]) > float(k[1]))
                 _fv_m_dn = 8 - _fv_m_up
@@ -608,7 +608,7 @@ class UpDownEngine:
                             break
                 except Exception:
                     pass
-            _corroboration_multiplier = 1.3 if _corroborated else 0.7
+            _corroboration_multiplier = 1.3 if _corroborated else (0.7 if self.asset == "DOGE" else 1.0)
             log.info(
                 "[CORROBORATE] %s/5m: %s FV %s — size_mult=%.1f",
                 self.asset,
@@ -660,7 +660,7 @@ class UpDownEngine:
                     return None
 
             # Serve active choppy cooldown before updating history
-            if self._choppy_candles > 0:
+            if self.asset == "DOGE" and self._choppy_candles > 0:
                 self._choppy_candles -= 1
                 log.info(
                     "[CHOPPY] %s/%s: cooling down (%d candle(s) remaining)",
@@ -685,14 +685,15 @@ class UpDownEngine:
                         "[CHOPPY] %s/%s: %d slope flips, slope=%.3f%% — 2-candle pause",
                         self.asset, self.timeframe, _flips, _slope * 100,
                     )
-                    return None
+                    if self.asset == "DOGE":
+                        return None
         # ─────────────────────────────────────────────────────────────────────
 
         # Macro trend gate (8-candle): if 6+/8 last closed candles all point in
         # one direction, only signals that agree are allowed through.
         # Applies to BOTH FV and SIG — prevents the recurring loss cluster pattern
         # where FV keeps firing DN while the market is bouncing UP for 45+ minutes.
-        if len(klines) >= 10:
+        if self.asset == "DOGE" and len(klines) >= 10:
             _macro_candles = klines[-9:-1]  # last 8 closed candles
             _macro_up = sum(1 for k in _macro_candles if float(k[4]) > float(k[1]))
             _macro_dn = 8 - _macro_up
@@ -715,7 +716,7 @@ class UpDownEngine:
         # SIG trend confirmation: both last 2 closed candles must resolve in the
         # signal direction. Skipping this for FAIR-VAL entries — they enter on
         # divergence which may precede the candle trend shift.
-        if entry_source == "SIG" and len(klines) >= 4:
+        if entry_source == "SIG" and self.asset == "DOGE" and len(klines) >= 4:
             c_last_bull = float(klines[-2][4]) > float(klines[-2][1])
             c_prev_bull = float(klines[-3][4]) > float(klines[-3][1])
             signal_bull = direction == "UP"
@@ -881,7 +882,7 @@ class UpDownEngine:
         # (settled ≤10¢) in the last 20 min across ANY asset, the macro environment
         # has likely reversed — raise bar to edge ≥0.20 (FV) or score ≥0.82 (SIG).
         _full_loss_count = self._recent_full_loss_count(lookback_minutes=20)
-        if _full_loss_count >= 3:
+        if _full_loss_count >= 8:
             if entry_source == "FAIR_VAL":
                 _fv_edge = _fv.get("edge", 0.0) if _fv.get("direction") is not None else 0.0
                 if _fv_edge < 0.20:

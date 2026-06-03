@@ -301,8 +301,15 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
 
             normal_usd = engine.compute_size(0.85, entry_price, current_balance)
             if t_minus == 5:
-                usd_size = max(1.0, normal_usd * 0.35)  # T-5s: small-ROI near-certainty
-                log.info("[T5-SCANNER] %s/%s near-certainty sizing 0.35x: $%.2f", asset, timeframe, usd_size)
+                if entry_price < 0.10:
+                    usd_size = max(1.0, normal_usd * 1.0)
+                    log.info("[T5-SCANNER] %s/%s near-certainty <10c: full sizing 1.0x: $%.2f", asset, timeframe, usd_size)
+                elif entry_price < 0.25:
+                    usd_size = max(1.0, normal_usd * 0.70)
+                    log.info("[T5-SCANNER] %s/%s high-conf <25c: 0.7x sizing: $%.2f", asset, timeframe, usd_size)
+                else:
+                    usd_size = max(1.0, normal_usd * 0.35)
+                    log.info("[T5-SCANNER] %s/%s moderate T-5s: 0.35x sizing: $%.2f", asset, timeframe, usd_size)
             else:
                 usd_size = max(1.0, normal_usd * 0.5)
                 if timeframe == "15m":
