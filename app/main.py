@@ -167,8 +167,8 @@ async def _evaluate_market_signals(
         elapsed_after = now_ts_after - candle_start
 
         log.info(
-            "[MAIN] %s/%s: No L2 book/signal at %.1fs — retrying within %.1fs gate...",
-            asset, timeframe, elapsed_after, gate_limit
+            "[MAIN] %s/%s: No L2 book/signal at %.1fs — retrying...",
+            asset, timeframe, elapsed_after,
         )
         await asyncio.sleep(2.0)
 

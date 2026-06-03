@@ -27,7 +27,7 @@ def notify_trade_outcome(event_title: str, won: bool) -> None:
     """Feed closed trade result into the matching UpDownEngine (circuit breaker / inversion)."""
     import re
     ma = re.search(r"\[(BTC|ETH|SOL|XRP)\]", event_title or "")
-    mt = re.search(r"\[(5m|15m)\]", event_title or "")
+    mt = re.search(r"\[(5m|15m|1h)\]", event_title or "")
     if not ma or not mt:
         return
     eng = _ENGINE_REGISTRY.get(f"{ma.group(1)}/{mt.group(1)}")
@@ -435,7 +435,8 @@ class UpDownEngine:
         _atr_pct = _bbw_pct = None
         try:
             import json as _json
-            _rs = Path(__file__).parent.parent.parent / "regime_status.json"
+            from pathlib import Path as _Path
+            _rs = _Path(__file__).parent.parent.parent / "regime_status.json"
             if _rs.exists():
                 _d = _json.loads(_rs.read_text(encoding="utf-8"))
                 _atr_pct = float(_d.get("atr_percentile", 50.0))
