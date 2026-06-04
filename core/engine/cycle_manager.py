@@ -178,16 +178,10 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
         if asset == "DOGE":
             return
 
-        # 5m candles at T-15s: no real edge at ATM prices (25% WR confirmed)
-        # FV model handles 5m entries with proper statistical edge
-        # T-5s and T-2s still fire on 5m (near-certainty and sweep)
-        if timeframe == "5m" and t_minus == 15:
-            return
-
-        # SOL excluded from LAT-ARB T-15s — Pyth signal too noisy (20% WR)
-        # SOL still runs through FV model which handles it correctly
-        if asset == "SOL" and t_minus == 15:
-            return
+        # 5m T-15s and SOL T-15s previously disabled (25%/20% WR without CVD/OBI).
+        # Re-enabled: CVD+OBI gate below enforces stricter thresholds for these,
+        # so only high-conviction candles fire — same mechanism BoneReaper uses on 5m.
+        _strict_cvd_obi = (timeframe == "5m" and t_minus == 15) or (asset == "SOL" and t_minus == 15)
 
         try:
             # 1. Fetch Pyth Price
@@ -290,6 +284,48 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             log.info("[LATENCY-ARB] Potential %s move detected for %s/%s (move: %.4f%%, Pyth: %.4f, Open: %.4f)",
                      direction, asset, timeframe, pct_move * 100, pyth_price, open_price)
 
+            # CVD + OBI + 1m alignment gate (skip for T-2s sweeper — already near-certain)
+            if t_minus != 2:
+                from infrastructure.websocket.spot_websocket_ingest import (
+                    get_cvd_metrics, get_binance_obi, get_m1_candle_alignment, _has_cvd_data
+                )
+                # Thresholds: strict for 5m/SOL T-15s (previously disabled assets),
+                # standard for 15m/1h BTC/ETH
+                _cvd_mult   = 0.40 if _strict_cvd_obi else 0.25
+                _obi_thresh = 0.20 if _strict_cvd_obi else 0.10
+
+                fast_cvd, slow_cvd = await get_cvd_metrics(asset)
+                binance_obi = await get_binance_obi(asset)
+                has_data = _has_cvd_data(asset)
+
+                # Only apply gate when we have live data (don't block on cold start)
+                if has_data:
+                    if direction == "UP":
+                        cvd_ok = fast_cvd > 0 and fast_cvd > _cvd_mult * abs(slow_cvd)
+                        obi_ok = binance_obi > _obi_thresh
+                    else:
+                        cvd_ok = fast_cvd < 0 and abs(fast_cvd) > _cvd_mult * abs(slow_cvd)
+                        obi_ok = binance_obi < -_obi_thresh
+
+                    if not cvd_ok or not obi_ok:
+                        log.info(
+                            "[CVD-OBI] %s/%s %s: cvd_ok=%s (fast=%.1f slow=%.1f thresh=%.0f%%) "
+                            "obi_ok=%s (obi=%.3f thresh=%.2f) — filtered",
+                            asset, timeframe, direction,
+                            cvd_ok, fast_cvd, slow_cvd, _cvd_mult * 100,
+                            obi_ok, binance_obi, _obi_thresh,
+                        )
+                        return
+
+                    # 1-minute candle direction + CVD alignment (T-5s: relax to direction only)
+                    if t_minus != 5:
+                        m1_ok = await get_m1_candle_alignment(asset, direction)
+                        if not m1_ok:
+                            log.info("[CVD-OBI] %s/%s %s: 1m candle misaligned — filtered", asset, timeframe, direction)
+                            return
+
+                    log.info("[CVD-OBI] %s/%s %s: PASS (fast=%.1f obi=%.3f)", asset, timeframe, direction, fast_cvd, binance_obi)
+
             # 3. Check if we already have an active position for this candle
             import infrastructure.state.state_manager as state_mgr
             open_positions = state_mgr.get_open_positions()
@@ -332,14 +368,21 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                          asset, timeframe, same_dir_open, direction)
                 return
 
-            # 4. Check prices and implied probability
-            abs_move = abs(pct_move)
-            if abs_move >= 0.004:
-                implied_prob = 0.99
-            elif abs_move >= 0.003:
-                implied_prob = 0.97
-            else:
-                implied_prob = 0.95
+            # 4. Compute fair win probability via normal-CDF (same model as FV engine)
+            # sigma_frac = mean high-low range / close over last 14 closed candles
+            closed = klines[:-1]
+            _atr_vals = [
+                abs(float(k[2]) - float(k[3])) / max(float(k[4]), 1e-9)
+                for k in closed[-14:]
+            ]
+            sigma_frac = sum(_atr_vals) / len(_atr_vals) if _atr_vals else 0.02
+            elapsed_min = (time.time() - float(klines[-1][0]) / 1000.0) / 60.0
+            elapsed_min = max(0.1, min(elapsed_min, float(interval_minutes) - 0.1))
+
+            from core.engine.fair_value import fair_prob_up as _fair_prob_up
+            p_up = _fair_prob_up(pyth_price, open_price, sigma_frac, elapsed_min, float(interval_minutes))
+            implied_prob = p_up if direction == "UP" else (1.0 - p_up)
+            implied_prob = max(0.55, implied_prob)  # floor: never treat a weak move as near-certain
                 
             up_price = market["up_price"]
             dn_price = market["dn_price"]
@@ -365,11 +408,14 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                          asset, timeframe, entry_price * 100)
                 return
 
-            # Discount gate: only block if we'd have negative EV (entry >= our own probability estimate)
-            # At 99% confidence, any entry < 99c is positive EV — Bone Reaper enters at 72-99c
-            if entry_price >= implied_prob:
-                log.info("[LATENCY-ARB] %s/%s %s price %.2f >= implied_prob %.2f — negative EV, skip",
-                         asset, timeframe, direction, entry_price, implied_prob)
+            # Discount gate: Polymarket must lag our fair probability by ≥6¢
+            # BoneReaper enters at 14¢ when fair prob is 95%+ — the lag is the edge
+            _discount = implied_prob - entry_price
+            if _discount < 0.06:
+                log.info(
+                    "[DISCOUNT] %s/%s %s: entry=%.2f fair=%.2f discount=%.2f < 0.06 — no lag, skip",
+                    asset, timeframe, direction, entry_price, implied_prob, _discount,
+                )
                 return
                 
             # For T-2s sweeper: implied_prob is always 0.999 — any price < 99.9¢ is positive EV

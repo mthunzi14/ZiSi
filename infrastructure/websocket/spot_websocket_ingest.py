@@ -1,30 +1,43 @@
 """
-spot_websocket_ingest.py - Real-Time Binance Spot WebSocket Ingestion & OFI Calculation Engine.
-Uses existing project-approved aiohttp for zero external dependency websocket execution.
+spot_websocket_ingest.py - Real-Time Binance Spot WebSocket Ingestion.
+
+Ingests three stream types per symbol for the lag-arbitrage engine:
+  @bookTicker      → best bid/ask OFI (existing)
+  @aggTrade        → trade-level CVD (new: dual 10s/60s windows)
+  @depth5@100ms    → depth-weighted OBI (new)
+
+Public API
+----------
+get_current_ofi(symbol)           -> float          (tick-level OFI, legacy)
+get_book_details(symbol)          -> (mid, spread, ofi) | None
+get_binance_obi(symbol)           -> float          (-1.0 to +1.0)
+get_cvd_metrics(symbol)           -> (fast_10s, slow_60s)
+get_m1_candle_alignment(symbol, direction) -> bool
 """
 import asyncio
 import logging
 import json
+import time
 import aiohttp
 from typing import Dict, Optional, Tuple
 
 log = logging.getLogger("zisi.hft.ws")
 
-# Global thread-safe/async-safe memory structure for tracking real-time order books
-# key: SYMBOL -> value: { bid_price, bid_qty, ask_price, ask_qty, ofi_value, last_update }
 _market_books: Dict[str, dict] = {}
 _market_books_lock = asyncio.Lock()
 
+
+# ---------------------------------------------------------------------------
+# Public accessors
+# ---------------------------------------------------------------------------
+
 async def get_current_ofi(symbol: str) -> float:
-    """Return the current Order Flow Imbalance value for a given symbol."""
     async with _market_books_lock:
         book = _market_books.get(symbol.upper())
-        if book:
-            return book.get("ofi_value", 0.0)
-    return 0.0
+        return book.get("ofi_value", 0.0) if book else 0.0
+
 
 async def get_book_details(symbol: str) -> Optional[Tuple[float, float, float]]:
-    """Return (mid_price, spread, ofi_value) for a given symbol."""
     async with _market_books_lock:
         book = _market_books.get(symbol.upper())
         if book and book["bid_price"] > 0 and book["ask_price"] > 0:
@@ -33,22 +46,68 @@ async def get_book_details(symbol: str) -> Optional[Tuple[float, float, float]]:
             return mid, spread, book["ofi_value"]
     return None
 
+
+async def get_binance_obi(symbol: str) -> float:
+    """Depth-weighted OBI from @depth5@100ms: (bid_vol - ask_vol) / total, EMA-smoothed."""
+    async with _market_books_lock:
+        book = _market_books.get(symbol.upper())
+        return book.get("binance_obi", 0.0) if book else 0.0
+
+
+async def get_cvd_metrics(symbol: str) -> Tuple[float, float]:
+    """Return (fast_cvd_10s, slow_cvd_60s) cumulative volume deltas.
+    Positive = net buy pressure, negative = net sell pressure."""
+    now = time.time()
+    async with _market_books_lock:
+        book = _market_books.get(symbol.upper())
+        if not book:
+            return 0.0, 0.0
+        trades = list(book.get("trades_history", []))  # snapshot under lock
+
+    fast = sum(d for ts, d in trades if now - ts <= 10.0)
+    slow = sum(d for ts, d in trades if now - ts <= 60.0)
+    return fast, slow
+
+
+async def get_m1_candle_alignment(symbol: str, direction: str) -> bool:
+    """True if the active 1-minute candle close direction AND CVD match `direction`."""
+    async with _market_books_lock:
+        book = _market_books.get(symbol.upper())
+        if not book:
+            return False
+        m1 = dict(book.get("m1_candle", {}))
+
+    if m1.get("open", 0.0) <= 0:
+        return False  # no data yet — don't block
+
+    if direction == "UP":
+        return m1["close"] >= m1["open"] and m1.get("cvd", 0.0) > 0
+    return m1["close"] <= m1["open"] and m1.get("cvd", 0.0) < 0
+
+
+def _has_cvd_data(symbol: str) -> bool:
+    """Non-async check: True if aggTrade history exists (ingest is live)."""
+    book = _market_books.get(symbol.upper(), {})
+    return len(book.get("trades_history", [])) > 0
+
+
+# ---------------------------------------------------------------------------
+# Ingest daemon
+# ---------------------------------------------------------------------------
+
 class BinanceWebSocketIngest:
-    """
-    Asynchronous daemon that connects to Binance Spot WebSocket stream,
-    calculates real-time Order Flow Imbalance, and populates shared memory.
-    """
+    """Async daemon connecting to Binance combined stream for CVD + OBI + OFI."""
+
     def __init__(self, symbols: list):
         self.symbols = [s.upper() for s in symbols]
         self.running = False
         self._task: Optional[asyncio.Task] = None
 
     def start(self):
-        """Boot the background thread/task."""
         if not self.running:
             self.running = True
             self._task = asyncio.create_task(self._socket_loop())
-            log.info("[HFT-WS] Ingest daemon started for symbols: %s", self.symbols)
+            log.info("[HFT-WS] Ingest daemon started for %s", self.symbols)
 
     def stop(self):
         self.running = False
@@ -57,55 +116,78 @@ class BinanceWebSocketIngest:
             log.info("[HFT-WS] Ingest daemon stopped.")
 
     async def _socket_loop(self):
-        """Core WebSocket connection loop with automatic robust reconnects."""
-        # Convert symbols to stream paths (e.g. btcusdt@bookTicker)
-        streams = "/".join([f"{s.lower()}usdt@bookTicker" for s in self.symbols])
-        url = f"wss://stream.binance.com:9443/ws/{streams}"
+        # Build combined stream — 3 feeds per symbol
+        parts = []
+        for s in self.symbols:
+            sl = s.lower() + "usdt"
+            parts.append(f"{sl}@bookTicker")
+            parts.append(f"{sl}@aggTrade")
+            parts.append(f"{sl}@depth5@100ms")
+
+        url = f"wss://stream.binance.com:9443/stream?streams={'/'.join(parts)}"
 
         while self.running:
             try:
-                log.info("[HFT-WS] Connecting to Binance WebSocket: %s", url)
+                log.info("[HFT-WS] Connecting: %d streams for %d symbols", len(parts), len(self.symbols))
                 connector = aiohttp.TCPConnector(enable_cleanup_closed=True)
                 async with aiohttp.ClientSession(connector=connector) as session:
                     async with session.ws_connect(url, heartbeat=10.0) as ws:
-                        log.info("[HFT-WS] WebSocket connected successfully! Processing tick feeds...")
-                        
-                        # Initialize states in memory
+                        log.info("[HFT-WS] Connected — CVD+OBI+OFI live")
+
                         async with _market_books_lock:
                             for s in self.symbols:
                                 if s not in _market_books:
                                     _market_books[s] = {
                                         "bid_price": 0.0, "bid_qty": 0.0,
                                         "ask_price": 0.0, "ask_qty": 0.0,
-                                        "ofi_value": 0.0
+                                        "ofi_value": 0.0,
+                                        "binance_obi": 0.0,
+                                        "trades_history": [],
+                                        "m1_candle": {
+                                            "open": 0.0, "high": 0.0, "low": 0.0,
+                                            "close": 0.0, "cvd": 0.0, "open_time": 0.0,
+                                        },
                                     }
 
                         async for msg in ws:
                             if msg.type == aiohttp.WSMsgType.TEXT:
-                                data = json.loads(msg.data)
-                                await self._process_tick(data)
+                                envelope = json.loads(msg.data)
+                                # Combined stream format: {"stream": "...", "data": {...}}
+                                data = envelope.get("data", envelope)
+                                stream = envelope.get("stream", "")
+                                await self._process_tick(data, stream)
                             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                                 break
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                log.error("[HFT-WS] WebSocket connection exception: %r. Reconnecting in 5s...", e)
+                log.error("[HFT-WS] Exception: %r — reconnecting in 5s", e)
                 await asyncio.sleep(5)
 
-    async def _process_tick(self, tick: dict):
-        """
-        Process incoming bookTicker tick and update real-time Order Flow Imbalance.
-        Stream structure: { 'u': update_id, 's': symbol (e.g. 'BTCUSDT'), 
-                           'b': best_bid, 'B': best_bid_qty, 'a': best_ask, 'A': best_ask_qty }
-        """
-        raw_symbol = tick.get("s", "")
-        if not raw_symbol.endswith("USDT"):
+    async def _process_tick(self, data: dict, stream: str):
+        raw_symbol = data.get("s", "")
+        if not raw_symbol:
+            # depth5 snapshots don't include 's' — infer from stream name
+            if "@" in stream:
+                raw_symbol = stream.split("@")[0].upper()
+        if not raw_symbol:
             return
-        
-        symbol = raw_symbol.replace("USDT", "").upper()
+
+        raw_upper = raw_symbol.upper()
+        symbol = raw_upper.replace("USDT", "") if raw_upper.endswith("USDT") else raw_upper
         if symbol not in self.symbols:
             return
 
+        event_type = data.get("e", "")
+
+        if event_type == "bookTicker" or "@bookTicker" in stream:
+            await self._handle_book_ticker(symbol, data)
+        elif event_type == "aggTrade" or "@aggTrade" in stream:
+            await self._handle_agg_trade(symbol, data)
+        elif "@depth" in stream or "bids" in data:
+            await self._handle_depth(symbol, data)
+
+    async def _handle_book_ticker(self, symbol: str, tick: dict):
         new_bid = float(tick.get("b", 0.0))
         new_bid_qty = float(tick.get("B", 0.0))
         new_ask = float(tick.get("a", 0.0))
@@ -113,13 +195,9 @@ class BinanceWebSocketIngest:
 
         async with _market_books_lock:
             old = _market_books[symbol]
-            old_bid = old["bid_price"]
-            old_bid_qty = old["bid_qty"]
-            old_ask = old["ask_price"]
-            old_ask_qty = old["ask_qty"]
+            old_bid, old_bid_qty = old["bid_price"], old["bid_qty"]
+            old_ask, old_ask_qty = old["ask_price"], old["ask_qty"]
 
-            # Calculate Order Flow Imbalance (OFI) on current tick vs previous state
-            # Bid side change
             if new_bid > old_bid:
                 delta_v_bid = new_bid_qty
             elif new_bid == old_bid:
@@ -127,7 +205,6 @@ class BinanceWebSocketIngest:
             else:
                 delta_v_bid = 0.0
 
-            # Ask side change
             if new_ask < old_ask:
                 delta_v_ask = new_ask_qty
             elif new_ask == old_ask:
@@ -135,35 +212,82 @@ class BinanceWebSocketIngest:
             else:
                 delta_v_ask = 0.0
 
-            # Normalize OFI as a dimensionless percentage imbalance between -1.0 and +1.0
             total_volume = delta_v_bid + delta_v_ask
             ofi = (delta_v_bid - delta_v_ask) / total_volume if total_volume > 0 else 0.0
-            
-            # Smooth the OFI value using an EMA to prevent high-frequency noise spikes
             alpha = 0.20
-            smoothed_ofi = (alpha * ofi) + ((1.0 - alpha) * old["ofi_value"])
+            old["ofi_value"] = round(alpha * ofi + (1.0 - alpha) * old["ofi_value"], 4)
+            old["bid_price"] = new_bid
+            old["bid_qty"] = new_bid_qty
+            old["ask_price"] = new_ask
+            old["ask_qty"] = new_ask_qty
 
-            # Update memory state
-            _market_books[symbol] = {
-                "bid_price": new_bid,
-                "bid_qty": new_bid_qty,
-                "ask_price": new_ask,
-                "ask_qty": new_ask_qty,
-                "ofi_value": round(smoothed_ofi, 4)
-            }
+    async def _handle_agg_trade(self, symbol: str, tick: dict):
+        price = float(tick.get("p", 0.0))
+        qty = float(tick.get("q", 0.0))
+        is_buyer_maker = tick.get("m", False)  # True = market sell
+        delta = -qty if is_buyer_maker else qty
+        now = time.time()
+
+        async with _market_books_lock:
+            book = _market_books[symbol]
+            book["trades_history"].append((now, delta))
+            # Prune > 60s (max window we need)
+            cutoff = now - 61.0
+            book["trades_history"] = [(ts, d) for ts, d in book["trades_history"] if ts >= cutoff]
+
+            # Update rolling 1-minute candle
+            candle_open = float(int(now // 60) * 60)
+            m1 = book["m1_candle"]
+            if candle_open > m1["open_time"]:
+                m1["open_time"] = candle_open
+                m1["open"] = price
+                m1["high"] = price
+                m1["low"] = price
+                m1["close"] = price
+                m1["cvd"] = delta
+            else:
+                if price > m1["high"]:
+                    m1["high"] = price
+                if price < m1["low"]:
+                    m1["low"] = price
+                m1["close"] = price
+                m1["cvd"] += delta
+
+    async def _handle_depth(self, symbol: str, data: dict):
+        bids = data.get("bids", data.get("b", []))[:5]
+        asks = data.get("asks", data.get("a", []))[:5]
+        if not bids or not asks:
+            return
+
+        bid_vol = sum(float(b[1]) for b in bids)
+        ask_vol = sum(float(a[1]) for a in asks)
+        total = bid_vol + ask_vol
+        if total <= 0:
+            return
+
+        raw_obi = (bid_vol - ask_vol) / total
+        async with _market_books_lock:
+            book = _market_books.get(symbol)
+            if book:
+                alpha = 0.30
+                book["binance_obi"] = round(alpha * raw_obi + (1.0 - alpha) * book["binance_obi"], 4)
+
 
 if __name__ == "__main__":
-    # Test script: Connect and display real-time OFI ticks for 5 seconds
     logging.basicConfig(level=logging.INFO)
-    async def test():
+
+    async def _test():
         ingest = BinanceWebSocketIngest(symbols=["BTC", "ETH"])
         ingest.start()
-        for i in range(5):
+        for i in range(10):
             await asyncio.sleep(1)
             btc_ofi = await get_current_ofi("BTC")
-            eth_ofi = await get_current_ofi("ETH")
-            print(f"[{i+1}s] Live OFI Metrics | BTC: {btc_ofi:+.4f} | ETH: {eth_ofi:+.4f}")
+            btc_obi = await get_binance_obi("BTC")
+            fast, slow = await get_cvd_metrics("BTC")
+            m1_up = await get_m1_candle_alignment("BTC", "UP")
+            print(f"[{i+1}s] BTC | OFI={btc_ofi:+.4f} OBI={btc_obi:+.4f} "
+                  f"CVD fast={fast:+.2f} slow={slow:+.2f} | 1m UP={m1_up}")
         ingest.stop()
         await asyncio.sleep(0.5)
 
-    asyncio.run(test())
+    asyncio.run(_test())
