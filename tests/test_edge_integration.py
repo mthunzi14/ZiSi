@@ -13,10 +13,12 @@ class MockStateManager:
 
 class TestEdgeIntegration(unittest.IsolatedAsyncioTestCase):
     
+    @patch("core.engine.updown_engine.UpDownEngine._recent_same_direction_streak")
     @patch("core.engine.updown_engine._fetch_klines_async")
     @patch("core.engine.updown_engine.get_current_ofi")
     @patch("core.engine.updown_engine.UpDownEngine._fetch_market")
-    async def test_engine_edge_integration(self, mock_fetch_market, mock_get_ofi, mock_fetch_klines):
+    async def test_engine_edge_integration(self, mock_fetch_market, mock_get_ofi, mock_fetch_klines, mock_streak):
+        mock_streak.return_value = 0
         # 1. Setup mock data for a signal to trigger
         # 30 candles of OHLCV
         mock_fetch_klines.return_value = [

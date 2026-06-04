@@ -921,16 +921,24 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         if exit_price is None:
             # Safety Gate (Sprint 11): Defer exit if expired and live pricing/resolution fetch failed (likely network-down/offline wake-up)
             if age_minutes >= effective_max_minutes:
-                log.warning(
-                    "[DORMANCY-SAFETY] Deferring exit for expired trade %s (%s). Live prices/resolution fetch failed (likely offline/sleep wake-up). Waiting for network to recover to get true settlement.",
-                    order_id, _ev_title
-                )
-                continue
-
-            _stored = float(pos.get("current_price", entry_price))
-            _dir = pos.get("direction", "YES").upper()
-            exit_price = round(_stored, 4)
-            log.info("[LIVE-EXIT] Using stored price %.4f for %s (live fetch unavailable)", exit_price, order_id)
+                _stale_threshold = max(3 * effective_max_minutes, effective_max_minutes + 30)
+                if age_minutes >= _stale_threshold:
+                    _stored = float(pos.get("current_price", entry_price))
+                    exit_price = round(_stored, 4)
+                    log.warning(
+                        "[DORMANCY-SAFETY] Expired trade %s (%s) has been stale for %.1f min. Live fetch failed. Force-settling at stored price %.4f to prevent gridlock.",
+                        order_id, _ev_title, age_minutes, exit_price
+                    )
+                else:
+                    log.warning(
+                        "[DORMANCY-SAFETY] Deferring exit for expired trade %s (%s). Live prices/resolution fetch failed (likely offline/sleep wake-up). Waiting for network to recover to get true settlement.",
+                        order_id, _ev_title
+                    )
+                    continue
+            else:
+                _stored = float(pos.get("current_price", entry_price))
+                exit_price = round(_stored, 4)
+                log.info("[LIVE-EXIT] Using stored price %.4f for %s (live fetch unavailable)", exit_price, order_id)
 
         # Evaluate exit triggers
         is_expired = age_minutes >= effective_max_minutes

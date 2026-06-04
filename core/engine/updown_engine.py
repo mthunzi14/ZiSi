@@ -582,12 +582,12 @@ class UpDownEngine:
                         _fv["direction"], _min_edge,
                     )
 
-            # Dynamic price floor: only block low-priced entries on weak Pyth moves
-            _fv_pct_move = abs(float(klines[-1][4]) - float(klines[-1][1])) / max(float(klines[-1][1]), 1e-9)
-            if _entry_price_fv < 0.15 and _fv_pct_move < 0.004:
-                log.info(
-                    "[PRICE-FLOOR] %s/%s: FV entry %.0fc with weak move %.4f%% — skip",
-                    self.asset, self.timeframe, _entry_price_fv * 100, _fv_pct_move * 100,
+            # Safe Entry Price Floor: Veto any Fair Value trade if contract price is below 0.35.
+            # Cheap contrarian contracts have near 0% real win rate on short timeframes.
+            if _entry_price_fv < 0.35:
+                log.warning(
+                    "[PRICE-FLOOR] %s/%s: Blocking %s FV entry at %.3f (below 0.35 safety threshold)",
+                    self.asset, self.timeframe, _fv["direction"], _entry_price_fv
                 )
                 _fv = {"direction": None, "edge": 0.0, "archetype": None}
 

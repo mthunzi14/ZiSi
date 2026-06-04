@@ -51,9 +51,12 @@ def decide_value_entry(fp_up: float, up_price: float, dn_price: float,
         return {"direction": None, "edge": 0.0, "archetype": None}
 
     if edge_up >= edge_dn:
-        direction, edge, fp = "UP", edge_up, fp_up
+        direction, edge, fp, price = "UP", edge_up, fp_up, up_price
     else:
-        direction, edge, fp = "DOWN", edge_dn, (1.0 - fp_up)
+        direction, edge, fp, price = "DOWN", edge_dn, (1.0 - fp_up), dn_price
+
+    if price < 0.35:
+        return {"direction": None, "edge": 0.0, "archetype": None}
 
     t_frac = (t_min / total_min) if total_min > 0 else 0.0
     archetype = ("near_certainty"

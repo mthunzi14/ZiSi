@@ -118,6 +118,23 @@ def _check_api_connectivity() -> bool:
     return ok
 
 
+def get_effective_max_hold_minutes(pos: dict, default_hours: float) -> float:
+    """Derive max holding period in minutes based on event title tags."""
+    title = (pos.get("event_title") or "").upper()
+    is_updown = "UPDOWN" in title or "UP OR DOWN" in title
+    if is_updown:
+        import re
+        match = re.search(r'\[(\d+)M\]', title)
+        if match:
+            return float(match.group(1))
+        if "5M" in title or "5-MINUTE" in title:
+            return 5.0
+        if "15M" in title or "15-MINUTE" in title:
+            return 15.0
+        return 5.0
+    return default_hours * 60.0
+
+
 def _check_position_reconciliation() -> bool:
     """Detect positions in state that look orphaned or stale."""
     if not POSITIONS_FILE.exists():
@@ -128,7 +145,6 @@ def _check_position_reconciliation() -> bool:
             data = json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
         active = data.get("active", [])
         now = datetime.now(timezone.utc)
-        max_hold = timedelta(hours=PAPER_MAX_HOLD_HOURS if _paper_mode else LIVE_MAX_HOLD_HOURS)
 
         orphaned = []
         for pos in active:
@@ -137,8 +153,11 @@ def _check_position_reconciliation() -> bool:
                 continue
             try:
                 entry_dt = datetime.fromisoformat(entry_time_str.replace("Z", "+00:00"))
-                age = now - entry_dt
-                if age > max_hold * 2:  # 2× max hold = definitely orphaned
+                age_minutes = (now - entry_dt).total_seconds() / 60.0
+                _default_h = PAPER_MAX_HOLD_HOURS if _paper_mode else LIVE_MAX_HOLD_HOURS
+                max_minutes = get_effective_max_hold_minutes(pos, _default_h)
+                
+                if age_minutes > max_minutes * 2.0:  # 2× max hold = definitely orphaned
                     orphaned.append(pos.get("order_id", "?"))
             except Exception:
                 continue
@@ -242,9 +261,7 @@ def _check_ml_pipeline_active() -> bool:
 
 
 def _check_stale_positions() -> bool:
-    """Alert only on positions exceeding 1.5× max hold (e.g. >6h in paper mode).
-    Positions between max_hold and 1.5× are being actively monitored for exit
-    by the position monitor — no alert needed until they become truly stuck."""
+    """Alert only on positions exceeding 1.5× max hold (e.g. >7.5m for 5m paper)."""
     if not POSITIONS_FILE.exists():
         return True
 
@@ -253,8 +270,6 @@ def _check_stale_positions() -> bool:
             data = json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
         active = data.get("active", [])
         now = datetime.now(timezone.utc)
-        max_hold_h = PAPER_MAX_HOLD_HOURS if _paper_mode else LIVE_MAX_HOLD_HOURS
-        alert_threshold_h = max_hold_h * 1.5  # 6h paper, 72h live
         stale = []
 
         for pos in active:
@@ -263,10 +278,14 @@ def _check_stale_positions() -> bool:
                 continue
             try:
                 entry_dt = datetime.fromisoformat(entry_str.replace("Z", "+00:00"))
-                age_h = (now - entry_dt).total_seconds() / 3600
-                if age_h > alert_threshold_h:
+                age_minutes = (now - entry_dt).total_seconds() / 60.0
+                _default_h = PAPER_MAX_HOLD_HOURS if _paper_mode else LIVE_MAX_HOLD_HOURS
+                max_minutes = get_effective_max_hold_minutes(pos, _default_h)
+                alert_threshold_minutes = max_minutes * 1.5
+                
+                if age_minutes > alert_threshold_minutes:
                     stale.append(
-                        f"{pos.get('order_id','?')[:12]} ({age_h:.1f}h > {alert_threshold_h:.0f}h)"
+                        f"{pos.get('order_id','?')[:12]} ({age_minutes:.1f}m > {alert_threshold_minutes:.0f}m)"
                     )
             except Exception:
                 continue
@@ -274,7 +293,7 @@ def _check_stale_positions() -> bool:
         if stale:
             _add_alert(
                 "WARNING", "STALE_POSITIONS",
-                f"{len(stale)} position(s) exceed {alert_threshold_h:.0f}h: {stale[:2]}",
+                f"{len(stale)} position(s) exceed stale limit: {stale[:2]}",
             )
             return False
         return True
@@ -362,7 +381,6 @@ def startup_recovery() -> bool:
 
         # Step 2: Remove expired positions (>max hold time)
         now = datetime.now(timezone.utc)
-        max_hold_h = PAPER_MAX_HOLD_HOURS if _paper_mode else LIVE_MAX_HOLD_HOURS
         cleaned = []
         for pos in deduped:
             time_str = pos.get("entry_time") or pos.get("open_time", "")
@@ -371,11 +389,14 @@ def startup_recovery() -> bool:
                 continue
             try:
                 pos_dt = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
-                age_h = (now - pos_dt).total_seconds() / 3600
-                if age_h > max_hold_h:
+                age_minutes = (now - pos_dt).total_seconds() / 60.0
+                _default_h = PAPER_MAX_HOLD_HOURS if _paper_mode else LIVE_MAX_HOLD_HOURS
+                max_minutes = get_effective_max_hold_minutes(pos, _default_h)
+                
+                if age_minutes > max_minutes:
                     log.warning(
-                        "[EXPIRED] Removing %s: %.1fh old (>%dh max) — %s",
-                        pos.get("order_id", "?")[:28], age_h, max_hold_h,
+                        "[EXPIRED] Removing %s: %.1fm old (>%.0fm max) — %s",
+                        pos.get("order_id", "?")[:28], age_minutes, max_minutes,
                         pos.get("market", "?"),
                     )
                 else:
