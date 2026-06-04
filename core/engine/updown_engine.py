@@ -646,6 +646,16 @@ class UpDownEngine:
         direction = apply_regime(raw_dir, regime)
         if self.invert_signal:
             direction = "DOWN" if direction == "UP" else "UP"
+            # Bug fix: re-validate FV floor for inverted direction.
+            # _entry_price_fv was assigned from _fv["direction"] (pre-inversion).
+            # After flip, the actual entry side may be sub-35c — must re-check.
+            if _fv.get("direction") is not None:
+                _inv_price = up_price if direction == "UP" else dn_price
+                if _inv_price < 0.35:
+                    log.warning("[PRICE-FLOOR-INV] %s/%s: inverted FV entry %.0fc < 35c — skip",
+                                self.asset, self.timeframe, _inv_price * 100)
+                    _fv = {"direction": None, "edge": 0.0, "archetype": None}
+                    return None
 
         # DIR-COOLDOWN removed: Bone Reaper Mode fires every candle regardless of prior direction
 

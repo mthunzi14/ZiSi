@@ -797,6 +797,16 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             if not snipe_direction:
                 return
 
+            # Market-level dedup: prevents simultaneous reversal snipe + LAT-ARB on same market
+            global _ACTIVE_MARKET_IDS
+            _snipe_event_id = market.get("event_id", "")
+            if _snipe_event_id and _snipe_event_id in _ACTIVE_MARKET_IDS:
+                log.info("[REVERSAL-SNIPE] %s/%s market already being entered — skip", asset, timeframe)
+                return
+            if _snipe_event_id:
+                _ACTIVE_MARKET_IDS.add(_snipe_event_id)
+                asyncio.create_task(_expire_market_lock(_snipe_event_id))
+
             # Skip if already in this market
             import infrastructure.state.state_manager as state_mgr
             for pos in state_mgr.get_open_positions():

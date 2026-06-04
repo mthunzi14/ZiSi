@@ -327,9 +327,9 @@ def _retry_request(
 def get_hold_to_expiry_flag(entry_price: float, fast_cvd: float, slow_cvd: float) -> bool:
     if entry_price < 0.44 or entry_price > 0.56:
         return False
-    if slow_cvd == 0:
+    if abs(slow_cvd) < 1e-4:
         return False
-    return abs(fast_cvd) / max(abs(slow_cvd), 1e-9) >= 0.40
+    return abs(fast_cvd) / abs(slow_cvd) >= 0.40
 
 
 def place_order(
@@ -440,6 +440,7 @@ def place_order(
                 "target_price": tp,
                 "stop_loss": sl,
                 "open_time": datetime.now(timezone.utc),
+                "hold_to_expiry": hold_to_expiry,
             }
             persist_positions()
             log.info("Kalshi Order placed: %s status=%s", order["order_id"], order["status"])
