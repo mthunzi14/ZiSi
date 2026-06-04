@@ -281,6 +281,20 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             except Exception:
                 pass
 
+            if timeframe == "5m" and asset in ("BTC", "ETH") and t_minus == 15:
+                import infrastructure.state.state_manager as _sm_cf
+                for _pos in _sm_cf.get_open_positions():
+                    _ptitle = _pos.get("event_title", "")
+                    if "[" + asset + "]" not in _ptitle:
+                        continue
+                    if "[15m]" not in _ptitle:
+                        continue
+                    _pos_up = _pos.get("direction") in ("YES", "UP")
+                    _our_up = direction == "UP"
+                    if _pos_up != _our_up:
+                        log.info("[CONFLICT-SKIP] %s/5m: %s conflicts with open 15m %s", asset, direction, "UP" if _pos_up else "DOWN")
+                        return
+
             log.info("[LATENCY-ARB] Potential %s move detected for %s/%s (move: %.4f%%, Pyth: %.4f, Open: %.4f)",
                      direction, asset, timeframe, pct_move * 100, pyth_price, open_price)
 
@@ -666,8 +680,14 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
 
         except Exception as e:
             log.error("[LATENCY-ARB] Scanner loop error: %s", e, exc_info=True)
-            
-        await asyncio.sleep(1.0)
+
+        try:
+            from infrastructure.websocket.spot_websocket_ingest import _price_move_events
+            await asyncio.wait_for(_price_move_events.get(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            await asyncio.sleep(1.0)
 
 
 async def _monitor_lat_exit(
@@ -758,14 +778,21 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             snipe_direction = None
             snipe_price = None
 
-            if up_price >= 0.90 and dn_price <= 0.10 and pct_move <= -0.004:
-                # Market says UP is certain, but Pyth price is falling → snipe DOWN
+            _snipe_size_mult = 1.0
+            if up_price >= 0.90 and dn_price <= 0.10 and pct_move <= -0.005:
                 snipe_direction = "DOWN"
                 snipe_price = dn_price
-            elif dn_price >= 0.90 and up_price <= 0.10 and pct_move >= 0.004:
-                # Market says DOWN is certain, but Pyth price is rising → snipe UP
+            elif dn_price >= 0.90 and up_price <= 0.10 and pct_move >= 0.005:
                 snipe_direction = "UP"
                 snipe_price = up_price
+            elif up_price >= 0.65 and dn_price <= 0.35 and pct_move <= -0.006:
+                snipe_direction = "DOWN"
+                snipe_price = dn_price
+                _snipe_size_mult = 0.5
+            elif dn_price >= 0.65 and up_price <= 0.35 and pct_move >= 0.006:
+                snipe_direction = "UP"
+                snipe_price = up_price
+                _snipe_size_mult = 0.5
 
             if not snipe_direction:
                 return
@@ -783,7 +810,7 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
 
             from infrastructure.state.state_manager import get_current_balance
             balance = get_current_balance()
-            usd_size = min(balance * 0.005, 2.0)
+            usd_size = min(balance * 0.005, 2.0) * _snipe_size_mult
             if usd_size < 0.50:
                 log.info("[REVERSAL-SNIPE] Size $%.2f too small, skipping %s/%s", usd_size, asset, timeframe)
                 return
@@ -837,4 +864,80 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
         except Exception as e:
             log.error("[REVERSAL-SNIPE] Loop error: %s", e)
 
+        await asyncio.sleep(5.0)
+
+
+async def start_resolution_sweeper(session, engines):
+    log.info("[SWEEPER] Post-resolution queue sweeper daemon started...")
+    _swept = {}
+    while True:
+        try:
+            from infrastructure.state.state_manager import get_current_balance
+            import infrastructure.state.state_manager as state_mgr
+            balance = get_current_balance()
+            usd_size = min(balance * 0.005, 5.0)
+            if usd_size < 0.50:
+                await asyncio.sleep(10.0)
+                continue
+            now = time.time()
+            for key, engine in engines.items():
+                asset = engine.asset
+                timeframe = engine.timeframe
+                if asset == "DOGE":
+                    continue
+                try:
+                    market = await engine._fetch_market(session, is_latency_scan=True)
+                    if not market:
+                        continue
+                    up_price = market["up_price"]
+                    dn_price = market["dn_price"]
+                    event_id = market["event_id"]
+                    if now - _swept.get(event_id, 0) < 30.0:
+                        continue
+                    sweep_dir = None
+                    sweep_price = None
+                    sweep_mid = None
+                    if up_price >= 0.99:
+                        sweep_dir = "YES"
+                        sweep_price = up_price
+                        sweep_mid = market["up_market"]["id"]
+                    elif dn_price >= 0.99:
+                        sweep_dir = "NO"
+                        sweep_price = dn_price
+                        sweep_mid = market["dn_market"]["id"]
+                    if not sweep_dir:
+                        continue
+                    for pos in state_mgr.get_open_positions():
+                        if pos.get("event_id") == event_id:
+                            sweep_dir = None
+                            break
+                    if not sweep_dir:
+                        continue
+                    interval_minutes = 60 if timeframe == "1h" else int(timeframe.rstrip("m"))
+                    next_close = ((int(now) // (interval_minutes * 60)) + 1) * (interval_minutes * 60)
+                    if now >= next_close:
+                        continue
+                    from infrastructure.exchange.trader import place_order
+                    from core.engine.session_governor import commit_trade_slot
+                    order = place_order(
+                        event_id=event_id,
+                        market_id=sweep_mid,
+                        amount_dollars=usd_size,
+                        direction=sweep_dir,
+                        entry_price=sweep_price,
+                        event_title="[UPDOWN][" + asset + "][" + timeframe + "][RESOLUTION_SWEEP] " + market["event_title"],
+                        expiry_ts=market["expiry_ts"],
+                    )
+                    if order:
+                        _swept[event_id] = now
+                        log.info("[SWEEPER] %s/%s %s @ %.0fc $%.2f", asset, timeframe, sweep_dir, sweep_price*100, usd_size)
+                        try:
+                            from app.telegram_bot import send_alert
+                            send_alert("SWEEP " + asset + "/" + timeframe + " " + sweep_dir + " @ " + str(int(sweep_price*100)) + "c")
+                        except Exception:
+                            pass
+                except Exception as ex:
+                    log.debug("[SWEEPER] %s/%s: %s", asset, timeframe, ex)
+        except Exception as ex:
+            log.error("[SWEEPER] loop error: %s", ex)
         await asyncio.sleep(5.0)
