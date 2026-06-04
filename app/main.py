@@ -245,12 +245,35 @@ async def _validate_trade_slot(
         context.log_skip("diagnostics_halt", asset, timeframe)
         return False, {}
 
+    _entry_source = signal.get("entry_source", "SIG")
+
+    # SIGNAL ATM floor: prediction-based entries below 65¢ face 3.15% dynamic fee
+    # with no structural lag-arb edge — block them entirely
+    if _entry_source != "FAIR_VAL" and entry_price < 0.65:
+        log.info(
+            "[SIGNAL-ATM] %s/%s: SIGNAL entry %.0fc below 65c floor — ATM has no edge (fee=~3%%), skip",
+            asset, timeframe, entry_price * 100,
+        )
+        context.log_skip("signal_atm_block", asset, timeframe)
+        return False, {}
+
     raw_bet_usd = engine.compute_size(score, entry_price, current_balance)
     corr_mult = signal.get("corroboration_multiplier", 1.0)
     bet_usd = raw_bet_usd * risk_multiplier * corr_mult
     if corr_mult != 1.0:
         log.info("[RISK] %s/%s corroboration_mult=%.1f → bet $%.2f",
                  asset, timeframe, corr_mult, bet_usd)
+
+    # SIGNAL sizing cap: max $3 (5% of balance). Kelly oversizes prediction bets
+    # because it can't see the WR gap between SIGNAL and LAT-ARB entries
+    if _entry_source != "FAIR_VAL":
+        _sig_cap = min(3.00, current_balance * 0.05)
+        if bet_usd > _sig_cap:
+            log.info(
+                "[SIGNAL-CAP] %s/%s: SIGNAL capped $%.2f → $%.2f",
+                asset, timeframe, bet_usd, _sig_cap,
+            )
+            bet_usd = _sig_cap
 
     # 15m SIG no longer gets size premium — LAT-ARB has earned it, SIG has not
 
