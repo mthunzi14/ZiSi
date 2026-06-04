@@ -25,6 +25,54 @@ log = logging.getLogger("zisi.hft.ws")
 
 _market_books: Dict[str, dict] = {}
 _market_books_lock = asyncio.Lock()
+_price_move_events = asyncio.Queue(maxsize=50)
+
+async def pre_warm_cvd(symbols, session):
+    now = time.time()
+    cutoff = now - 62.0
+    for sym in symbols:
+        s = sym.upper()
+        try:
+            url = "https://api.binance.com/api/v3/aggTrades?symbol=" + s + "USDT&limit=500"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5.0)) as resp:
+                if resp.status != 200:
+                    continue
+                trades = await resp.json()
+            async with _market_books_lock:
+                if s not in _market_books:
+                    _market_books[s] = {
+                        "bid_price": 0.0, "bid_qty": 0.0, "ask_price": 0.0, "ask_qty": 0.0,
+                        "ofi_value": 0.0, "binance_obi": 0.0, "trades_history": [],
+                        "m1_candle": {"open": 0.0, "high": 0.0, "low": 0.0, "close": 0.0, "cvd": 0.0, "open_time": 0.0},
+                    }
+                book = _market_books[s]
+                for t in trades:
+                    ts = float(t["T"]) / 1000.0
+                    if ts < cutoff:
+                        continue
+                    qty = float(t["q"])
+                    delta = -qty if t.get("m", False) else qty
+                    book["trades_history"].append((ts, delta))
+                book["trades_history"].sort(key=lambda x: x[0])
+            log.info("[CVD-PREWARM] %s: loaded %d trades from REST", s, sum(1 for tr in _market_books[s]["trades_history"] if tr[0] >= cutoff))
+        except Exception as e:
+            log.warning("[CVD-PREWARM] %s failed: %s", s, e)
+
+
+async def get_validated_price(symbol, pyth_price):
+    async with _market_books_lock:
+        book = _market_books.get(symbol.upper())
+        if not book or book["bid_price"] <= 0 or book["ask_price"] <= 0:
+            return pyth_price
+        binance_mid = (book["bid_price"] + book["ask_price"]) / 2.0
+    if pyth_price <= 0:
+        return binance_mid
+    divergence = abs(binance_mid - pyth_price) / max(pyth_price, 1e-9)
+    if divergence > 0.002:
+        log.info("[PRICE-XVAL] %s: Pyth=%.4f Binance=%.4f diverge=%.3f%% using Binance", symbol, pyth_price, binance_mid, divergence*100)
+        return binance_mid
+    return pyth_price
+
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +320,15 @@ class BinanceWebSocketIngest:
                 alpha = 0.30
                 book["binance_obi"] = round(alpha * raw_obi + (1.0 - alpha) * book["binance_obi"], 4)
 
+
+        if new_bid > 0 and old_bid > 0:
+            _pct = (new_bid - old_bid) / old_bid
+            if abs(_pct) >= 0.002:
+                _dir = "UP" if _pct > 0 else "DOWN"
+                try:
+                    _price_move_events.put_nowait({"asset": symbol, "direction": _dir, "pct_move": _pct})
+                except asyncio.QueueFull:
+                    pass
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
