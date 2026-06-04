@@ -324,6 +324,14 @@ def _retry_request(
 # Order placement
 # ---------------------------------------------------------------------------
 
+def get_hold_to_expiry_flag(entry_price: float, fast_cvd: float, slow_cvd: float) -> bool:
+    if entry_price < 0.44 or entry_price > 0.56:
+        return False
+    if slow_cvd == 0:
+        return False
+    return abs(fast_cvd) / max(abs(slow_cvd), 1e-9) >= 0.40
+
+
 def place_order(
     event_id: str,
     market_id: str,
@@ -333,6 +341,7 @@ def place_order(
     event_title: str = "",
     expiry_ts: int = 0,
     market: str = "POLYMARKET",
+    hold_to_expiry: bool = False,
 ) -> Optional[dict]:
     """
     Place a BUY order for the given Polymarket market.
@@ -467,6 +476,7 @@ def place_order(
             "stop_loss": sl,
             "open_time": datetime.now(timezone.utc),
             "entry_type": _derive_entry_type(_display_title),
+            "hold_to_expiry": hold_to_expiry,
         }
         persist_positions()
         return order
@@ -949,6 +959,15 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
             # Update local current_price in memory and continue
             pos["current_price"] = exit_price
             continue
+
+        # ATM hold-to-expiry: if the position has the flag set and target was hit,
+        # suppress the early exit and let the position run until expiry.
+        if is_target_hit and pos.get("hold_to_expiry", False):
+            remaining_min = effective_max_minutes - age_minutes
+            if remaining_min > 0.17:
+                log.info("[HOLD-EXPIRY] %s: TARGET_HIT at %.2f but hold_to_expiry=True, %.1fs left — holding", order_id, exit_price, remaining_min * 60)
+                pos["current_price"] = exit_price
+                continue
 
         # Determine reason and exit type (Standard vs Netting Merge)
         if is_target_hit:
