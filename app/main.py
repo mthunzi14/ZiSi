@@ -190,12 +190,25 @@ async def _validate_trade_slot(
     """
     Enforces risk and entry gates. Returns (allowed, details).
     """
+    _entry_source = signal.get("entry_source", "SIG")
     direction = signal["direction"]
     score = signal["score"]
     market = signal["market"]
     entry_price = market["up_price"] if direction == "UP" else market["dn_price"]
     up_price = market["up_price"]
     dn_price = market["dn_price"]
+
+    # ADVANCEMENT 11a — FV floor final guard
+    if _entry_source == "FAIR_VAL" and entry_price < 0.35:
+        log.warning("[FV-FLOOR] %s/%s: FV entry %.0fc below 35c floor (price moved post-signal) — skip", asset, timeframe, entry_price * 100)
+        context.log_skip("fv_floor_35c", asset, timeframe)
+        return False, {}
+
+    # ADVANCEMENT 2 — Block SIGNAL on 5m
+    if _entry_source != "FAIR_VAL" and timeframe == "5m":
+        log.info("[SIGNAL-5M] %s/%s: SIGNAL blocked on 5m — insufficient trend window", asset, timeframe)
+        context.log_skip("signal_5m_block", asset, timeframe)
+        return False, {}
     is_dual = signal.get("is_dual_eligible") or UpDownEngine.should_dual_enter(up_price, dn_price)
 
     from config import DUAL_ENTRY_MAX_COMBINED
@@ -285,6 +298,18 @@ async def _validate_trade_slot(
         bet_usd = min(bet_usd * 0.35, 35.0)
         log.info("[RISK] Altcoin %s Sizing calibrated to 35%% (max $35): $%.2f", asset, bet_usd)
 
+    # ADVANCEMENT 4 — SIGNAL sizing tiers
+    if _entry_source != "FAIR_VAL":
+        if entry_price >= 0.85:
+            _sig_tier_cap = 5.00
+        elif entry_price >= 0.75:
+            _sig_tier_cap = 3.00
+        else:
+            _sig_tier_cap = 1.50
+        if bet_usd > _sig_tier_cap:
+            log.info("[SIGNAL-TIER] %s/%s: entry=%.0fc tier_cap=$%.2f (was $%.2f)", asset, timeframe, entry_price*100, _sig_tier_cap, bet_usd)
+            bet_usd = _sig_tier_cap
+
     # Safety cap: Max 15% of current_balance per trade slot to prevent black-swan drawdowns
     max_safety_size = current_balance * 0.15
     if bet_usd > max_safety_size:
@@ -308,7 +333,7 @@ async def _validate_trade_slot(
         "is_dual":      is_dual,
         "risk_multiplier": risk_multiplier,
         "bet_usd":      bet_usd,
-        "entry_source": signal.get("entry_source", "SIG"),
+        "entry_source": _entry_source,
     }
     return True, validation_details
 
