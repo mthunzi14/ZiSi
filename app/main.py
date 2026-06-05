@@ -15,6 +15,21 @@ import time
 _last_entry_ts: float = 0.0
 ENTRY_COOLDOWN_S: float = 15.0
 _entry_lock: asyncio.Lock | None = None  # lazy-initialized inside the event loop
+
+# FV global rate limiter — max 3 FV entries per 60s.
+# Prevents correlated macro wipeouts where 5 assets fire simultaneously on the same bad candle.
+_fv_entry_times: list = []
+_FV_MAX_PER_60S: int = 3
+
+def _fv_rate_ok() -> bool:
+    """True if fewer than 3 FV entries have fired in the last 60 seconds."""
+    now = time.time()
+    _fv_entry_times[:] = [ts for ts in _fv_entry_times if now - ts < 60.0]
+    return len(_fv_entry_times) < _FV_MAX_PER_60S
+
+def _fv_rate_record() -> None:
+    """Record a FV entry in the sliding window."""
+    _fv_entry_times.append(time.time())
 import aiohttp
 from datetime import datetime, timezone
 from pathlib import Path
@@ -204,6 +219,16 @@ async def _validate_trade_slot(
                  asset, timeframe, entry_price * 100)
         context.log_skip("sig_floor_10c", asset, timeframe)
         return False, {}
+
+    # FV global rate limiter — max 3 FV entries per 60s.
+    # Prevents the correlated macro wipeout pattern: 5 assets firing simultaneously
+    # on the same bad macro candle, each sized at $6-8, wiping the full session P&L.
+    if _entry_source == "FAIR_VAL" and not _fv_rate_ok():
+        log.info("[FV-RATE] %s/%s: %d FV entries in last 60s — global rate cap, skip",
+                 asset, timeframe, _FV_MAX_PER_60S)
+        context.log_skip("fv_rate_limit", asset, timeframe)
+        return False, {}
+
     is_dual = signal.get("is_dual_eligible") or UpDownEngine.should_dual_enter(up_price, dn_price)
 
     from config import DUAL_ENTRY_MAX_COMBINED
@@ -297,6 +322,9 @@ async def _validate_trade_slot(
         "bet_usd":      bet_usd,
         "entry_source": _entry_source,
     }
+    # Record FV approval in sliding window so rate limiter tracks in-flight entries
+    if _entry_source == "FAIR_VAL":
+        _fv_rate_record()
     return True, validation_details
 
 

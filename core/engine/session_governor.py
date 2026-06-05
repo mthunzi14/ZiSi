@@ -107,10 +107,20 @@ async def request_trade_slot(
         log.warning("[GOVERNOR] Failed to read regime-based trade limit: %s", e)
 
     async with _lock:
+        # Refresh open_positions INSIDE the lock so concurrent async tasks don't read
+        # the same stale snapshot before any of them has committed their position.
+        # This eliminates the race condition that allowed 5 simultaneous FV entries.
+        try:
+            from infrastructure.state import state_manager as _sm_fresh
+            open_positions = _sm_fresh.get_open_positions()
+        except Exception:
+            pass  # keep caller's snapshot as fallback
+
         if has_open_asset_tf_exposure(open_positions, asset, timeframe):
             return False, f"open_position_{asset}_{timeframe}"
 
-        # Count open positions in the same direction to enforce correlation cap (isolated from DUAL hedges)
+        # Correlation cap: max 2 open positions in same direction (tightened from 4).
+        # 3+ same-direction positions = correlated macro exposure, not independent edge.
         if not is_dual:
             same_dir_count = 0
             for p in open_positions:
@@ -118,9 +128,9 @@ async def request_trade_slot(
                 p_norm = "UP" if p_dir in ("YES", "UP") else ("DOWN" if p_dir in ("NO", "DOWN") else "")
                 if p_norm == direction:
                     same_dir_count += 1
-            if same_dir_count >= 4:
+            if same_dir_count >= 2:
                 log.warning(
-                    "[GOVERNOR] Already %d active open %s positions — correlation cap blocking new %s %s trade",
+                    "[GOVERNOR] Already %d active open %s positions — correlation cap (max 2) blocking %s %s",
                     same_dir_count, direction, asset, direction
                 )
                 return False, f"correlation_cap_{direction}"
