@@ -275,13 +275,6 @@ class UpDownEngine:
             self.consecutive_losses = 0
         else:
             self.consecutive_losses += 1
-            if self.consecutive_losses >= 2:
-                self.skip_windows = 2
-                self.consecutive_losses = 0
-                self.telegram(
-                    f"WARNING {self.asset}/{self.timeframe}: 2 consecutive losses — pausing 2 windows"
-                )
-                log.info("[ENGINE] %s/%s: circuit breaker — skip 2 windows", self.asset, self.timeframe)
 
         self._check_inversion()
 
@@ -320,6 +313,10 @@ class UpDownEngine:
             trs.append(max(h - l, abs(h - pc), abs(l - pc)))
         atr = (sum(trs) / len(trs)) if trs else 0.0
         sigma_frac = (atr / s_0) if s_0 else 0.01
+        # ETH sigma floor: prevents FV from firing on micro-moves for ETH
+        if self.asset == "ETH" and sigma_frac < 0.0040:
+            sigma_frac = 0.0040
+            log.debug("[ETH-SIGMA] ETH sigma_frac floored to 0.0040")
         fp_up = fair_prob_up(spot, s_0, sigma_frac, elapsed_min, total_min)
         dec = decide_value_entry(fp_up, up_price, dn_price, elapsed_min, total_min)
         dec["fp_up"] = round(fp_up, 4)
@@ -549,13 +546,25 @@ class UpDownEngine:
                 except Exception:
                     pass
 
-            _expensive_fv = _entry_price_fv > 0.50
-            if _expensive_fv and _cross_tf_conflict:
+            # Range-based minimum edge derived from 136-trade session data:
+            # 50-65¢: 45% WR (losing zone) → raise bar to 0.12
+            # >65¢: risky, moderate raise to 0.10
+            # 25-50¢: profit zone → keep base at 0.05
+            # Cross-TF conflict still adds a penalty on top
+            if _entry_price_fv >= 0.50 and _entry_price_fv < 0.65:
+                _min_edge = 0.12
+            elif _entry_price_fv >= 0.65:
                 _min_edge = 0.10
-            elif _expensive_fv or _cross_tf_conflict:
-                _min_edge = 0.08
             else:
                 _min_edge = 0.05
+            # Cross-TF conflict always raises bar by additional 0.03
+            if _cross_tf_conflict:
+                _min_edge = max(_min_edge, _min_edge + 0.03)
+            # ETH-specific: 40-65¢ range was 0W/3L in session data
+            if self.asset == "ETH" and 0.40 <= _entry_price_fv < 0.65:
+                _min_edge = max(_min_edge, 0.15)
+                log.info("[ETH-FV-GATE] ETH %.0fc in weak zone — min_edge raised to %.2f",
+                         _entry_price_fv * 100, _min_edge)
 
             # Macro-aware FV edge penalty: raises the edge bar when the 8-candle macro
             # trend conflicts with FV direction, preventing macro-opposing FV entries.
@@ -581,15 +590,6 @@ class UpDownEngine:
                         _fv_m_up if not _fv_is_up else _fv_m_dn,
                         _fv["direction"], _min_edge,
                     )
-
-            # Safe Entry Price Floor: Veto any Fair Value trade if contract price is below 0.35.
-            # Cheap contrarian contracts have near 0% real win rate on short timeframes.
-            if _entry_price_fv < 0.35:
-                log.warning(
-                    "[PRICE-FLOOR] %s/%s: Blocking %s FV entry at %.3f (below 0.35 safety threshold)",
-                    self.asset, self.timeframe, _fv["direction"], _entry_price_fv
-                )
-                _fv = {"direction": None, "edge": 0.0, "archetype": None}
 
             if _fv["edge"] < _min_edge:
                 log.info(
@@ -1297,6 +1297,18 @@ class UpDownEngine:
                     price_scalar = 0.25  # 75% reduction
                     log.info("[SIZE] Price %.4f extremely expensive -> applying 75%% scaling (x0.25) in adaptive Kelly", price)
                 usd_size *= price_scalar
+
+                # Range-based multiplier for 25-65¢ range (only when price_scalar=1.0, i.e. price<65¢)
+                # <25¢: high variance entries — 40% size to control risk
+                # 25-50¢: profit zone — full size
+                # 50-65¢: 45% WR historically — 65% size
+                if price_scalar == 1.0:
+                    if price < 0.25:
+                        usd_size *= 0.40
+                        log.info("[SIZE-RANGE] <25c entry → 40%% size: $%.2f", usd_size)
+                    elif price >= 0.50:
+                        usd_size *= 0.65
+                        log.info("[SIZE-RANGE] 50-65c entry → 65%% size: $%.2f", usd_size)
 
                 # Consecutive Loss Streak Brake
                 consecutive_losses = self._recent_closed_loss_streak()
