@@ -269,6 +269,15 @@ class BinanceWebSocketIngest:
             old["ask_price"] = new_ask
             old["ask_qty"] = new_ask_qty
 
+        if new_bid > 0 and old_bid > 0:
+            _pct = (new_bid - old_bid) / old_bid
+            if abs(_pct) >= 0.002:
+                _dir = "UP" if _pct > 0 else "DOWN"
+                try:
+                    _price_move_events.put_nowait({"asset": symbol, "direction": _dir, "pct_move": _pct})
+                except asyncio.QueueFull:
+                    pass
+
     async def _handle_agg_trade(self, symbol: str, tick: dict):
         price = float(tick.get("p", 0.0))
         qty = float(tick.get("q", 0.0))
@@ -319,16 +328,6 @@ class BinanceWebSocketIngest:
             if book:
                 alpha = 0.30
                 book["binance_obi"] = round(alpha * raw_obi + (1.0 - alpha) * book["binance_obi"], 4)
-
-
-        if new_bid > 0 and old_bid > 0:
-            _pct = (new_bid - old_bid) / old_bid
-            if abs(_pct) >= 0.002:
-                _dir = "UP" if _pct > 0 else "DOWN"
-                try:
-                    _price_move_events.put_nowait({"asset": symbol, "direction": _dir, "pct_move": _pct})
-                except asyncio.QueueFull:
-                    pass
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
