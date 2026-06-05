@@ -360,3 +360,47 @@ def force_confirm(position: dict) -> None:
             _os.replace(tmp_path, _POSITIONS_FILE)
     except Exception as exc:
         log.warning("[STATE] force_confirm failed: %s", exc)
+
+
+def cleanup_expired_positions() -> int:
+    """
+    Delete open positions whose expiry_ts passed more than 90 seconds ago.
+    Does NOT add them to closed history — completely removes them.
+    Returns count of deleted positions.
+    """
+    import time as _time
+    now = _time.time()
+    cutoff = now - 90.0
+
+    with GLOBAL_POSITIONS_LOCK:
+        if not _POSITIONS_FILE.exists():
+            return 0
+        try:
+            data = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return 0
+
+        active = data.get("active", [])
+        zombies = [p for p in active if 0 < p.get("expiry_ts", float("inf")) < cutoff]
+        if not zombies:
+            return 0
+
+        survivors = [p for p in active if p not in zombies]
+        for z in zombies:
+            log.info(
+                "[ZOMBIE-CLEAN] Deleted expired position %s (%s, expiry %ds ago)",
+                z.get("order_id", "?")[:12],
+                z.get("event_title", "")[:40],
+                int(now - z.get("expiry_ts", now)),
+            )
+
+        data["active"] = survivors
+        summary = data.get("summary", {})
+        summary["active_count"] = len(survivors)
+        data["summary"] = summary
+
+        _POSITIONS_FILE.write_text(
+            json.dumps(data, indent=2, default=str),
+            encoding="utf-8",
+        )
+        return len(zombies)

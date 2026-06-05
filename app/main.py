@@ -198,16 +198,11 @@ async def _validate_trade_slot(
     up_price = market["up_price"]
     dn_price = market["dn_price"]
 
-    # ADVANCEMENT 11a — FV floor final guard
-    if _entry_source == "FAIR_VAL" and entry_price < 0.35:
-        log.warning("[FV-FLOOR] %s/%s: FV entry %.0fc below 35c floor (price moved post-signal) — skip", asset, timeframe, entry_price * 100)
-        context.log_skip("fv_floor_35c", asset, timeframe)
-        return False, {}
-
-    # ADVANCEMENT 2 — Block SIGNAL on 5m
-    if _entry_source != "FAIR_VAL" and timeframe == "5m":
-        log.info("[SIGNAL-5M] %s/%s: SIGNAL blocked on 5m — insufficient trend window", asset, timeframe)
-        context.log_skip("signal_5m_block", asset, timeframe)
+    # SIG 10¢ floor: block only extreme-consensus entries where market is 90%+ against signal
+    if _entry_source != "FAIR_VAL" and entry_price < 0.10:
+        log.info("[SIG-FLOOR] %s/%s: SIG %.0fc < 10c — market too extreme against signal — skip",
+                 asset, timeframe, entry_price * 100)
+        context.log_skip("sig_floor_10c", asset, timeframe)
         return False, {}
     is_dual = signal.get("is_dual_eligible") or UpDownEngine.should_dual_enter(up_price, dn_price)
 
@@ -260,33 +255,12 @@ async def _validate_trade_slot(
 
     _entry_source = signal.get("entry_source", "SIG")
 
-    # SIGNAL ATM floor: prediction-based entries below 65¢ face 3.15% dynamic fee
-    # with no structural lag-arb edge — block them entirely
-    if _entry_source != "FAIR_VAL" and entry_price < 0.65:
-        log.info(
-            "[SIGNAL-ATM] %s/%s: SIGNAL entry %.0fc below 65c floor — ATM has no edge (fee=~3%%), skip",
-            asset, timeframe, entry_price * 100,
-        )
-        context.log_skip("signal_atm_block", asset, timeframe)
-        return False, {}
-
     raw_bet_usd = engine.compute_size(score, entry_price, current_balance)
     corr_mult = signal.get("corroboration_multiplier", 1.0)
     bet_usd = raw_bet_usd * risk_multiplier * corr_mult
     if corr_mult != 1.0:
         log.info("[RISK] %s/%s corroboration_mult=%.1f → bet $%.2f",
                  asset, timeframe, corr_mult, bet_usd)
-
-    # SIGNAL sizing cap: max $3 (5% of balance). Kelly oversizes prediction bets
-    # because it can't see the WR gap between SIGNAL and LAT-ARB entries
-    if _entry_source != "FAIR_VAL":
-        _sig_cap = min(3.00, current_balance * 0.05)
-        if bet_usd > _sig_cap:
-            log.info(
-                "[SIGNAL-CAP] %s/%s: SIGNAL capped $%.2f → $%.2f",
-                asset, timeframe, bet_usd, _sig_cap,
-            )
-            bet_usd = _sig_cap
 
     # 15m SIG no longer gets size premium — LAT-ARB has earned it, SIG has not
 
@@ -297,18 +271,6 @@ async def _validate_trade_slot(
     elif asset in ["ADA", "DOGE", "AVAX", "SUI"]:
         bet_usd = min(bet_usd * 0.35, 35.0)
         log.info("[RISK] Altcoin %s Sizing calibrated to 35%% (max $35): $%.2f", asset, bet_usd)
-
-    # ADVANCEMENT 4 — SIGNAL sizing tiers
-    if _entry_source != "FAIR_VAL":
-        if entry_price >= 0.85:
-            _sig_tier_cap = 5.00
-        elif entry_price >= 0.75:
-            _sig_tier_cap = 3.00
-        else:
-            _sig_tier_cap = 1.50
-        if bet_usd > _sig_tier_cap:
-            log.info("[SIGNAL-TIER] %s/%s: entry=%.0fc tier_cap=$%.2f (was $%.2f)", asset, timeframe, entry_price*100, _sig_tier_cap, bet_usd)
-            bet_usd = _sig_tier_cap
 
     # Safety cap: Max 15% of current_balance per trade slot to prevent black-swan drawdowns
     max_safety_size = current_balance * 0.15
@@ -565,9 +527,30 @@ def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, s
     return None
 
 
+async def _zombie_cleanup_loop() -> None:
+    """Periodically delete positions whose expiry_ts has passed."""
+    while True:
+        await asyncio.sleep(300)  # every 5 minutes
+        try:
+            from infrastructure.state.state_manager import cleanup_expired_positions
+            deleted = cleanup_expired_positions()
+            if deleted:
+                log.info("[ZOMBIE-LOOP] Cleaned %d zombie positions", deleted)
+        except Exception as e:
+            log.warning("[ZOMBIE-LOOP] Error: %s", e)
+
+
 async def main() -> None:
     # Initialize persistent account state explicitly during bot startup (Issue E fix)
     initialize_state()
+    # Clean up any zombie positions from prior session at startup
+    try:
+        from infrastructure.state.state_manager import cleanup_expired_positions
+        _cleaned = cleanup_expired_positions()
+        if _cleaned:
+            log.info("[STARTUP] Deleted %d zombie positions from prior session", _cleaned)
+    except Exception as _ze:
+        log.warning("[STARTUP] Zombie cleanup failed: %s", _ze)
     update_heartbeat(reason="bot-booting")
 
     cfg = load_config()
@@ -628,6 +611,7 @@ async def main() -> None:
             tasks.append(reconciliation_loop(state_manager, _try_telegram))
             tasks.append(arbitrage_scanner_loop(_try_telegram))
             tasks.append(heartbeat_daemon())
+            asyncio.create_task(_zombie_cleanup_loop())
 
             # Start latency edge arbitrage scanner (Sprint 3)
             try:
