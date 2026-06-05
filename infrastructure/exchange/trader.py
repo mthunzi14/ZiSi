@@ -836,6 +836,68 @@ def annotate_position(order_id: str, **kwargs) -> None:
         persist_positions()
 
 
+def _resolve_updown_by_binance_candle(pos: dict) -> Optional[float]:
+    """
+    Resolve an UP/DOWN paper position exactly as Polymarket does:
+    fetch the Binance candle whose close time == expiry_ts,
+    compare candle close vs open, return 0.99 (direction correct) or 0.01 (wrong).
+
+    Returns None if the candle data cannot be fetched (caller falls back to CLOB).
+    """
+    import re as _re
+    try:
+        title     = pos.get("event_title", "")
+        direction = pos.get("direction", "YES").upper()
+        expiry_ts = pos.get("expiry_ts", 0)
+        if not expiry_ts:
+            return None
+
+        asset_m = _re.search(r"\[(BTC|ETH|SOL|XRP|DOGE)\]", title)
+        tf_m    = _re.search(r"\[(5m|15m|1h)\]",             title, _re.IGNORECASE)
+        if not asset_m or not tf_m:
+            return None
+
+        asset    = asset_m.group(1)
+        tf       = tf_m.group(1).lower()
+        interval_s = {"5m": 300, "15m": 900, "1h": 3600}.get(tf)
+        if not interval_s:
+            return None
+
+        # The candle that resolved this market opened at (expiry_ts - interval_s)
+        candle_open_ms = int((expiry_ts - interval_s) * 1000)
+
+        resp = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={
+                "symbol":    f"{asset}USDT",
+                "interval":  tf,
+                "startTime": candle_open_ms,
+                "limit":     1,
+            },
+            timeout=5,
+        )
+        if resp.status_code != 200 or not resp.json():
+            return None
+
+        candle     = resp.json()[0]
+        open_price = float(candle[1])
+        close_price = float(candle[4])
+        candle_up  = close_price >= open_price
+        pos_up     = direction in ("YES", "UP")
+
+        result = 0.99 if (candle_up == pos_up) else 0.01
+        log.info(
+            "[REAL-RESOLVE] %s %s/%s: candle %.4f→%.4f (%s) | pos=%s → %.2f",
+            asset, tf, pos.get("order_id", "?")[:8],
+            open_price, close_price, "UP" if candle_up else "DN",
+            direction, result,
+        )
+        return result
+    except Exception as exc:
+        log.debug("[REAL-RESOLVE] Binance fetch failed: %s", exc)
+        return None
+
+
 def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
     """
     Paper-trading only: auto-close positions older than max_hold_minutes.
@@ -882,12 +944,26 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         elif not stop_loss or stop_loss <= 0:
             stop_loss = round(entry_price * cfg.get("POSITION_STOP_LOSS_MULTIPLIER", 0.50), 4)
 
+        # ── Real-world resolution for expired UPDOWN positions ──────────────────
+        # Replicates Polymarket exactly: fetch the Binance candle that closed at
+        # expiry_ts, compare close vs open, settle at 99¢ (win) or 1¢ (loss).
+        # This eliminates the CLOB polling lag that was catching partial prices.
+        _binance_resolved = False
+        if is_updown and age_minutes >= effective_max_minutes:
+            _br = _resolve_updown_by_binance_candle(pos)
+            if _br is not None:
+                exit_price = _br
+                _binance_resolved = True
+                log.info(
+                    "[REAL-RESOLVE] %s: Binance candle → %s @ %.2f",
+                    order_id, "WIN" if exit_price > 0.5 else "LOSS", exit_price,
+                )
+
         # ── Live exit price — NO simulation, all markets use real CLOB/Gamma data ──
-        exit_price = None
+        # Binance-resolved positions skip CLOB entirely — already at true 99¢/1¢.
         _market_id = pos.get("market_id") or pos.get("conditionId")
 
-        # Try live L2 WS Cache first, then fall back to REST
-        if _market_id:
+        if not _binance_resolved and _market_id:
             try:
                 from infrastructure.websocket.extraterrestrial_ws_gateway import polymarket_l2_gateway
                 mid_val, _ = polymarket_l2_gateway.get_price(_market_id)
@@ -915,7 +991,8 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
                     log.debug("[LIVE-EXIT] CLOB fetch failed for %s: %s", order_id, _ce)
 
         # If price fetch failed or market is at extreme, check resolution
-        if exit_price is None or exit_price <= 0.03 or exit_price >= 0.97:
+        # Skip if Binance already gave us the true resolution price.
+        if not _binance_resolved and (exit_price is None or exit_price <= 0.03 or exit_price >= 0.97):
             try:
                 from infrastructure.exchange.data_fetcher import fetch_market_resolution as _fmr
                 _outcome = _fmr(_market_id) if _market_id else None
