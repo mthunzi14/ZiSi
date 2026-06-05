@@ -566,6 +566,34 @@ class UpDownEngine:
                 log.info("[ETH-FV-GATE] ETH %.0fc in weak zone — min_edge raised to %.2f",
                          _entry_price_fv * 100, _min_edge)
 
+            # SOL FV floor: SOL amplifies BTC trend moves 1.5-2x — requires stronger
+            # mean-reversion confirmation before entering. 14% WR in trending sessions.
+            if self.asset == "SOL":
+                _min_edge = max(_min_edge, 0.15)
+                log.info("[SOL-FV-FLOOR] SOL FV min_edge floor=0.15 → %.2f", _min_edge)
+
+            # FV/15m base floor: 15-minute candles carry more trend momentum than 5m;
+            # require meaningful edge before entering. 18.2% WR in trending sessions.
+            if self.timeframe == "15m":
+                _min_edge = max(_min_edge, 0.10)
+                log.info("[FV-15M-FLOOR] %s/15m min_edge floor=0.10 → %.2f", self.asset, _min_edge)
+
+            # FV trend-confirm soft penalty: if both recent closed candles oppose FV
+            # direction, raise the bar — mean reversion against consecutive same-direction
+            # candles is low-probability in trending markets.
+            if len(klines) >= 4:
+                _tc_last_bull = float(klines[-2][4]) > float(klines[-2][1])
+                _tc_prev_bull = float(klines[-3][4]) > float(klines[-3][1])
+                _fv_wants_up = _fv["direction"] == "UP"
+                if _tc_last_bull == _tc_prev_bull and _tc_last_bull != _fv_wants_up:
+                    _min_edge = max(_min_edge, _min_edge + 0.06)
+                    log.info(
+                        "[FV-TREND-SOFT] %s/%s: 2 consec %s candles oppose FV %s — min_edge→%.2f",
+                        self.asset, self.timeframe,
+                        "UP" if _tc_last_bull else "DOWN",
+                        _fv["direction"], _min_edge,
+                    )
+
             # Macro-aware FV edge penalty: raises the edge bar when the 8-candle macro
             # trend conflicts with FV direction, preventing macro-opposing FV entries.
             # 5+/8 conflict (soft) → +0.08 penalty; 6+/8 conflict (hard) → +0.15 penalty.
@@ -713,7 +741,12 @@ class UpDownEngine:
         # one direction, only signals that agree are allowed through.
         # Applies to BOTH FV and SIG — prevents the recurring loss cluster pattern
         # where FV keeps firing DN while the market is bouncing UP for 45+ minutes.
-        if self.asset == "DOGE" and len(klines) >= 10:
+        # Macro gate: extended to ALL assets — if 6+/8 last closed candles unanimously
+        # point in one direction, countertrend entries are blocked for both FV and SIG.
+        # In choppy sessions (alternating candles), 6/8 consensus is rarely reached →
+        # gate is invisible at night. In trending sessions, it fires on nearly every
+        # countertrend attempt. 3/3 unanimity already handled by FV-TREND-SOFT above.
+        if len(klines) >= 10:
             _macro_candles = klines[-9:-1]  # last 8 closed candles
             _macro_up = sum(1 for k in _macro_candles if float(k[4]) > float(k[1]))
             _macro_dn = 8 - _macro_up

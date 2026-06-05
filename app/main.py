@@ -287,7 +287,11 @@ async def _validate_trade_slot(
         log.info("[RISK] %s/%s corroboration_mult=%.1f → bet $%.2f",
                  asset, timeframe, corr_mult, bet_usd)
 
-    # 15m SIG no longer gets size premium — LAT-ARB has earned it, SIG has not
+    # SIGNAL/5m premium: 75%+ WR confirmed — allocate proportionally more capital.
+    # Only applies to pure SIG entries on 5m candles, not FV or LAT-ARB.
+    if _entry_source == "SIG" and timeframe == "5m":
+        bet_usd *= 1.35
+        log.info("[RISK] SIG/5m premium +35%%: $%.2f", bet_usd)
 
     # ── Optimal Altcoin Sizing Gates (Fix A - Maximize P&L safely) ──
     if asset in ["SOL", "XRP"]:

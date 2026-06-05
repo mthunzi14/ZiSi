@@ -45,8 +45,9 @@ WARMUP_SECONDS: int = 15
 WARMUP_MIN_TICKS: int = 3
 WARMUP_MAX_JUMP: float = 0.05
 
-# Reconciliation interval (seconds)
-RECONCILE_INTERVAL: int = 30
+# Reconciliation interval (seconds) — 15s catches stop-loss before price
+# overshoots threshold (avg stop was executing at 3c instead of ~9c at 30s)
+RECONCILE_INTERVAL: int = 15
 
 # Position limits
 MAX_OPEN_PER_ASSET: int = 2
