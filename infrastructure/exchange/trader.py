@@ -956,6 +956,18 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         is_target_hit = exit_price >= target_price
         is_stop_hit = exit_price <= stop_loss if not _is_short_tf else False
 
+        # 80% drawdown stop-loss: if price dropped to ≤20% of entry, position is
+        # almost certainly wrong direction. Exit now to save 80% of stake.
+        # Applies to ALL timeframes including short-TF (which normally has stop_loss=-1).
+        _drawdown_floor = entry_price * 0.20
+        if not is_expired and exit_price is not None and 0.005 < exit_price <= _drawdown_floor:
+            log.info(
+                "[STOP-LOSS] %s: %.0fc ≤ 20%% of entry %.0fc — early exit saving %.0f%% of stake",
+                order_id, exit_price * 100, entry_price * 100,
+                (exit_price / max(entry_price, 0.001)) * 100,
+            )
+            is_stop_hit = True
+
         if not (is_expired or is_target_hit or is_stop_hit):
             # Update local current_price in memory and continue
             pos["current_price"] = exit_price
