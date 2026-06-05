@@ -340,215 +340,225 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
 
                     log.info("[CVD-OBI] %s/%s %s: PASS (fast=%.1f obi=%.3f)", asset, timeframe, direction, fast_cvd, binance_obi)
 
-            # 3. Check if we already have an active position for this candle
-            import infrastructure.state.state_manager as state_mgr
-            open_positions = state_mgr.get_open_positions()
-            
-            # Use fast-path for latency scan!
-            market = await engine._fetch_market(session, is_latency_scan=True)
-            if not market:
-                log.warning("[LATENCY-ARB] Active market not found for %s/%s", asset, timeframe)
+            # Governor request to prevent latency duplicate race conditions
+            from core.engine.session_governor import request_trade_slot, commit_trade_slot, cancel_trade_slot
+            allowed, slot_reason = await request_trade_slot(
+                asset, timeframe, 0.85, interval_minutes, open_positions, is_dual=True, direction=direction
+            )
+            if not allowed:
+                log.info("[LAT-GOVERNOR-BLOCKED] %s/%s %s blocked by governor: %s", asset, timeframe, direction, slot_reason)
                 return
-                
-            already_entered = False
-            for pos in open_positions:
-                if pos.get("event_id") == market["event_id"]:
-                    already_entered = True
-                    break
+
+            slot_committed = False
+            try:
+                # Use fast-path for latency scan!
+                market = await engine._fetch_market(session, is_latency_scan=True)
+                if not market:
+                    log.warning("[LATENCY-ARB] Active market not found for %s/%s", asset, timeframe)
+                    return
                     
-            if already_entered:
-                log.info("[LATENCY-ARB] Already entered market for %s/%s in this candle, skipping.", asset, timeframe)
-                return
+                already_entered = False
+                for pos in open_positions:
+                    if pos.get("event_id") == market["event_id"]:
+                        already_entered = True
+                        break
+                        
+                if already_entered:
+                    log.info("[LATENCY-ARB] Already entered market for %s/%s in this candle, skipping.", asset, timeframe)
+                    return
 
-            # Global market-level dedup: prevents FV engine + LAT-ARB race condition entering same market
-            global _ACTIVE_MARKET_IDS
-            _event_id = market.get("event_id", "")
-            if _event_id and _event_id in _ACTIVE_MARKET_IDS:
-                log.info("[MARKET-DEDUP] %s/%s: market %s already being entered — skip duplicate",
-                         asset, timeframe, _event_id[:12])
-                return
-            if _event_id:
-                _ACTIVE_MARKET_IDS.add(_event_id)
-                asyncio.create_task(_expire_market_lock(_event_id))
+                # Global market-level dedup: prevents FV engine + LAT-ARB race condition entering same market
+                global _ACTIVE_MARKET_IDS
+                _event_id = market.get("event_id", "")
+                if _event_id and _event_id in _ACTIVE_MARKET_IDS:
+                    log.info("[MARKET-DEDUP] %s/%s: market %s already being entered — skip duplicate",
+                             asset, timeframe, _event_id[:12])
+                    return
+                if _event_id:
+                    _ACTIVE_MARKET_IDS.add(_event_id)
+                    asyncio.create_task(_expire_market_lock(_event_id))
 
-            # Same-direction exposure cap: max 5 open positions in same direction
-            signal_is_up = direction == "UP"
-            same_dir_open = sum(
-                1 for p in open_positions
-                if (p.get("direction") in ("YES", "UP")) == signal_is_up
-            )
-            if same_dir_open >= 5:
-                log.info("[LATENCY-ARB] %s/%s SAME_DIR_CAP: %d open %s positions — skip",
-                         asset, timeframe, same_dir_open, direction)
-                return
-
-            # 4. Compute fair win probability via normal-CDF (same model as FV engine)
-            # sigma_frac = mean high-low range / close over last 14 closed candles
-            closed = klines[:-1]
-            _atr_vals = [
-                abs(float(k[2]) - float(k[3])) / max(float(k[4]), 1e-9)
-                for k in closed[-14:]
-            ]
-            sigma_frac = sum(_atr_vals) / len(_atr_vals) if _atr_vals else 0.02
-            elapsed_min = (time.time() - float(klines[-1][0]) / 1000.0) / 60.0
-            elapsed_min = max(0.1, min(elapsed_min, float(interval_minutes) - 0.1))
-
-            from core.engine.fair_value import fair_prob_up as _fair_prob_up
-            p_up = _fair_prob_up(pyth_price, open_price, sigma_frac, elapsed_min, float(interval_minutes))
-            implied_prob = p_up if direction == "UP" else (1.0 - p_up)
-            implied_prob = max(0.55, implied_prob)  # floor: never treat a weak move as near-certain
-                
-            up_price = market["up_price"]
-            dn_price = market["dn_price"]
-            
-            if direction == "UP":
-                entry_price = up_price
-                market_id = market["up_market"]["id"]
-            else:
-                entry_price = dn_price
-                market_id = market["dn_market"]["id"]
-
-            # Dynamic price floor: only block very-low entries on weak Pyth moves
-            if entry_price < 0.15 and abs(pct_move) < 0.004:
-                log.info("[PRICE-FLOOR] %s/%s: %.0fc with weak move %.4f%% — skip",
-                         asset, timeframe, entry_price * 100, abs(pct_move) * 100)
-                return
-
-            # BoneReaper confirmation gate: on 15m and 1h candles at T-15s, only enter when
-            # market already agrees (65%+). ATM guessing at 43-55¢ on these candles has no edge.
-            # T-5s and T-2s bypass this — near-certainty entries are different
-            if t_minus == 15 and timeframe in ("15m", "1h") and entry_price < 0.65:
-                log.info("[BONE-CONFIRM] %s/%s: entry %.0fc below 65c floor for T-15s — skip ATM guess",
-                         asset, timeframe, entry_price * 100)
-                return
-
-            # Discount gate: Polymarket must lag our fair probability by ≥6¢
-            # BoneReaper enters at 14¢ when fair prob is 95%+ — the lag is the edge
-            _discount = implied_prob - entry_price
-            if _discount < 0.06:
-                log.info(
-                    "[DISCOUNT] %s/%s %s: entry=%.2f fair=%.2f discount=%.2f < 0.06 — no lag, skip",
-                    asset, timeframe, direction, entry_price, implied_prob, _discount,
+                # Same-direction exposure cap: max 5 open positions in same direction
+                signal_is_up = direction == "UP"
+                same_dir_open = sum(
+                    1 for p in open_positions
+                    if (p.get("direction") in ("YES", "UP")) == signal_is_up
                 )
-                return
+                if same_dir_open >= 5:
+                    log.info("[LATENCY-ARB] %s/%s SAME_DIR_CAP: %d open %s positions — skip",
+                             asset, timeframe, same_dir_open, direction)
+                    return
+
+                # 4. Compute fair win probability via normal-CDF (same model as FV engine)
+                # sigma_frac = mean high-low range / close over last 14 closed candles
+                closed = klines[:-1]
+                _atr_vals = [
+                    abs(float(k[2]) - float(k[3])) / max(float(k[4]), 1e-9)
+                    for k in closed[-14:]
+                ]
+                sigma_frac = sum(_atr_vals) / len(_atr_vals) if _atr_vals else 0.02
+                elapsed_min = (time.time() - float(klines[-1][0]) / 1000.0) / 60.0
+                elapsed_min = max(0.1, min(elapsed_min, float(interval_minutes) - 0.1))
+
+                from core.engine.fair_value import fair_prob_up as _fair_prob_up
+                p_up = _fair_prob_up(pyth_price, open_price, sigma_frac, elapsed_min, float(interval_minutes))
+                implied_prob = p_up if direction == "UP" else (1.0 - p_up)
+                implied_prob = max(0.55, implied_prob)  # floor: never treat a weak move as near-certain
+                    
+                up_price = market["up_price"]
+                dn_price = market["dn_price"]
                 
-            # For T-2s sweeper: implied_prob is always 0.999 — any price < 99.9¢ is positive EV
-            if t_minus == 2:
-                implied_prob = 0.999
-
-            # 5. Position sizing — 15m gets 1.5× premium (82% WR earns it), 5m stays conservative
-            from infrastructure.state.state_manager import get_current_balance
-            current_balance = get_current_balance()
-
-            normal_usd = engine.compute_size(0.85, entry_price, current_balance)
-            if t_minus == 2:
-                # Sweeper: 0.5x sizing, cap at 2% of balance — low ROI (1-5%) but near-zero risk
-                usd_size = max(1.50, min(normal_usd * 0.5, current_balance * 0.02))
-                log.info("[T2-SWEEPER] %s/%s sweep sizing 0.5x capped 2%%: $%.2f", asset, timeframe, usd_size)
-            elif t_minus == 5:
-                if entry_price < 0.10:
-                    usd_size = max(1.0, normal_usd * 1.0)
-                    log.info("[T5-SCANNER] %s/%s near-certainty <10c: full sizing 1.0x: $%.2f", asset, timeframe, usd_size)
-                elif entry_price < 0.25:
-                    usd_size = max(1.0, normal_usd * 0.70)
-                    log.info("[T5-SCANNER] %s/%s high-conf <25c: 0.7x sizing: $%.2f", asset, timeframe, usd_size)
+                if direction == "UP":
+                    entry_price = up_price
+                    market_id = market["up_market"]["id"]
                 else:
-                    usd_size = max(1.0, normal_usd * 0.35)
-                    log.info("[T5-SCANNER] %s/%s moderate T-5s: 0.35x sizing: $%.2f", asset, timeframe, usd_size)
-            else:
-                usd_size = max(1.0, normal_usd * 0.5)
-                if timeframe == "15m":
-                    usd_size *= 1.5
-                    log.info("[LATENCY-ARB] 15m premium: 1.5x size -> $%.2f", usd_size)
-            
-            # Apply Altcoin Sizing Gates
-            if asset in ["SOL", "XRP"]:
-                usd_size *= 0.60
-            elif asset in ["ADA", "DOGE", "AVAX", "SUI"]:
-                usd_size = min(usd_size * 0.35, 35.0)
+                    entry_price = dn_price
+                    market_id = market["dn_market"]["id"]
 
-            # Re-apply minimum after altcoin discount — VOLATILE_CHAOS (0.30x) + altcoin (0.60x)
-            # can compound to $0.90 which gets skipped. Floor at $1.50 to keep trades alive.
-            usd_size = max(1.50, usd_size)
+                # Dynamic price floor: only block very-low entries on weak Pyth moves
+                if entry_price < 0.15 and abs(pct_move) < 0.004:
+                    log.info("[PRICE-FLOOR] %s/%s: %.0fc with weak move %.4f%% — skip",
+                             asset, timeframe, entry_price * 100, abs(pct_move) * 100)
+                    return
 
-            # Safety cap
-            max_safety_size = current_balance * 0.15
-            if usd_size > max_safety_size:
-                usd_size = max_safety_size
+                # BoneReaper confirmation gate: on 15m and 1h candles at T-15s, only enter when
+                # market already agrees (65%+). ATM guessing at 43-55¢ on these candles has no edge.
+                # T-5s and T-2s bypass this — near-certainty entries are different
+                if t_minus == 15 and timeframe in ("15m", "1h") and entry_price < 0.65:
+                    log.info("[BONE-CONFIRM] %s/%s: entry %.0fc below 65c floor for T-15s — skip ATM guess",
+                             asset, timeframe, entry_price * 100)
+                    return
 
-            if usd_size < 1.00:
-                log.info("[LATENCY-ARB] Position size $%.2f too small, skipping.", usd_size)
-                return
-                
-            # ABSOLUTE LATE-ENTRY SAFETY GUARD:
-            # Prevent entering trade if the candle has already closed due to any processing lags
-            if time.time() >= next_close:
-                log.warning("[LATENCY-ARB] Scan completed after candle close (%d >= %d), aborting order for %s/%s.",
-                            time.time(), next_close, asset, timeframe)
-                return
-
-            # Same-second dedup only: 2s window prevents exact same-signal double fires
-            # 60s was killing multi-asset concurrent entries (BTC fires, ETH blocked for 60s)
-            global _LAT_LAST_ENTRY_TS
-            if time.time() - _LAT_LAST_ENTRY_TS < 2.0:
-                log.info("[LAT-DEDUP] %s/%s: same-second dedup (%.1fs) — skip",
-                         asset, timeframe, time.time() - _LAT_LAST_ENTRY_TS)
-                return
-
-            # 6. Execute order
-            from infrastructure.exchange.trader import place_order
-            from core.engine.session_governor import commit_trade_slot
-
-            _trade_tag = "T2_SWEEPER" if t_minus == 2 else "LATENCY_ARB"
-            order = place_order(
-                event_id=market["event_id"],
-                market_id=market_id,
-                amount_dollars=usd_size,
-                direction="YES" if direction == "UP" else "NO",
-                entry_price=entry_price,
-                event_title=f"[UPDOWN][{asset}][{timeframe}][{_trade_tag}] {market['event_title']}",
-                expiry_ts=market["expiry_ts"],
-            )
-
-            if order:
-                _LAT_LAST_ENTRY_TS = time.time()
-                await commit_trade_slot(asset, timeframe, 0.85, interval_minutes, is_dual=False, direction=direction)
+                # Discount gate: Polymarket must lag our fair probability by ≥6¢
+                # BoneReaper enters at 14¢ when fair prob is 95%+ — the lag is the edge
+                _discount = implied_prob - entry_price
+                if _discount < 0.06:
+                    log.info(
+                        "[DISCOUNT] %s/%s %s: entry=%.2f fair=%.2f discount=%.2f < 0.06 — no lag, skip",
+                        asset, timeframe, direction, entry_price, implied_prob, _discount,
+                    )
+                    return
+                    
+                # For T-2s sweeper: implied_prob is always 0.999 — any price < 99.9¢ is positive EV
                 if t_minus == 2:
-                    log.info("[T2-SWEEPER ENTERED] %s/%s %s: $%.2f at %.0f¢ — sweeping winning side",
-                             asset, timeframe, direction, usd_size, entry_price * 100)
-                    try:
-                        from app.telegram_bot import send_alert
-                        send_alert(f"SWEEP {asset}/{timeframe} {direction} | ${usd_size:.2f} @ {entry_price*100:.0f}c")
-                    except Exception:
-                        pass
+                    implied_prob = 0.999
+
+                # 5. Position sizing — 15m gets 1.5× premium (82% WR earns it), 5m stays conservative
+                from infrastructure.state.state_manager import get_current_balance
+                current_balance = get_current_balance()
+
+                normal_usd = engine.compute_size(0.85, entry_price, current_balance)
+                if t_minus == 2:
+                    # Sweeper: 0.5x sizing, cap at 2% of balance — low ROI (1-5%) but near-zero risk
+                    usd_size = max(1.50, min(normal_usd * 0.5, current_balance * 0.02))
+                    log.info("[T2-SWEEPER] %s/%s sweep sizing 0.5x capped 2%%: $%.2f", asset, timeframe, usd_size)
+                elif t_minus == 5:
+                    if entry_price < 0.10:
+                        usd_size = max(1.0, normal_usd * 1.0)
+                        log.info("[T5-SCANNER] %s/%s near-certainty <10c: full sizing 1.0x: $%.2f", asset, timeframe, usd_size)
+                    elif entry_price < 0.25:
+                        usd_size = max(1.0, normal_usd * 0.70)
+                        log.info("[T5-SCANNER] %s/%s high-conf <25c: 0.7x sizing: $%.2f", asset, timeframe, usd_size)
+                    else:
+                        usd_size = max(1.0, normal_usd * 0.35)
+                        log.info("[T5-SCANNER] %s/%s moderate T-5s: 0.35x sizing: $%.2f", asset, timeframe, usd_size)
                 else:
-                    log.info("[LATENCY-ARB SUCCESSFULLY ENTERED] Entered %s/%s %s: $%.2f at %.0f¢ (implied prob: %.2f)",
-                             asset, timeframe, direction, usd_size, entry_price * 100, implied_prob)
-                    try:
-                        from app.telegram_bot import send_alert
-                        send_alert(f"LATENCY ARB {asset}/{timeframe} {direction} | ${usd_size:.2f} @ {entry_price*100:.0f}c")
-                    except Exception:
-                        pass
+                    usd_size = max(1.0, normal_usd * 0.5)
+                    if timeframe == "15m":
+                        usd_size *= 1.5
+                        log.info("[LATENCY-ARB] 15m premium: 1.5x size -> $%.2f", usd_size)
+                
+                # Apply Altcoin Sizing Gates
+                if asset in ["SOL", "XRP"]:
+                    usd_size *= 0.60
+                elif asset in ["ADA", "DOGE", "AVAX", "SUI"]:
+                    usd_size = min(usd_size * 0.35, 35.0)
 
-                # Spawn early-exit monitor for 15m LAT-ARB only — sweeper holds to expiry (2s left anyway)
-                if timeframe == "15m" and t_minus != 2:
-                    asyncio.create_task(
-                        _monitor_lat_exit(
-                            order_id=order["order_id"],
-                            asset=asset,
-                            timeframe=timeframe,
-                            direction=direction,
-                            token_id=market_id,
-                            boundary_ts=next_close,
+                # Re-apply minimum after altcoin discount — VOLATILE_CHAOS (0.30x) + altcoin (0.60x)
+                # can compound to $0.90 which gets skipped. Floor at $1.50 to keep trades alive.
+                usd_size = max(1.50, usd_size)
+
+                # Safety cap
+                max_safety_size = current_balance * 0.15
+                if usd_size > max_safety_size:
+                    usd_size = max_safety_size
+
+                if usd_size < 1.00:
+                    log.info("[LATENCY-ARB] Position size $%.2f too small, skipping.", usd_size)
+                    return
+                    
+                # ABSOLUTE LATE-ENTRY SAFETY GUARD:
+                # Prevent entering trade if the candle has already closed due to any processing lags
+                if time.time() >= next_close:
+                    log.warning("[LATENCY-ARB] Scan completed after candle close (%d >= %d), aborting order for %s/%s.",
+                                time.time(), next_close, asset, timeframe)
+                    return
+
+                # Same-second dedup only: 2s window prevents exact same-signal double fires
+                # 60s was killing multi-asset concurrent entries (BTC fires, ETH blocked for 60s)
+                global _LAT_LAST_ENTRY_TS
+                if time.time() - _LAT_LAST_ENTRY_TS < 2.0:
+                    log.info("[LAT-DEDUP] %s/%s: same-second dedup (%.1fs) — skip",
+                             asset, timeframe, time.time() - _LAT_LAST_ENTRY_TS)
+                    return
+
+                # 6. Execute order
+                from infrastructure.exchange.trader import place_order
+
+                _trade_tag = "T2_SWEEPER" if t_minus == 2 else "LATENCY_ARB"
+                order = place_order(
+                    event_id=market["event_id"],
+                    market_id=market_id,
+                    amount_dollars=usd_size,
+                    direction="YES" if direction == "UP" else "NO",
+                    entry_price=entry_price,
+                    event_title=f"[UPDOWN][{asset}][{timeframe}][{_trade_tag}] {market['event_title']}",
+                    expiry_ts=market["expiry_ts"],
+                )
+
+                if order:
+                    _LAT_LAST_ENTRY_TS = time.time()
+                    await commit_trade_slot(asset, timeframe, 0.85, interval_minutes, is_dual=True, direction=direction)
+                    slot_committed = True
+                    if t_minus == 2:
+                        log.info("[T2-SWEEPER ENTERED] %s/%s %s: $%.2f at %.0f¢ — sweeping winning side",
+                                 asset, timeframe, direction, usd_size, entry_price * 100)
+                        try:
+                            from app.telegram_bot import send_alert
+                            send_alert(f"SWEEP {asset}/{timeframe} {direction} | ${usd_size:.2f} @ {entry_price*100:.0f}c")
+                        except Exception:
+                            pass
+                    else:
+                        log.info("[LATENCY-ARB SUCCESSFULLY ENTERED] Entered %s/%s %s: $%.2f at %.0f¢ (implied prob: %.2f)",
+                                 asset, timeframe, direction, usd_size, entry_price * 100, implied_prob)
+                        try:
+                            from app.telegram_bot import send_alert
+                            send_alert(f"LATENCY ARB {asset}/{timeframe} {direction} | ${usd_size:.2f} @ {entry_price*100:.0f}c")
+                        except Exception:
+                            pass
+
+                    # Spawn early-exit monitor for 15m LAT-ARB only — sweeper holds to expiry (2s left anyway)
+                    if timeframe == "15m" and t_minus != 2:
+                        asyncio.create_task(
+                            _monitor_lat_exit(
+                                order_id=order["order_id"],
+                                asset=asset,
+                                timeframe=timeframe,
+                                direction=direction,
+                                token_id=market_id,
+                                boundary_ts=next_close,
+                            )
                         )
-                    )
 
-                # LAG_TRADE removed — spawning concurrent bets on peer asset causes
-                # 3 simultaneous DOWN entries during recoveries, catastrophic when wrong
-                if False and asset in ("BTC", "ETH") and abs(pct_move) >= 0.005 and t_minus not in (5, 2):
-                    asyncio.create_task(
-                        check_cross_asset_lag(asset, direction, next_close)
-                    )
+                    # LAG_TRADE removed — spawning concurrent bets on peer asset causes
+                    # 3 simultaneous DOWN entries during recoveries, catastrophic when wrong
+                    if False and asset in ("BTC", "ETH") and abs(pct_move) >= 0.005 and t_minus not in (5, 2):
+                        asyncio.create_task(
+                            check_cross_asset_lag(asset, direction, next_close)
+                        )
+            finally:
+                if not slot_committed:
+                    await cancel_trade_slot(asset, timeframe)
         except Exception as e:
             log.error("[LATENCY-ARB] Error scanning %s/%s: %s", asset, timeframe, e, exc_info=True)
 

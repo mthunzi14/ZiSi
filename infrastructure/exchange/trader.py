@@ -915,6 +915,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         if pos.get("status") in ("CLOSED", "CANCELLED"):
             continue
 
+        exit_price = None
         open_time: datetime = pos.get("open_time", now)
         age_minutes = (now - open_time).total_seconds() / 60
 

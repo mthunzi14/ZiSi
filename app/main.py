@@ -293,6 +293,18 @@ async def _validate_trade_slot(
         bet_usd *= 1.35
         log.info("[RISK] SIG/5m premium +35%%: $%.2f", bet_usd)
 
+    # ── P2: Global Bet Cap (6% balance or $12.0) ──
+    global_max_bet = min(current_balance * 0.06, 12.0)
+    if bet_usd > global_max_bet:
+        log.info("[RISK] bet size capped at global max cap: $%.2f -> $%.2f", bet_usd, global_max_bet)
+        bet_usd = global_max_bet
+
+    # ── P3: SIGNAL-specific Bet Cap ($10.0) ──
+    if _entry_source in ("SIG", "SIGNAL"):
+        if bet_usd > 10.0:
+            log.info("[RISK] SIGNAL trade size capped at $10.0: $%.2f -> $10.00", bet_usd)
+            bet_usd = 10.0
+
     # ── Optimal Altcoin Sizing Gates (Fix A - Maximize P&L safely) ──
     if asset in ["SOL", "XRP"]:
         bet_usd = bet_usd * 0.60

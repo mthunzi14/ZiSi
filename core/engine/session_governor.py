@@ -20,6 +20,10 @@ _asset_last_bucket: dict[str, str] = {}
 # BTC: one fill per candle bucket across 5m and 15m (unless signals are independent)
 _btc_bucket_trades: dict[str, dict] = {}
 
+# Latency Arb tracking to prevent concurrent double-fills during asynchronous order execution
+_lat_arb_in_flight: set[tuple[str, str]] = set()
+_lat_arb_cooldowns: dict[tuple[str, str], float] = {}
+
 MAX_TRADES_PER_CANDLE_BUCKET = 2
 BTC_ASSET = "BTC"
 
@@ -116,6 +120,18 @@ async def request_trade_slot(
         except Exception:
             pass  # keep caller's snapshot as fallback
 
+        if is_dual:
+            if has_open_asset_tf_exposure(open_positions, asset, timeframe):
+                return False, f"lat_open_{asset}_{timeframe}"
+            key = (asset, timeframe)
+            if key in _lat_arb_in_flight:
+                return False, f"lat_inflight_{asset}_{timeframe}"
+            now = time.time()
+            if key in _lat_arb_cooldowns and now < _lat_arb_cooldowns[key]:
+                return False, f"lat_cooldown_{asset}_{timeframe}"
+            _lat_arb_in_flight.add(key)
+            return True, "dual_ok"
+
         if has_open_asset_tf_exposure(open_positions, asset, timeframe):
             return False, f"open_position_{asset}_{timeframe}"
 
@@ -179,6 +195,11 @@ async def commit_trade_slot(
     bucket = candle_bucket_key(interval_minutes)
 
     async with _lock:
+        if is_dual:
+            key = (asset, timeframe)
+            _lat_arb_in_flight.discard(key)
+            _lat_arb_cooldowns[key] = time.time() + 30.0
+
         if asset == BTC_ASSET:
             _btc_bucket_trades[bucket] = {
                 "timeframe": timeframe,
@@ -209,3 +230,11 @@ async def prune_old_buckets(max_age_seconds: int = 3600) -> None:
         old_btc = {k for k in _btc_bucket_trades if now - int(k.split(":")[1]) > max_age_seconds}
         for k in old_btc:
             _btc_bucket_trades.pop(k, None)
+
+
+async def cancel_trade_slot(asset: str, timeframe: str) -> None:
+    """Discard (asset, timeframe) from in-flight tracker if placement failed."""
+    asset = asset.upper()
+    async with _lock:
+        _lat_arb_in_flight.discard((asset, timeframe))
+

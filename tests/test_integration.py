@@ -73,43 +73,45 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(details["is_dual"])
 
     async def test_integration_btc_governor_dedup(self):
+        from unittest.mock import patch
         import core.engine.session_governor as governor
         # Reset in-memory slots
         governor._btc_bucket_trades.clear()
         governor._candle_slots.clear()
 
-        # Request first BTC trade slot
-        allowed, reason = await request_trade_slot(
-            asset="BTC",
-            timeframe="5m",
-            score=0.85,
-            interval_minutes=5,
-            open_positions=[],
-            is_dual=False,
-            direction="UP",
-        )
-        self.assertTrue(allowed)
-        self.assertEqual(reason, "ok")
+        with patch("infrastructure.state.state_manager.get_open_positions", return_value=[]):
+            # Request first BTC trade slot
+            allowed, reason = await request_trade_slot(
+                asset="BTC",
+                timeframe="5m",
+                score=0.85,
+                interval_minutes=5,
+                open_positions=[],
+                is_dual=False,
+                direction="UP",
+            )
+            self.assertTrue(allowed)
+            self.assertEqual(reason, "ok")
 
-        # Commit slot
-        await commit_trade_slot(
-            asset="BTC",
-            timeframe="5m",
-            score=0.85,
-            interval_minutes=5,
-            is_dual=False,
-            direction="UP",
-        )
+            # Commit slot
+            await commit_trade_slot(
+                asset="BTC",
+                timeframe="5m",
+                score=0.85,
+                interval_minutes=5,
+                is_dual=False,
+                direction="UP",
+            )
 
-        # Request second identical BTC trade slot in same bucket (should be blocked as duplicate)
-        allowed_dup, reason_dup = await request_trade_slot(
-            asset="BTC",
-            timeframe="5m",
-            score=0.75,
-            interval_minutes=5,
-            open_positions=[],
-            is_dual=False,
-            direction="UP",
-        )
-        self.assertFalse(allowed_dup)
-        self.assertEqual(reason_dup, "btc_duplicate_candle")
+            # Request second identical BTC trade slot in same bucket (should be blocked as duplicate)
+            allowed_dup, reason_dup = await request_trade_slot(
+                asset="BTC",
+                timeframe="5m",
+                score=0.75,
+                interval_minutes=5,
+                open_positions=[],
+                is_dual=False,
+                direction="UP",
+            )
+            self.assertFalse(allowed_dup)
+            self.assertEqual(reason_dup, "btc_duplicate_candle")

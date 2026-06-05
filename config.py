@@ -163,6 +163,8 @@ def load_config() -> dict:
         "RECONCILE_INTERVAL": RECONCILE_INTERVAL,
         "MAX_OPEN_PER_ASSET": MAX_OPEN_PER_ASSET,
         "MAX_TOTAL_OPEN": MAX_TOTAL_OPEN,
+        "FV_NIGHT_SESSION_START_UTC": int(os.getenv("FV_NIGHT_SESSION_START_UTC", "2")),
+        "FV_NIGHT_SESSION_END_UTC": int(os.getenv("FV_NIGHT_SESSION_END_UTC", "9")),
     }
 
     # Check required keys

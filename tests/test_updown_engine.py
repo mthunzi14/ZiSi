@@ -47,17 +47,17 @@ class TestUpDownEngine(unittest.TestCase):
     def test_updown_engine_outcomes(self):
         state_mgr = MockStateManager()
         engine = UpDownEngine("BTC", "5m", state_mgr)
-        self.assertEqual(engine.skip_windows, 0)
+        self.assertEqual(engine.consecutive_losses, 0)
 
-        # Record two losses (should trigger circuit breaker)
+        # Record two losses (should update consecutive_losses count)
         engine.record_outcome(won=False)
         engine.record_outcome(won=False)
-        self.assertEqual(engine.skip_windows, 2)
+        self.assertEqual(engine.consecutive_losses, 2)
 
-        # Verify that skip window declines
-        self.assertTrue(engine.skip_windows > 0)
-        engine.skip_windows = 0
-        self.assertTrue(engine.skip_windows == 0)
+        # Verify consecutive_losses
+        self.assertTrue(engine.consecutive_losses > 0)
+        engine.consecutive_losses = 0
+        self.assertTrue(engine.consecutive_losses == 0)
 
     def test_should_dual_enter(self):
         # High prices combined (should not enter)

@@ -8,7 +8,7 @@ from core.engine.fair_value import decide_value_entry
 from core.engine.updown_engine import UpDownEngine
 from infrastructure.exchange.trader import check_and_close_paper_trades
 
-class TestEdgesAndFilters(unittest.TestCase):
+class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
 
     def test_dynamic_max_hold_minutes_parsing(self):
         # 1. 5m contract title
@@ -77,6 +77,155 @@ class TestEdgesAndFilters(unittest.TestCase):
         self.assertEqual(args[0], "test_order_stale")
         self.assertEqual(args[1], 0.52)  # Should settle at stored current_price
         self.assertEqual(kwargs.get("exit_reason"), "MARKET_EXPIRED")
+
+    async def test_session_governor_is_dual_dedup_and_cooldown(self):
+        import core.engine.session_governor as governor
+        from core.engine.session_governor import request_trade_slot, commit_trade_slot, cancel_trade_slot
+        
+        # Clean state
+        governor._lat_arb_in_flight.clear()
+        governor._lat_arb_cooldowns.clear()
+
+        with patch("infrastructure.state.state_manager.get_open_positions", return_value=[]):
+            # First request allowed
+            allowed, reason = await request_trade_slot("BTC", "5m", 0.85, 5, [], is_dual=True, direction="UP")
+            self.assertTrue(allowed)
+            self.assertEqual(reason, "dual_ok")
+            self.assertIn(("BTC", "5m"), governor._lat_arb_in_flight)
+
+            # Second request blocked (in-flight)
+            allowed2, reason2 = await request_trade_slot("BTC", "5m", 0.85, 5, [], is_dual=True, direction="UP")
+            self.assertFalse(allowed2)
+            self.assertEqual(reason2, "lat_inflight_BTC_5m")
+
+            # Cancel release
+            await cancel_trade_slot("BTC", "5m")
+            self.assertNotIn(("BTC", "5m"), governor._lat_arb_in_flight)
+
+            # Re-request allowed
+            allowed3, reason3 = await request_trade_slot("BTC", "5m", 0.85, 5, [], is_dual=True, direction="UP")
+            self.assertTrue(allowed3)
+
+            # Commit slot removes from in-flight and starts cooldown
+            await commit_trade_slot("BTC", "5m", 0.85, 5, is_dual=True, direction="UP")
+            self.assertNotIn(("BTC", "5m"), governor._lat_arb_in_flight)
+            self.assertIn(("BTC", "5m"), governor._lat_arb_cooldowns)
+
+            # Request blocked by cooldown
+            allowed4, reason4 = await request_trade_slot("BTC", "5m", 0.85, 5, [], is_dual=True, direction="UP")
+            self.assertFalse(allowed4)
+            self.assertEqual(reason4, "lat_cooldown_BTC_5m")
+
+    @patch("app.main.request_trade_slot", return_value=(True, "slot_ok"))
+    @patch("app.main.global_diagnostics.get_risk_multiplier", return_value=1.0)
+    @patch("infrastructure.state.state_manager.get_open_positions", return_value=[])
+    async def test_sizing_caps_risk_control(self, mock_open, mock_risk, mock_request):
+        from app.main import _validate_trade_slot
+        
+        # Mock engine
+        engine = MagicMock()
+        # Mock compute_size to return large sizing (e.g. $50.00)
+        engine.compute_size.return_value = 50.00
+        
+        # Test Global Kelly Cap (6% balance or $12)
+        # Balance = $100 -> 6% is $6.00. bet_usd should be capped to $6.00.
+        context = MagicMock()
+        context.log_skip = MagicMock()
+        
+        signal_fv = {
+            "direction": "UP",
+            "score": 0.85,
+            "entry_source": "FAIR_VAL",
+            "market": {"up_price": 0.45, "dn_price": 0.55}
+        }
+        
+        allowed, details = await _validate_trade_slot(
+            context, engine, "BTC", "5m", 5, signal_fv, current_balance=100.0
+        )
+        self.assertTrue(allowed)
+        self.assertAlmostEqual(details["bet_usd"], 6.00) # capped to 6% of $100
+        
+        # Balance = $300 -> 6% is $18.00. bet_usd should be capped to $12.00 (global bet cap ceiling).
+        allowed2, details2 = await _validate_trade_slot(
+            context, engine, "BTC", "5m", 5, signal_fv, current_balance=300.0
+        )
+        self.assertTrue(allowed2)
+        self.assertAlmostEqual(details2["bet_usd"], 12.00) # capped to global max $12
+        
+        # Test SIGNAL specific Cap ($10.00)
+        # Let's say we have high balance, e.g. $200. 6% of balance is $12.00.
+        # But this is a SIG trade, so it should be capped to $10.00.
+        signal_sig = {
+            "direction": "UP",
+            "score": 0.85,
+            "entry_source": "SIG",
+            "market": {"up_price": 0.45, "dn_price": 0.55}
+        }
+        allowed3, details3 = await _validate_trade_slot(
+            context, engine, "BTC", "5m", 5, signal_sig, current_balance=200.0
+        )
+        self.assertTrue(allowed3)
+        self.assertAlmostEqual(details3["bet_usd"], 10.00) # capped to signal limit $10
+
+    @patch("core.engine.updown_engine._fetch_klines_async")
+    @patch("core.engine.updown_engine._cache")
+    async def test_fv_archetype_and_sig_price_gates(self, mock_cache, mock_klines):
+        from core.engine.updown_engine import UpDownEngine
+        from datetime import datetime
+        
+        mock_klines.return_value = [
+            [0, 100.0, 105.0, 95.0, 102.0, 1000.0] for _ in range(30)
+        ]
+        
+        state_mgr = MagicMock()
+        state_mgr.get_closed_positions.return_value = []
+        
+        # Test P4: 15m Moderate FV outside RANGE/night session
+        engine = UpDownEngine("BTC", "15m", state_mgr)
+        
+        # Mock fair value entry method to return moderate archetype
+        engine._fair_value_entry = MagicMock(return_value={
+            "direction": "UP", "edge": 0.15, "archetype": "moderate", "fp_up": 0.75, "sigma_frac": 0.01
+        })
+        
+        # Mock get_regime_mode to return "NORMAL" (not RANGE)
+        # Mock datetime hour to be 12:00 UTC (not night session 02:00-09:00 UTC)
+        with patch("core.engine.regime_filter.get_regime_mode", return_value="NORMAL"), \
+             patch("config.get_config", side_effect=lambda k, d=None: 2 if k=="FV_NIGHT_SESSION_START_UTC" else (9 if k=="FV_NIGHT_SESSION_END_UTC" else d)), \
+             patch("datetime.datetime") as mock_dt:
+            
+            mock_dt.now.return_value = datetime(2026, 6, 5, 12, 0, 0) # 12:00 UTC
+            mock_dt.fromtimestamp = datetime.fromtimestamp
+            
+            # Since regime is NORMAL and hour is 12:00 UTC, the FV signal should be discarded
+            session = MagicMock()
+            signal = await engine.generate_signal(session)
+            self.assertIsNone(signal)
+
+        # Test P5 & P6 SIGNAL Price Gates
+        engine_5m = UpDownEngine("BTC", "5m", state_mgr)
+        
+        # Mock decide_signal to return a valid SIG signal (direction "UP")
+        with patch("core.engine.signal_core.decide_signal", return_value={"direction": "UP", "score": 0.85, "is_reversal": False, "blocked": False}), \
+             patch("core.engine.updown_engine.UpDownEngine._fetch_market") as mock_mkt:
+            
+            # Scenario A: YES quote is 0.62 (>0.60 on 5m) -> should be blocked
+            mock_mkt.return_value = {
+                "up_price": 0.62, "dn_price": 0.38,
+                "up_market": {"id": "yes_id"}, "dn_market": {"id": "no_id"},
+                "event_id": "evt_123", "event_title": "Test Title", "expiry_ts": 1234567
+            }
+            sig_blocked_ceil = await engine_5m.generate_signal(session)
+            self.assertIsNone(sig_blocked_ceil)
+            
+            # Scenario B: YES quote is 0.18 (<0.20 floor) -> should be blocked
+            mock_mkt.return_value = {
+                "up_price": 0.18, "dn_price": 0.82,
+                "up_market": {"id": "yes_id"}, "dn_market": {"id": "no_id"},
+                "event_id": "evt_123", "event_title": "Test Title", "expiry_ts": 1234567
+            }
+            sig_blocked_floor = await engine_5m.generate_signal(session)
+            self.assertIsNone(sig_blocked_floor)
 
 if __name__ == "__main__":
     unittest.main()

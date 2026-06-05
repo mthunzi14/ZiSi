@@ -506,6 +506,23 @@ class UpDownEngine:
                 _fv = {"direction": None, "edge": 0.0, "archetype": None}
             else:
                 _fv = self._fair_value_entry(klines, closes[-1], up_price, dn_price, _elapsed_min)
+
+            # P4 15m FV Archetype Gate
+            if self.timeframe == "15m" and _fv.get("direction") is not None:
+                _fv_arch = _fv.get("archetype", "moderate")
+                if _fv_arch == "moderate":
+                    from config import get_config
+                    start_utc = int(get_config("FV_NIGHT_SESSION_START_UTC", 2))
+                    end_utc = int(get_config("FV_NIGHT_SESSION_END_UTC", 9))
+                    cur_utc_hour = datetime.now(timezone.utc).hour
+                    is_night = (start_utc <= cur_utc_hour < end_utc) if start_utc < end_utc else (cur_utc_hour >= start_utc or cur_utc_hour < end_utc)
+                    is_range = (regime == "RANGE")
+                    if not is_range and not is_night:
+                        log.info(
+                            "[FV-15M-ARCH-GATE] %s/15m: moderate FV archetype blocked — regime is %s, hour=%d UTC (not range/night)",
+                            self.asset, regime, cur_utc_hour
+                        )
+                        _fv = {"direction": None, "edge": 0.0, "archetype": None}
             if _fv["direction"] is not None:
                 raw_dir = _fv["direction"]
                 score_base = min(0.90, 0.55 + min(0.30, _fv["edge"]) +
@@ -684,6 +701,20 @@ class UpDownEngine:
                                 self.asset, self.timeframe, _inv_price * 100)
                     _fv = {"direction": None, "edge": 0.0, "archetype": None}
                     return None
+
+        # P5 & P6: SIGNAL Price Gates
+        if entry_source == "SIG":
+            _quote = up_price if direction == "UP" else dn_price
+            if direction == "UP":
+                _ceil = 0.60 if self.timeframe == "5m" else 0.65
+                if _quote > _ceil:
+                    log.info("[SIG-PRICE-GATE] %s/%s UP entry price %.2f > ceiling %.2f — skip",
+                             self.asset, self.timeframe, _quote, _ceil)
+                    return None
+            if _quote < 0.20:
+                log.info("[SIG-PRICE-GATE] %s/%s %s entry price %.2f < floor 0.20 — skip",
+                         self.asset, self.timeframe, direction, _quote)
+                return None
 
         # DIR-COOLDOWN removed: Bone Reaper Mode fires every candle regardless of prior direction
 
