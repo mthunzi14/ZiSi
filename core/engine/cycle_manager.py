@@ -833,10 +833,8 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
 
             from infrastructure.state.state_manager import get_current_balance
             balance = get_current_balance()
-            usd_size = min(balance * 0.005, 2.0) * _snipe_size_mult
-            if usd_size < 0.50:
-                log.info("[REVERSAL-SNIPE] Size $%.2f too small, skipping %s/%s", usd_size, asset, timeframe)
-                return
+            # Dynamic fractional size with a $0.50 floor to prevent disabling on small accounts
+            usd_size = max(0.50, min(balance * 0.005, 2.0)) * _snipe_size_mult
 
             market_id = market["dn_market"]["id"] if snipe_direction == "DOWN" else market["up_market"]["id"]
 
@@ -898,10 +896,8 @@ async def start_resolution_sweeper(session, engines):
             from infrastructure.state.state_manager import get_current_balance
             import infrastructure.state.state_manager as state_mgr
             balance = get_current_balance()
-            usd_size = min(balance * 0.005, 5.0)
-            if usd_size < 0.50:
-                await asyncio.sleep(10.0)
-                continue
+            # Dynamic fractional size with a $0.50 floor to prevent disabling on small accounts
+            usd_size = max(0.50, min(balance * 0.005, 5.0))
             now = time.time()
             for key, engine in engines.items():
                 asset = engine.asset
