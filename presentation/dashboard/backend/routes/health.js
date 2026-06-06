@@ -29,8 +29,8 @@ router.get('/', (req, res) => {
       return res.json({
         status: 'offline',
         running: false,
-        balance: 100.00,
-        account_balance: 100.00,
+        balance: 50.00,
+        account_balance: 50.00,
         pnl: 0,
         realTrades: 0,
         totalSignals: 0,
@@ -67,7 +67,7 @@ router.get('/', (req, res) => {
       status = 'offline';
     }
 
-    let balance = parseFloat(state.balance || 100);
+    let balance = parseFloat(state.balance || 50);
     let pnl = parseFloat(state.pnl || 0);
     const tradesExecuted = state.trades_executed || 0;
 
@@ -400,7 +400,7 @@ router.get('/', (req, res) => {
 
     // Derive balance from positions_state.json (single source of truth)
     if (positions_summary.realized_pnl !== undefined) {
-      const _startBal = parseFloat(state.starting_balance || 100.0);
+      const _startBal = parseFloat(state.starting_balance || 50.0);
       balance = Math.round((_startBal + (positions_summary.realized_pnl || 0)) * 100) / 100;
       pnl = parseFloat((positions_summary.realized_pnl || 0).toFixed(2));
     }
@@ -511,8 +511,8 @@ router.get('/', (req, res) => {
     res.status(500).json({
       status: 'error',
       running: false,
-      balance: 100.00,
-      account_balance: 100.00,
+      balance: 50.00,
+      account_balance: 50.00,
       pnl: 0,
       realTrades: 0,
       totalSignals: 0,

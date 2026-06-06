@@ -193,13 +193,13 @@ export default function App() {
                 width: '26px',
                 height: '26px',
                 borderRadius: '50%',
-                background: 'rgba(197, 155, 39, 0.18)',
+                background: 'rgba(0, 203, 214, 0.18)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 opacity: 0.55,
-                boxShadow: '0 0 6px rgba(197, 155, 39, 0.3)',
-                border: '1px solid rgba(197, 155, 39, 0.35)',
+                boxShadow: '0 0 6px rgba(0, 203, 214, 0.3)',
+                border: '1px solid rgba(0, 203, 214, 0.35)',
                 transition: 'all 200ms ease'
               }}
             >
@@ -209,7 +209,7 @@ export default function App() {
         )}
 
         <div className="sidebar-brand" style={{ textAlign: isVisuallyExpanded ? 'left' : 'center', paddingLeft: isVisuallyExpanded ? '12px' : '0' }}>
-          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 900, fontSize: isVisuallyExpanded ? '32px' : '26px', letterSpacing: '-0.05em', color: 'var(--color-accent)', userSelect: 'none', lineHeight: 1 }}>
+          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 900, fontSize: isVisuallyExpanded ? '32px' : '26px', letterSpacing: '-0.05em', color: 'var(--color-logo)', userSelect: 'none', lineHeight: 1 }}>
             {isVisuallyExpanded ? 'ZiSi.' : 'Z.'}
           </span>
           {isVisuallyExpanded && (
@@ -223,7 +223,7 @@ export default function App() {
           <button 
             onClick={() => setActiveTab('overview')}
             className={`nav-item ${activeTab === 'overview' ? 'nav-item-active nav-active-glow' : ''}`}
-            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'overview' ? 'rgba(197,155,39,0.08)' : undefined, borderRadius: '10px' }}
+            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'overview' ? 'rgba(0,203,214,0.08)' : undefined, borderRadius: '10px' }}
             title="Overview"
           >
             <svg style={{ width: '16px', height: '16px', opacity: !isVisuallyExpanded ? 0.7 : 1 }} fill="none" stroke="currentColor" strokeWidth={activeTab === 'overview' ? 2.5 : 1.8} viewBox="0 0 24 24">
@@ -235,7 +235,7 @@ export default function App() {
           <button 
             onClick={() => setActiveTab('analytics')}
             className={`nav-item ${activeTab === 'analytics' ? 'nav-item-active nav-active-glow' : ''}`}
-            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'analytics' ? 'rgba(197,155,39,0.08)' : undefined, borderRadius: '10px' }}
+            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'analytics' ? 'rgba(0,203,214,0.08)' : undefined, borderRadius: '10px' }}
             title="Analytics"
           >
             <svg style={{ width: '16px', height: '16px', opacity: !isVisuallyExpanded ? 0.7 : 1 }} fill="none" stroke="currentColor" strokeWidth={activeTab === 'analytics' ? 2.5 : 1.8} viewBox="0 0 24 24">
@@ -247,7 +247,7 @@ export default function App() {
           <button 
             onClick={() => setActiveTab('settings')}
             className={`nav-item ${activeTab === 'settings' ? 'nav-item-active nav-active-glow' : ''}`}
-            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'settings' ? 'rgba(197,155,39,0.08)' : undefined, borderRadius: '10px' }}
+            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'settings' ? 'rgba(0,203,214,0.08)' : undefined, borderRadius: '10px' }}
             title="Settings"
           >
             <svg style={{ width: '16px', height: '16px', opacity: !isVisuallyExpanded ? 0.7 : 1 }} fill="none" stroke="currentColor" strokeWidth={activeTab === 'settings' ? 2.5 : 1.8} viewBox="0 0 24 24">
@@ -362,182 +362,57 @@ export default function App() {
 
       {/* RIGHT PANE: Main Content Canvas */}
       <main className="main-canvas page-fade-enter canvas-collapsed" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-        {activeTab === 'overview' && (
-          <div className="page-fade-enter" style={{ display: 'flex', flexDirection: 'column', gap: '20px', position: 'relative' }}>
-            {/* Smooth Motion Privacy Screen Overlay */}
-            <div className={`privacy-overlay ${isPrivate ? 'privacy-overlay-active' : ''}`}>
-              <div className="privacy-card">
-                <div className="premium-lock-container" onClick={() => setIsPrivate(false)}>
-                  <div className="rotating-gold-border"></div>
-                  <div className="premium-lock-body">
-                    <svg className="premium-lock-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="5" y="11" width="14" height="11" rx="2" ry="2" />
-                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                      <circle cx="12" cy="16" r="1.5" />
-                    </svg>
+        <div className="t-page-slide" data-page={activeTab === 'overview' ? '1' : activeTab === 'analytics' ? '2' : '3'} style={{ position: 'relative', width: '100%' }}>
+          
+          <section className="t-page" data-page-id="1">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', position: 'relative' }}>
+              {/* Smooth Motion Privacy Screen Overlay */}
+              <div className={`privacy-overlay ${isPrivate ? 'privacy-overlay-active' : ''}`}>
+                <div className="privacy-card">
+                  <div className="premium-lock-container" onClick={() => setIsPrivate(false)}>
+                    <div className="rotating-cyan-border"></div>
+                    <div className="premium-lock-body">
+                      <svg className="premium-lock-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="5" y="11" width="14" height="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                        <circle cx="12" cy="16" r="1.5" />
+                      </svg>
+                    </div>
+                    {/* Opaque moving symbols around the lock */}
+                    <div className="orbiting-symbol symbol-1">ZiSi</div>
+                    <div className="orbiting-symbol symbol-2">%</div>
+                    <div className="orbiting-symbol symbol-3">$</div>
+                    <div className="orbiting-symbol symbol-4">⊕</div>
+                    <div className="orbiting-symbol symbol-5">ML</div>
+                    <div className="orbiting-symbol symbol-6">RSI</div>
                   </div>
-                  {/* Opaque moving symbols around the lock */}
-                  <div className="orbiting-symbol symbol-1">ZiSi</div>
-                  <div className="orbiting-symbol symbol-2">%</div>
-                  <div className="orbiting-symbol symbol-3">$</div>
-                  <div className="orbiting-symbol symbol-4">⊕</div>
-                  <div className="orbiting-symbol symbol-5">ML</div>
-                  <div className="orbiting-symbol symbol-6">RSI</div>
+                  <h2 className="privacy-title">ZiSi QUANTITATIVE WORKSTATION</h2>
+                  <p className="privacy-subtitle">Financial Overview Protected</p>
+                  <p className="privacy-instructions">Click cyan lock or sidebar icon to restore view</p>
                 </div>
-                <h2 className="privacy-title">ZiSi QUANTITATIVE WORKSTATION</h2>
-                <p className="privacy-subtitle">Financial Overview Protected</p>
-                <p className="privacy-instructions">Click gold lock or sidebar icon to restore view</p>
               </div>
+
+              <AssetCards positions={positions} candles={candles} state={state} />
+              
+              {/* Row 2: Performance + Health */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '20px' }}>
+                <PortfolioPerformance positions={positions} state={state} />
+                <SystemHealth state={state} positions={positions} candles={candles} uptime={uptime} />
+              </div>
+
+              {/* Row 3: Trade Ledger */}
+              <TradeFeed positions={positions} gateLog={gateLog} assetMacro={assetMacro} />
             </div>
+          </section>
 
-            {/* Stats strip removed — all metrics live in SystemHealth panel */}
-            {false && (() => {
-              const bal      = parseFloat(state.balance ?? 0);
-              const pnl      = parseFloat(state.pnl ?? 0);
-              const start    = parseFloat(state.starting_balance ?? (bal - pnl)) || 1;
-              const pnlPct   = start > 0 ? (pnl / start) * 100 : 0;
-              const closed   = positions.closed || [];
-              const wins     = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).length;
-              const losses   = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0).length;
-              const decisive = wins + losses;
-              const wr       = decisive > 0 ? (wins / decisive * 100) : 0;
-              const active   = positions.active?.length || 0;
-              const grossW   = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).reduce((s, p) => s + parseFloat(p.realized_pnl ?? 0), 0);
-              const grossL   = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0).reduce((s, p) => s + Math.abs(parseFloat(p.realized_pnl ?? 0)), 0);
-              const pf       = grossL > 0 ? (grossW / grossL).toFixed(2) : '∞';
-              const avgW     = wins > 0 ? (grossW / wins).toFixed(2) : null;
-              const avgL     = losses > 0 ? (grossL / losses).toFixed(2) : null;
-              const sorted   = [...closed].sort((a, b) => parseFloat(b.realized_pnl ?? 0) - parseFloat(a.realized_pnl ?? 0));
-              const best     = parseFloat(sorted[0]?.realized_pnl ?? 0);
-              const worst    = parseFloat(sorted[sorted.length - 1]?.realized_pnl ?? 0);
-              let streak = 0, streakWin = null;
-              for (const p of closed) {
-                const isW = parseFloat(p.realized_pnl ?? 0) > 0;
-                if (streakWin === null) { streakWin = isW; streak = 1; }
-                else if (isW === streakWin) streak++;
-                else break;
-              }
+          <section className="t-page" data-page-id="2">
+            <Analytics state={state} positions={positions} />
+          </section>
 
-              const Stat = ({ label, val, color, sub }) => (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span style={{ fontSize: 8, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700 }}>{label}</span>
-                  <span style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 800, lineHeight: 1, letterSpacing: '-0.02em', color: color || 'var(--color-text-primary)' }}>{val}</span>
-                  {sub && <span style={{ fontSize: 9, color: '#71717a' }}>{sub}</span>}
-                </div>
-              );
-
-              const Pill = ({ label, color }) => (
-                <span style={{
-                  fontSize: 9, fontWeight: 700, letterSpacing: '0.05em',
-                  color, background: `${color}15`, border: `1px solid ${color}40`,
-                  borderRadius: 6, padding: '2px 8px', whiteSpace: 'nowrap',
-                }}>{label}</span>
-              );
-
-              return (
-                <div className="glass-panel reveal-up" style={{
-                  width: '100%', marginBottom: 4,
-                  padding: '14px 20px',
-                  borderTop: '2px solid rgba(197,155,39,0.55)',
-                  overflow: 'hidden',
-                }}>
-                  {/* Always-visible compact strip */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
-
-                    {/* Primary KPIs */}
-                    <div style={{ display: 'flex', gap: 20, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-                      <Stat label="Balance" val={`$${bal.toFixed(2)}`} sub="paper account" />
-                      <Stat
-                        label="Net P&L"
-                        val={`${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`}
-                        color={pnl >= 0 ? '#10b981' : '#ef4444'}
-                        sub={`${pnl >= 0 ? '+' : ''}${pnlPct.toFixed(1)}% return`}
-                      />
-                      <Stat
-                        label="Win Rate"
-                        val={decisive > 0 ? `${wr.toFixed(1)}%` : '—'}
-                        color={wr >= 65 ? '#10b981' : wr >= 50 ? '#f97316' : '#ef4444'}
-                        sub={`${wins}W · ${losses}L · ${closed.length} trades`}
-                      />
-                      <Stat
-                        label="Open"
-                        val={active}
-                        color={active > 4 ? '#f97316' : 'var(--color-text-primary)'}
-                        sub="positions"
-                      />
-                    </div>
-
-                    {/* Divider */}
-                    <div style={{ width: 1, height: 36, background: 'rgba(255,255,255,0.06)', flexShrink: 0 }} />
-
-                    {/* Status pills */}
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <Pill label={pnl >= 0 ? `+${pnlPct.toFixed(1)}% SESSION` : `${pnlPct.toFixed(1)}% SESSION`} color={pnl >= 0 ? '#10b981' : '#ef4444'} />
-                      {decisive > 0 && <Pill label={`PF ${pf}`} color={parseFloat(pf) >= 1.5 || pf === '∞' ? '#10b981' : parseFloat(pf) >= 1 ? '#f97316' : '#ef4444'} />}
-                      {streak > 1 && <Pill label={`${streakWin ? '🔥' : '❄️'} ${streak}${streakWin ? 'W STREAK' : 'L STREAK'}`} color={streakWin ? '#10b981' : '#ef4444'} />}
-                    </div>
-
-                    {/* Expand toggle */}
-                    <button onClick={() => setStatsExpanded(e => !e)} style={{
-                      marginLeft: 'auto', background: 'rgba(255,255,255,0.04)',
-                      border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8,
-                      padding: '4px 12px', cursor: 'pointer', color: '#71717a', fontSize: 9, fontWeight: 700,
-                      display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
-                      transition: 'all 0.2s',
-                    }}>
-                      <span style={{
-                        display: 'inline-block',
-                        transform: statsExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
-                        transition: 'transform 0.25s',
-                      }}>▾</span>
-                      {statsExpanded ? 'Less' : 'More'}
-                    </button>
-                  </div>
-
-                  {/* Expandable detail row */}
-                  <div style={{
-                    maxHeight: statsExpanded ? '200px' : '0px',
-                    overflow: 'hidden',
-                    transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)',
-                  }}>
-                    <div style={{
-                      display: 'flex', gap: 20, flexWrap: 'wrap', paddingTop: 14,
-                      borderTop: '1px solid rgba(255,255,255,0.05)', marginTop: 14,
-                    }}>
-                      {avgW && <Stat label="Avg Win"   val={`+$${avgW}`} color="#10b981" />}
-                      {avgL && <Stat label="Avg Loss"  val={`-$${avgL}`} color="#ef4444" />}
-                      {best > 0  && <Stat label="Best Trade"  val={`+$${best.toFixed(2)}`}  color="#10b981" />}
-                      {worst < 0 && <Stat label="Worst Trade" val={`-$${Math.abs(worst).toFixed(2)}`} color="#ef4444" />}
-                      <Stat label="Gross Win"  val={`$${grossW.toFixed(2)}`} color="#10b981" />
-                      <Stat label="Gross Loss" val={`$${grossL.toFixed(2)}`} color="#ef4444" />
-                      <Stat label="Total Trades" val={closed.length} />
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-
-            <AssetCards positions={positions} candles={candles} state={state} />
-            
-            {/* Row 2: Performance + Health */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '20px' }}>
-              <PortfolioPerformance positions={positions} state={state} />
-              <SystemHealth state={state} positions={positions} candles={candles} uptime={uptime} />
-            </div>
-
-            {/* Row 3: Trade Ledger */}
-            <TradeFeed positions={positions} gateLog={gateLog} assetMacro={assetMacro} />
-          </div>
-        )}
-
-        {activeTab === 'analytics' && (
-          <Analytics state={state} positions={positions} />
-        )}
-
-        {activeTab === 'settings' && (
-          <Settings />
-        )}
-
+          <section className="t-page" data-page-id="3">
+            <Settings />
+          </section>
+        </div>
       </main>
     </div>
   );

@@ -13,7 +13,7 @@ log = logging.getLogger("zisi.state")
 
 _STATE_FILE       = Path(__file__).parent.parent.parent / "account_state.json"
 _POSITIONS_FILE   = Path(__file__).parent.parent / "exchange" / "positions_state.json"
-_DEFAULT_BALANCE  = 100.0
+_DEFAULT_BALANCE  = 50.0
 _lock             = threading.Lock()
 GLOBAL_POSITIONS_LOCK = threading.Lock()
 _balance: float          = _DEFAULT_BALANCE
@@ -145,7 +145,10 @@ def update_heartbeat(trades_executed: int = 0, paused: bool = False, reason: str
         existing["paused"]              = paused
         existing["last_updated"]        = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         existing["last_change_reason"]  = reason
-        _STATE_FILE.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        import os
+        tmp_file = _STATE_FILE.with_suffix(".tmp")
+        tmp_file.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        os.replace(tmp_file, _STATE_FILE)
         _record_history(_balance, round(_balance - starting, 2))
 
 
@@ -216,7 +219,10 @@ def _write_state(reason: str = "") -> None:
     existing["pnl"]     = round(_balance - starting, 2)
     existing["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     existing["last_change_reason"] = reason
-    _STATE_FILE.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    import os
+    tmp_file = _STATE_FILE.with_suffix(".tmp")
+    tmp_file.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    os.replace(tmp_file, _STATE_FILE)
     _record_history(_balance, round(_balance - starting, 2))
 
 

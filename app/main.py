@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import asyncio
 import logging
 import time
+BOOT_TIME = time.time()
 
 # Global entry rate limiter — prevents burst entries across all asset loops.
 # Max one new position every ENTRY_COOLDOWN_S seconds globally.
@@ -148,6 +149,19 @@ async def heartbeat_daemon() -> None:
             # Call state manager update
             update_heartbeat(trades_executed=trades, paused=paused, reason="daemon-tick")
             log.debug("[HEARTBEAT] Heartbeat written successfully (trades=%d, paused=%s)", trades, paused)
+            
+            # Check process runtime for scheduled restart (4 hours = 14400 seconds)
+            elapsed = time.time() - BOOT_TIME
+            if elapsed >= 14400:
+                from infrastructure.exchange.trader import count_open_trades, get_pending_reconcile_count
+                open_trades = count_open_trades()
+                pending_count = get_pending_reconcile_count()
+                if open_trades == 0 and pending_count == 0:
+                    log.info("[HEARTBEAT] Process age is %.1f hours. Desk is clear. Clean exit (code 100) for PM2 auto-restart.", elapsed / 3600)
+                    import os
+                    os._exit(100)
+                else:
+                    log.debug("[HEARTBEAT] Process age is %.1f hours but desk has %d active trades and %d pending. Deferring clean exit.", elapsed / 3600, open_trades, pending_count)
         except Exception as e:
             log.error("[HEARTBEAT] Heartbeat daemon tick error: %s", e)
         await asyncio.sleep(30)

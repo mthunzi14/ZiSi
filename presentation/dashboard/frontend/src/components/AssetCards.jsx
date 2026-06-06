@@ -66,14 +66,14 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
       style={{
         background: `linear-gradient(135deg, rgba(22,22,25,0.85) 0%, rgba(12,12,14,0.92) 100%)`,
         borderRadius: 12,
-        border: `1px solid ${hovered ? '#c59b27' : hasOpen ? color + '55' : 'rgba(255,255,255,0.06)'}`,
+        border: `1px solid ${hovered ? '#00cbd6' : hasOpen ? color + '55' : 'rgba(255,255,255,0.06)'}`,
         borderLeft: `3px solid ${color}`,
         padding: '12px 14px',
         minWidth: 160, flex: '1 1 calc(16% - 8px)',
         display: 'flex', flexDirection: 'column', gap: 8,
         backdropFilter: 'blur(12px)',
         boxShadow: hovered
-          ? `0 8px 28px rgba(0,0,0,0.55), 0 0 20px rgba(197,155,39,0.22)`
+          ? `0 8px 28px rgba(0,0,0,0.55), 0 0 20px rgba(0,203,214,0.22)`
           : hasOpen ? `0 0 12px ${color}22` : '0 2px 8px rgba(0,0,0,0.3)',
         transform: hovered ? 'translateY(-3px)' : 'translateY(0)',
         transition: 'all 0.25s cubic-bezier(0.4,0,0.2,1)',
@@ -152,8 +152,8 @@ export default function AssetCards({ positions, candles, state }) {
           <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15 }}>Scanning Grid</span>
           <span style={{
             fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-            color: '#c59b27', background: 'rgba(197,155,39,0.1)',
-            border: '1px solid rgba(197,155,39,0.25)', borderRadius: 6, padding: '2px 8px',
+            color: '#00cbd6', background: 'rgba(0,203,214,0.1)',
+            border: '1px solid rgba(0,203,214,0.25)', borderRadius: 6, padding: '2px 8px',
           }}>
             {expanded ? '10 assets' : `${display.length} active`}
           </span>

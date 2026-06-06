@@ -1,5 +1,5 @@
 // TradeFeed.jsx — tabbed trade ledger: Open Positions + Trade History
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import SpotlightMask from './common/SpotlightMask';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -222,7 +222,7 @@ function CandleCountdownBar({ assetMacro = {} }) {
   const dColor  = d => d === 'UP' ? '#10b981' : d === 'DOWN' ? '#ef4444' : '#52525b';
   const dGlyph  = d => d === 'UP' ? '↑' : d === 'DOWN' ? '↓' : '→';
 
-  const timerColor = p => p < 15 ? '#ef4444' : p < 30 ? '#f97316' : '#c59b27';
+  const timerColor = p => p < 15 ? '#ef4444' : p < 30 ? '#f97316' : '#00cbd6';
 
   return (
     <div style={{
@@ -384,7 +384,7 @@ function SessionAnalytics({ closed }) {
   const maxDDColor= maxDD > 8 ? '#ef4444' : maxDD > 4 ? '#f97316' : '#10b981';
 
   return (
-    <CollapsiblePanel title="Session Analytics" defaultOpen={true} accentColor="#c59b27">
+    <CollapsiblePanel title="Session Analytics" defaultOpen={true} accentColor="#00cbd6">
       <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         {/* Drawdown stats */}
         <div style={{ display: 'flex', gap: 16 }}>
@@ -483,7 +483,7 @@ const GATE_META = {
   'DIR-COOLDOWN': { color: '#2b7fff', label: 'COOLDOWN' },
   'TREND-CONFIRM':{ color: '#a855f7', label: 'TREND-CF' },
   'TREND-GATE':   { color: '#ef4444', label: 'TREND' },
-  'FV-EDGE-GATE': { color: '#c59b27', label: 'FV-EDGE' },
+  'FV-EDGE-GATE': { color: '#00cbd6', label: 'FV-EDGE' },
   'CORROBORATE':  { color: '#6b7280', label: 'CORR' },
   'VOL-SURGE':    { color: '#ec4899', label: 'VOL-SURGE' },
 };
@@ -686,28 +686,106 @@ function OpenRow({ p }) {
 
 // ── Tab button ─────────────────────────────────────────────────────────────
 
-function Tab({ label, count, active, onClick }) {
+function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
+  const containerRef = useRef(null);
+  const [pillStyle, setPillStyle] = useState({ transform: 'translateX(0px)', width: '0px' });
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    
+    // Find the button with aria-selected="true"
+    const activeBtn = container.querySelector('[aria-selected="true"]');
+    if (activeBtn) {
+      setPillStyle({
+        transform: `translateX(${activeBtn.offsetLeft}px)`,
+        width: `${activeBtn.offsetWidth}px`
+      });
+    }
+  }, [activeTab, activeCount, historyCount]);
+
   return (
-    <button
-      onClick={onClick}
-      style={{
-        background: active ? 'var(--color-obsidian)' : 'var(--color-cream-deep)',
-        border: '1px solid transparent',
-        borderRadius: 'var(--radius-md)',
-        padding: '6px 16px',
-        fontSize: 12, fontFamily: 'var(--font-primary)', fontWeight: active ? 600 : 500,
-        color: active ? 'var(--color-snow)' : 'var(--color-graphite)',
-        cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
-        transition: 'all 0.15s ease',
-      }}
-    >
-      {label}
-      <span style={{
-        background: active ? 'rgba(255,255,255,0.2)' : 'var(--color-cream-dark)',
-        color: active ? '#fff' : 'var(--color-obsidian)',
-        borderRadius: 10, padding: '1px 7px', fontSize: 10, fontWeight: 700,
-      }}>{count}</span>
-    </button>
+    <div className="t-tabs" ref={containerRef} role="tablist" style={{ position: 'relative' }}>
+      <span className="t-tabs-pill" style={{
+        ...pillStyle,
+        position: 'absolute',
+        top: '3px',
+        height: '24px',
+        background: 'var(--color-cream-dark)',
+        borderRadius: '48px',
+        transition: 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1), width 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+        zIndex: 0,
+        pointerEvents: 'none'
+      }} />
+      <button
+        className="t-tab"
+        role="tab"
+        aria-selected={activeTab === 'open'}
+        onClick={() => setActiveTab('open')}
+        style={{
+          position: 'relative',
+          background: 'transparent',
+          border: 'none',
+          color: activeTab === 'open' ? 'var(--color-obsidian)' : 'var(--color-iron)',
+          fontSize: '12px',
+          fontWeight: activeTab === 'open' ? 700 : 500,
+          cursor: 'pointer',
+          padding: '4px 14px',
+          borderRadius: '48px',
+          zIndex: 1,
+          transition: 'color 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px'
+        }}
+      >
+        Open
+        <span style={{
+          background: activeTab === 'open' ? 'var(--color-accent)' : 'var(--color-cream-dark)',
+          color: activeTab === 'open' ? '#fff' : 'var(--color-text-secondary)',
+          borderRadius: '10px',
+          padding: '1px 6px',
+          fontSize: '9px',
+          fontWeight: 700
+        }}>
+          {activeCount}
+        </span>
+      </button>
+      <button
+        className="t-tab"
+        role="tab"
+        aria-selected={activeTab === 'history'}
+        onClick={() => setActiveTab('history')}
+        style={{
+          position: 'relative',
+          background: 'transparent',
+          border: 'none',
+          color: activeTab === 'history' ? 'var(--color-obsidian)' : 'var(--color-iron)',
+          fontSize: '12px',
+          fontWeight: activeTab === 'history' ? 700 : 500,
+          cursor: 'pointer',
+          padding: '4px 14px',
+          borderRadius: '48px',
+          zIndex: 1,
+          transition: 'color 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px'
+        }}
+      >
+        History
+        <span style={{
+          background: activeTab === 'history' ? 'var(--color-accent)' : 'var(--color-cream-dark)',
+          color: activeTab === 'history' ? '#fff' : 'var(--color-text-secondary)',
+          borderRadius: '10px',
+          padding: '1px 6px',
+          fontSize: '9px',
+          fontWeight: 700
+        }}>
+          {historyCount}
+        </span>
+      </button>
+    </div>
   );
 }
 
@@ -1023,6 +1101,7 @@ function SrcPill({ src, active, count, pnl, onClick }) {
   return (
     <button
       onClick={onClick}
+      className="metal-fx"
       style={{
         background: isActive ? `${color}22` : 'transparent',
         border: `1px solid ${isActive ? color : 'rgba(255,255,255,0.1)'}`,
@@ -1093,7 +1172,7 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
   return (
     <SpotlightMask>
       <div
-        className="glass-panel"
+        className="glass-panel border-beam-card"
         style={{ padding: 'var(--spacing-20)', display: 'flex', flexDirection: 'column' }}
       >
         {/* Candle countdown + per-asset macro bar */}
@@ -1109,10 +1188,7 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
             <RegimePill />
             <MacroTrendArrow />
           </div>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <Tab label="Open"    count={active.length} active={tab === 'open'}    onClick={() => setTab('open')} />
-            <Tab label="History" count={closed.length} active={tab === 'history'} onClick={() => setTab('history')} />
-          </div>
+          <SlidingTabs activeTab={tab} setActiveTab={setTab} activeCount={active.length} historyCount={closed.length} />
         </div>
 
         {/* Gate Event Log lives in Analytics tab (not here) */}

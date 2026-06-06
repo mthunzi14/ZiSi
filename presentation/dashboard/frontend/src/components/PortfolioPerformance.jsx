@@ -176,7 +176,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
     const pnlVal = parseFloat(d.pnl || 0);
     const c      = pnlVal >= 0 ? '#10b981' : '#ef4444';
     return (
-      <div style={{ background: 'rgba(12,12,14,0.96)', backdropFilter: 'blur(12px)', border: '1px solid #c59b2755', borderRadius: 8, padding: '10px 14px' }}>
+      <div style={{ background: 'rgba(12,12,14,0.96)', backdropFilter: 'blur(12px)', border: '1px solid #00cbd655', borderRadius: 8, padding: '10px 14px' }}>
         <div style={{ color: '#52525b', fontSize: 10, marginBottom: 4 }}>{new Date(d.timestamp).toLocaleString()}</div>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 11, margin: '2px 0' }}>
           <span style={{ color: '#71717a' }}>Balance</span>
@@ -230,8 +230,8 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
               {TF_PILLS.map(tf => (
                 <button key={tf} onClick={() => setTimeframe(tf)} style={{
                   padding: '2px 8px', borderRadius: 4, border: 'none',
-                  background: timeframe === tf ? 'rgba(197,155,39,0.15)' : 'transparent',
-                  color: timeframe === tf ? '#c59b27' : '#52525b',
+                  background: timeframe === tf ? 'rgba(0,203,214,0.15)' : 'transparent',
+                  color: timeframe === tf ? '#00cbd6' : '#52525b',
                   fontSize: 9, fontFamily: 'monospace', fontWeight: 700, cursor: 'pointer', transition: 'all 0.15s',
                 }}>{tf}</button>
               ))}

@@ -302,6 +302,7 @@ class UpDownEngine:
         """Fair-value (spot-distance) margin decision at the REAL live quotes.
         Returns decide_value_entry's dict plus fp_up/sigma_frac for logging."""
         from core.engine.fair_value import fair_prob_up, decide_value_entry
+        from core.engine.regime_filter import get_regime_mode
         try:
             s_0 = float(klines[-1][1])          # current window open = strike
         except (IndexError, ValueError, TypeError):
@@ -317,8 +318,26 @@ class UpDownEngine:
         if self.asset == "ETH" and sigma_frac < 0.0040:
             sigma_frac = 0.0040
             log.debug("[ETH-SIGMA] ETH sigma_frac floored to 0.0040")
-        fp_up = fair_prob_up(spot, s_0, sigma_frac, elapsed_min, total_min)
-        dec = decide_value_entry(fp_up, up_price, dn_price, elapsed_min, total_min)
+
+        # EMA-based drift calculation
+        def _ema(prices, period):
+            if len(prices) < period:
+                return prices[-1] if prices else 0.0
+            mult = 2.0 / (period + 1)
+            ema = prices[0]
+            for p in prices[1:]:
+                ema = (p - ema) * mult + ema
+            return ema
+
+        closes = [float(k[4]) for k in klines]
+        ema_5 = _ema(closes, 5)
+        ema_20 = _ema(closes, 20)
+        drift = (ema_5 - ema_20) / ema_20 if ema_20 > 0 else 0.0
+
+        regime = get_regime_mode()
+
+        fp_up = fair_prob_up(spot, s_0, sigma_frac, elapsed_min, total_min, drift=drift)
+        dec = decide_value_entry(fp_up, up_price, dn_price, elapsed_min, total_min, regime=regime)
         dec["fp_up"] = round(fp_up, 4)
         dec["sigma_frac"] = round(sigma_frac, 6)
         return dec

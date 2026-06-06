@@ -1033,6 +1033,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         is_expired = age_minutes >= effective_max_minutes
         is_target_hit = exit_price >= target_price
         is_stop_hit = exit_price <= stop_loss if not _is_short_tf else False
+        is_time_decay_hit = is_updown and not is_expired and age_minutes >= 0.7 * effective_max_minutes
 
         # 80% drawdown stop-loss: if price dropped to ≤20% of entry, position is
         # almost certainly wrong direction. Exit now to save 80% of stake.
@@ -1046,7 +1047,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
             )
             is_stop_hit = True
 
-        if not (is_expired or is_target_hit or is_stop_hit):
+        if not (is_expired or is_target_hit or is_stop_hit or is_time_decay_hit):
             # Update local current_price in memory and continue
             pos["current_price"] = exit_price
             continue
@@ -1075,6 +1076,13 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
             log.info(
                 "[NETTING-EXIT] %s STOP LOSS HIT! Buying opposite outcome at %.2fc to hedge downside and merge to cash",
                 order_id, opposite_cost * 100
+            )
+        elif is_time_decay_hit:
+            exit_reason = "TIME_DECAY"
+            opposite_cost = round(1.0 - exit_price, 4)
+            log.info(
+                "[NETTING-EXIT] %s TIME DECAY HIT! Utilized >70%% of window (%.1fm/%.1fm). Exiting early to recover capital.",
+                order_id, age_minutes, effective_max_minutes
             )
         else:
             exit_reason = "MARKET_EXPIRED"

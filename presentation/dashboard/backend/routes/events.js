@@ -17,7 +17,7 @@ const POSITIONS_FILE = path.join(BOT_ROOT, 'infrastructure', 'exchange', 'positi
 
 function _getStartingBalance() {
   const state = _safeRead(STATE_FILE);
-  return parseFloat(state?.starting_balance || 100.0);
+  return parseFloat(state?.starting_balance || 50.0);
 }
 
 const _clients = new Map();

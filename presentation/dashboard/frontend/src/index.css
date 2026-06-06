@@ -1,35 +1,36 @@
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Syne:wght@700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap');
 
 :root {
-  /* Mtsunzi Styling / FutureDesk Palette - Overhauled to Warm Obsidian & Dark Gold */
-  --color-cream-light:  #0c0c0e;   /* page background - Charcoal Black */
-  --color-cream-deep:   #1b1b1e;   /* section backgrounds, input fills */
-  --color-cream-dark:   #2b2b30;   /* hover states, badges */
+  /* Mtsunzi Styling / FutureDesk Palette - Overhauled to Slate Obsidian & Ocean Cyan */
+  --color-cream-light:  #08080a;   /* page background - Slate Black */
+  --color-cream-deep:   #121216;   /* section backgrounds, input fills */
+  --color-cream-dark:   #1e1e24;   /* hover states, badges */
   --color-obsidian:     #fafaf9;   /* primary text, primary buttons */
   --color-ink:          #ffffff;   /* text hover */
-  --color-graphite:     #a1a1aa;   /* secondary text, captions */
-  --color-iron:         #71717a;   /* muted text, placeholder, inactive nav */
-  --color-mist:         #3f3f46;   /* scrollbar thumb, dividers */
-  --color-snow:         #161619;   /* card surfaces, modals */
+  --color-graphite:     #94a3b8;   /* secondary text, captions - Slate Gray */
+  --color-iron:         #64748b;   /* muted text, placeholder, inactive nav */
+  --color-mist:         #334155;   /* scrollbar thumb, dividers */
+  --color-snow:         #0d0d11;   /* card surfaces, modals */
 
   /* Glassmorphism Variables (Dark) */
-  --color-card-bg-start:  rgba(22, 22, 25, 0.72);
-  --color-card-bg-end:    rgba(12, 12, 14, 0.82);
+  --color-card-bg-start:  rgba(13, 13, 17, 0.72);
+  --color-card-bg-end:    rgba(8, 8, 10, 0.82);
   --color-card-border:    rgba(255, 255, 255, 0.08);
 
   /* Semantic Aliases */
-  --color-bg:             #0c0c0e;   /* body background */
-  --color-surface:        #161619;   /* card / panel surface */
-  --color-border:         #27272a;   /* default card borders */
-  --color-border-subtle:  #1f1f23;   /* inner borders, section separators */
+  --color-bg:             #08080a;   /* body background */
+  --color-surface:        #0d0d11;   /* card / panel surface */
+  --color-border:         #1e293b;   /* default card borders */
+  --color-border-subtle:  #141b27;   /* inner borders, section separators */
   --color-text-primary:   #fafaf9;
-  --color-text-secondary: #a1a1aa;
-  --color-text-muted:     #71717a;
-  --color-accent:         #c59b27;   /* premium dark gold accent */
+  --color-text-secondary: #94a3b8;
+  --color-text-muted:     #64748b;
+  --color-accent:         #00cbd6;   /* premium bright ocean cyan accent */
+  --color-logo:           #94a3b8;   /* slate-gray brand logo */
   --color-profit:         #10b981;   /* premium bright emerald green */
   --color-loss:           #ef4444;   /* premium vibrant ruby red */
   --color-amber:          #f97316;   /* premium warm amber */
-  --color-accent-muted:   #b45309;
+  --color-accent-muted:   #0891b2;
 
   /* Typography variables */
   --font-primary: 'Outfit', 'DM Sans', system-ui, sans-serif;
@@ -68,41 +69,42 @@
 }
 
 :root[data-theme='light'] {
-  /* Mtsunzi Styling / FutureDesk Palette - Linen & White-Gold Light Mode */
-  --color-cream-light:  #fafaf7;   /* Warm linen page background */
-  --color-cream-deep:   #f4f4eb;   /* Light card surface backgrounds */
-  --color-cream-dark:   #e9e9da;   /* Hover, active state deep linen */
-  --color-obsidian:     #121214;   /* Charcoal primary text/button background */
-  --color-ink:          #000000;   /* Deepest black hover text */
-  --color-graphite:     #52525b;   /* Secondary zinc text */
-  --color-iron:         #71717a;   /* Tertiary text, placeholders */
-  --color-mist:         #e4e4e7;   /* Dividers, borders */
+  /* Mtsunzi Styling / FutureDesk Palette - Enhanced Slate Light Mode */
+  --color-cream-light:  #f1f5f9;   /* Slate 100 - page background */
+  --color-cream-deep:   #e2e8f0;   /* Slate 200 - section background */
+  --color-cream-dark:   #cbd5e1;   /* Slate 300 - hover / active state */
+  --color-obsidian:     #0f172a;   /* Slate 900 - primary text */
+  --color-ink:          #020617;   /* Deepest slate hover text */
+  --color-graphite:     #334155;   /* Slate 700 - secondary text */
+  --color-iron:         #475569;   /* Slate 600 - muted text */
+  --color-mist:         #cbd5e1;   /* Slate 300 - dividers */
   --color-snow:         #ffffff;   /* Pure white card surface background */
 
   /* Glassmorphism Variables (Light) */
-  --color-card-bg-start:  rgba(255, 255, 255, 0.72);
-  --color-card-bg-end:    rgba(244, 244, 235, 0.78);
-  --color-card-border:    rgba(0, 0, 0, 0.05);
+  --color-card-bg-start:  rgba(255, 255, 255, 0.85);
+  --color-card-bg-end:    rgba(241, 245, 249, 0.9);
+  --color-card-border:    rgba(15, 23, 42, 0.08);
 
   /* Semantic Aliases */
-  --color-bg:             #fafaf7;
+  --color-bg:             #f1f5f9;
   --color-surface:        #ffffff;
-  --color-border:         #e4e4e7;
-  --color-border-subtle:  #f4f4f5;
-  --color-text-primary:   #121214;
-  --color-text-secondary: #52525b;
-  --color-text-muted:     #71717a;
-  --color-accent:         #c59b27;   /* Polished gold accent - remains gold! */
-  --color-profit:         #10b981;
-  --color-loss:           #ef4444;
-  --color-amber:          #f97316;
-  --color-accent-muted:   #d97706;
+  --color-border:         #cbd5e1;
+  --color-border-subtle:  #e2e8f0;
+  --color-text-primary:   #0f172a;
+  --color-text-secondary: #334155;
+  --color-text-muted:     #475569;
+  --color-accent:         #0891b2;   /* Premium high-contrast ocean cyan accent */
+  --color-logo:           #475569;   /* darker gray brand logo */
+  --color-profit:         #059669;   /* darker green for contrast */
+  --color-loss:           #dc2626;   /* darker red for contrast */
+  --color-amber:          #d97706;
+  --color-accent-muted:   #0369a1;
 
   /* Adjust shadow for light theme for high-end feel */
-  --shadow-xs:      0 1px 2px rgba(9,9,11,0.05);
-  --shadow-sm:      0 3px 12px rgba(9,9,11,0.04), 0 1px 2px rgba(9,9,11,0.03);
-  --shadow-md:      0 8px 24px rgba(9,9,11,0.05), 0 2px 8px rgba(9,9,11,0.03);
-  --shadow-lg:      0 16px 48px rgba(9,9,11,0.07), 0 4px 16px rgba(9,9,11,0.04);
+  --shadow-xs:      0 1px 2px rgba(15,23,42,0.05);
+  --shadow-sm:      0 3px 12px rgba(15,23,42,0.04), 0 1px 2px rgba(15,23,42,0.03);
+  --shadow-md:      0 8px 24px rgba(15,23,42,0.05), 0 2px 8px rgba(15,23,42,0.03);
+  --shadow-lg:      0 16px 48px rgba(15,23,42,0.07), 0 4px 16px rgba(15,23,42,0.04);
 }
 
 /* Global resets & selections */
@@ -144,10 +146,1143 @@ html, body {
   border-left: 1px solid var(--color-border);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(197, 155, 39, 0.45);
+  background: rgba(0, 203, 214, 0.45);
   border-radius: 9999px;
   border: 2.5px solid #08080a;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-accent);
+}
+
+
+/* ==========================================================================
+   CUSTOM ADVANCED EFFECTS (Border Beam & Liquid Metal)
+   ========================================================================== */
+
+/* Conic Border Beam Animation */
+.border-beam-card {
+  position: relative;
+  overflow: hidden;
+}
+.border-beam-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px; /* border thickness */
+  background: conic-gradient(
+    from var(--gradient-angle),
+    transparent 0deg,
+    transparent 180deg,
+    var(--color-accent) 270deg,
+    transparent 360deg
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: fd-border-spin 4s linear infinite;
+  z-index: 5;
+}
+
+/* Premium Liquid Metal Effect with Ocean Cyan & Chrome Shine */
+.metal-fx {
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  background: linear-gradient(135deg, rgba(22, 22, 25, 0.8) 0%, rgba(12, 12, 14, 0.95) 100%) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.1) !important;
+  color: var(--color-obsidian) !important;
+  cursor: pointer;
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1) !important;
+  z-index: 1;
+}
+.metal-fx::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -150%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(0, 203, 214, 0.15),
+    rgba(255, 255, 255, 0.35),
+    rgba(0, 203, 214, 0.15),
+    transparent
+  );
+  transform: skewX(-25deg);
+  transition: 0.75s ease;
+  pointer-events: none;
+  z-index: 2;
+}
+.metal-fx:hover::after {
+  left: 150%;
+}
+.metal-fx:hover {
+  transform: translateY(-2px);
+  border-color: var(--color-accent) !important;
+  box-shadow: 0 6px 20px rgba(0, 203, 214, 0.25), inset 0 1px 1px rgba(255, 255, 255, 0.2) !important;
+}
+.metal-fx:active {
+  transform: translateY(0);
+}
+
+/* ==========================================================================
+   TRANSITIONS.DEV - THE 14 COMPONENT MOTION CLASSES
+   ========================================================================== */
+/* Transitions.dev — Card resize */
+
+/*
+  Usage:
+    <div class="t-resize">…</div>
+
+  Put `.t-resize` on any element and change its width/height
+  (directly, or via a state class such as `.is-small`). The
+  transition will tween the two sizes.
+*/
+
+:root {
+  --resize-dur: 300ms;
+  --resize-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.t-resize {
+  transition:
+    width  var(--resize-dur) var(--resize-ease),
+    height var(--resize-dur) var(--resize-ease);
+  will-change: width, height;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-resize { transition: none !important; }
+}
+
+/* Transitions.dev — Number pop-in */
+
+/*
+  Usage:
+    <span class="t-digit-group is-animating">
+      <span class="t-digit">1</span>
+      <span class="t-digit">2</span>
+      <span class="t-digit" data-stagger="1">.</span>
+      <span class="t-digit" data-stagger="2">3</span>
+    </span>
+
+  Replay:
+    - Remove `.is-animating`, re-render digits (or swap text),
+      force a reflow, then re-add `.is-animating`.
+    - Use data-stagger="1", "2", … to delay individual
+      digits by `n * var(--digit-stagger)`.
+
+  Direction:
+    --digit-dir-x / --digit-dir-y are unit-less multipliers
+    (e.g. 1, -1, 0) applied to --digit-distance.
+*/
+
+:root {
+  --digit-dur: 500ms;
+  --digit-distance: 8px;
+  --digit-stagger: 70ms;
+  --digit-blur: 2px;
+  --digit-ease: cubic-bezier(0.34, 1.45, 0.64, 1);
+  --digit-dir-x: 0;
+  --digit-dir-y: 1;
+}
+
+@keyframes t-digit-pop-in {
+  0%   {
+    transform: translate(
+      calc(var(--digit-distance) * var(--digit-dir-x)),
+      calc(var(--digit-distance) * var(--digit-dir-y))
+    );
+    opacity: 0;
+    filter: blur(var(--digit-blur));
+  }
+  100% { transform: translate(0, 0); opacity: 1; filter: blur(0); }
+}
+
+.t-digit-group {
+  display: inline-flex;
+  align-items: baseline;
+}
+.t-digit {
+  display: inline-block;
+  will-change: transform, opacity, filter;
+}
+.t-digit-group.is-animating .t-digit {
+  animation: t-digit-pop-in var(--digit-dur) var(--digit-ease) both;
+}
+.t-digit-group.is-animating .t-digit[data-stagger="1"] {
+  animation-delay: var(--digit-stagger);
+}
+.t-digit-group.is-animating .t-digit[data-stagger="2"] {
+  animation-delay: calc(var(--digit-stagger) * 2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-digit-group .t-digit { animation: none !important; }
+}
+
+/* Transitions.dev — Notification badge */
+
+/*
+  Usage:
+    <!-- Place .t-badge inside your trigger (bell icon, button, etc.). -->
+    <!-- The trigger must be position: relative so .t-badge can anchor to it. -->
+    <button class="your-trigger" style="position: relative">
+      <!-- your icon / trigger contents -->
+      <span class="t-badge" data-open="false">
+        <span class="t-badge-dot">1</span>
+      </span>
+    </button>
+
+  State: toggle data-open="true" / "false" on .t-badge.
+  Only the badge slides + pops — the trigger itself stays put.
+*/
+
+:root {
+  --badge-slide-dur: 260ms;
+  --badge-pop-dur: 500ms;
+  --badge-pop-close-dur: 180ms;
+  --badge-fade-dur: 400ms;
+  --badge-fade-close-dur: 180ms;
+  --badge-blur: 2px;
+  --badge-offset-x: -8.2px;
+  --badge-offset-y: 12.4px;
+  --badge-slide-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --badge-pop-ease: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --badge-close-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes t-badge-slide-in {
+  from { transform: translate(var(--badge-offset-x), var(--badge-offset-y)); }
+  to   { transform: translate(0, 0); }
+}
+
+/* .t-badge is the absolutely-positioned wrapper for the dot.
+   Adjust top/right (or left/bottom) to anchor it on your trigger. */
+.t-badge {
+  position: absolute;
+  top: -6px;
+  right: -8px;
+  pointer-events: none;
+  will-change: transform;
+}
+.t-badge[data-open="true"] {
+  animation: t-badge-slide-in var(--badge-slide-dur) var(--badge-slide-ease);
+}
+
+.t-badge-dot {
+  display: block;
+  transform-origin: center;
+  transform: scale(1);
+  opacity: 1;
+  filter: blur(0);
+  transition:
+    transform var(--badge-pop-dur)  var(--badge-pop-ease),
+    opacity   var(--badge-fade-dur) var(--badge-pop-ease),
+    filter    var(--badge-pop-dur)  var(--badge-pop-ease);
+  will-change: transform, opacity, filter;
+}
+.t-badge[data-open="false"] .t-badge-dot {
+  transform: scale(0);
+  opacity: 0;
+  filter: blur(var(--badge-blur));
+  transition:
+    transform var(--badge-pop-close-dur)  var(--badge-close-ease),
+    opacity   var(--badge-fade-close-dur) var(--badge-close-ease),
+    filter    var(--badge-pop-close-dur)  var(--badge-close-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-badge, .t-badge-dot { animation: none !important; transition: none !important; }
+}
+
+/* Transitions.dev — Notification badge */
+
+/*
+  Usage:
+    <!-- Place .t-badge inside your trigger (bell icon, button, etc.). -->
+    <!-- The trigger must be position: relative so .t-badge can anchor to it. -->
+    <button class="your-trigger" style="position: relative">
+      <!-- your icon / trigger contents -->
+      <span class="t-badge" data-open="false">
+        <span class="t-badge-dot">1</span>
+      </span>
+    </button>
+
+  State: toggle data-open="true" / "false" on .t-badge.
+  Only the badge slides + pops — the trigger itself stays put.
+*/
+
+:root {
+  --badge-slide-dur: 260ms;
+  --badge-pop-dur: 500ms;
+  --badge-pop-close-dur: 180ms;
+  --badge-fade-dur: 400ms;
+  --badge-fade-close-dur: 180ms;
+  --badge-blur: 2px;
+  --badge-offset-x: -8.2px;
+  --badge-offset-y: 12.4px;
+  --badge-slide-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --badge-pop-ease: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --badge-close-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes t-badge-slide-in {
+  from { transform: translate(var(--badge-offset-x), var(--badge-offset-y)); }
+  to   { transform: translate(0, 0); }
+}
+
+/* .t-badge is the absolutely-positioned wrapper for the dot.
+   Adjust top/right (or left/bottom) to anchor it on your trigger. */
+.t-badge {
+  position: absolute;
+  top: -6px;
+  right: -8px;
+  pointer-events: none;
+  will-change: transform;
+}
+.t-badge[data-open="true"] {
+  animation: t-badge-slide-in var(--badge-slide-dur) var(--badge-slide-ease);
+}
+
+.t-badge-dot {
+  display: block;
+  transform-origin: center;
+  transform: scale(1);
+  opacity: 1;
+  filter: blur(0);
+  transition:
+    transform var(--badge-pop-dur)  var(--badge-pop-ease),
+    opacity   var(--badge-fade-dur) var(--badge-pop-ease),
+    filter    var(--badge-pop-dur)  var(--badge-pop-ease);
+  will-change: transform, opacity, filter;
+}
+.t-badge[data-open="false"] .t-badge-dot {
+  transform: scale(0);
+  opacity: 0;
+  filter: blur(var(--badge-blur));
+  transition:
+    transform var(--badge-pop-close-dur)  var(--badge-close-ease),
+    opacity   var(--badge-fade-close-dur) var(--badge-close-ease),
+    filter    var(--badge-pop-close-dur)  var(--badge-close-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-badge, .t-badge-dot { animation: none !important; transition: none !important; }
+}
+
+/* Transitions.dev — Modal open / close */
+
+/*
+  Usage:
+    <div class="t-modal" role="dialog">…</div>
+
+  State:
+    - Add `.is-open` to open (scales up from --modal-scale).
+    - On close, swap `.is-open` for `.is-closing`, then remove
+      `.is-closing` after --modal-close-dur.
+*/
+
+:root {
+  --modal-open-dur: 250ms;
+  --modal-close-dur: 150ms;
+  --modal-scale: 0.96;
+  --modal-scale-close: 0.96;
+  --modal-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.t-modal {
+  transform-origin: center;
+  transform: scale(var(--modal-scale));
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform var(--modal-open-dur) var(--modal-ease),
+    opacity   var(--modal-open-dur) var(--modal-ease);
+  will-change: transform, opacity;
+}
+.t-modal.is-open {
+  transform: scale(1);
+  opacity: 1;
+  pointer-events: auto;
+}
+.t-modal.is-closing {
+  transform: scale(var(--modal-scale-close));
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform var(--modal-close-dur) var(--modal-ease),
+    opacity   var(--modal-close-dur) var(--modal-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-modal { transition: none !important; }
+}
+/* Transitions.dev — Page side-by-side */
+
+/*
+  Usage:
+    <div class="t-page-slide" data-page="1">
+      <section class="t-page" data-page-id="1">…</section>
+      <section class="t-page" data-page-id="2">…</section>
+    </div>
+
+  State: set data-page="1" or "2" on .t-page-slide.
+  Page 1 exits to the left, page 2 exits to the right.
+  --page-exit-enabled (0/1) disables the outgoing slide.
+*/
+
+:root {
+  --page-slide-dur: 200ms;
+  --page-fade-dur: 200ms;
+  --page-slide-distance: 8px;
+  --page-blur: 3px;
+  --page-stagger: 0ms;
+  --page-exit-enabled: 1;
+  --page-slide-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --page-fade-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.t-page-slide {
+  position: relative;
+}
+.t-page-slide .t-page[data-page-id="1"] {
+  --t-page-from-x: calc(var(--page-slide-distance) * -1);
+}
+.t-page-slide .t-page[data-page-id="2"] {
+  --t-page-from-x: var(--page-slide-distance);
+}
+.t-page-slide .t-page[data-page-id="3"] {
+  --t-page-from-x: var(--page-slide-distance);
+}
+.t-page-slide .t-page {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(calc(var(--t-page-from-x, 0px) * var(--page-exit-enabled)));
+  filter: blur(calc(var(--page-blur) * var(--page-exit-enabled)));
+  transition:
+    opacity   var(--page-fade-dur)  var(--page-fade-ease),
+    transform var(--page-slide-dur) var(--page-slide-ease),
+    filter    var(--page-slide-dur) var(--page-slide-ease);
+  will-change: opacity, transform, filter;
+}
+.t-page-slide[data-page="1"] .t-page[data-page-id="1"],
+.t-page-slide[data-page="2"] .t-page[data-page-id="2"],
+.t-page-slide[data-page="3"] .t-page[data-page-id="3"] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+  filter: blur(0);
+  transition-delay: var(--page-stagger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-page-slide .t-page { transition: none !important; }
+}
+
+
+/* Transitions.dev — Icon swap */
+
+/*
+  Usage:
+    <div class="t-icon-swap" data-state="a">
+      <span class="t-icon" data-icon="a">…</span>
+      <span class="t-icon" data-icon="b">…</span>
+    </div>
+
+  State: set data-state="a" or "b" on .t-icon-swap.
+  The matching .t-icon fades in; the other fades out with blur
+  and scale.
+*/
+
+:root {
+  --icon-swap-dur: 200ms;
+  --icon-swap-blur: 2px;
+  --icon-swap-start-scale: 0.25;
+  --icon-swap-ease: ease-in-out;
+}
+
+.t-icon-swap {
+  position: relative;
+  display: inline-grid;
+}
+.t-icon-swap .t-icon {
+  grid-area: 1 / 1;
+  transition:
+    opacity   var(--icon-swap-dur) var(--icon-swap-ease),
+    filter    var(--icon-swap-dur) var(--icon-swap-ease),
+    transform var(--icon-swap-dur) var(--icon-swap-ease);
+  will-change: opacity, filter, transform;
+}
+.t-icon-swap[data-state="a"] .t-icon[data-icon="a"],
+.t-icon-swap[data-state="b"] .t-icon[data-icon="b"] {
+  opacity: 1;
+  filter: blur(0);
+  transform: scale(1);
+}
+.t-icon-swap[data-state="a"] .t-icon[data-icon="b"],
+.t-icon-swap[data-state="b"] .t-icon[data-icon="a"] {
+  opacity: 0;
+  filter: blur(var(--icon-swap-blur));
+  transform: scale(var(--icon-swap-start-scale));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-icon-swap .t-icon { transition: none !important; }
+}
+/* Transitions.dev — Panel reveal */
+
+/*
+  Usage:
+    <div class="t-panel-slide" data-open="false">
+      <!-- your panel contents -->
+    </div>
+
+  The panel slides on the Y axis, fades opacity 0 ↔ 1,
+  and cross-blurs --panel-blur ↔ 0, all on the same
+  duration / ease so a shorter travel (e.g. 50% of the
+  panel height) still reads as a full open / close.
+  Wrap it in your own container with `overflow: hidden`
+  if you want the closed state fully clipped. Set
+  --panel-translate-y to the travel distance (e.g. half
+  the panel's own height).
+*/
+
+:root {
+  --panel-open-dur: 400ms;
+  --panel-close-dur: 350ms;
+  --panel-translate-y: calc(187px * 0.5);
+  --panel-blur: 2px;
+  --panel-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.t-panel-slide {
+  transform: translateY(var(--panel-translate-y));
+  opacity: 0;
+  filter: blur(var(--panel-blur));
+  pointer-events: none;
+  transition:
+    transform var(--panel-close-dur) var(--panel-ease),
+    opacity   var(--panel-close-dur) var(--panel-ease),
+    filter    var(--panel-close-dur) var(--panel-ease);
+  will-change: transform, opacity, filter;
+}
+.t-panel-slide[data-open="true"] {
+  transform: translateY(0);
+  opacity: 1;
+  filter: blur(0);
+  pointer-events: auto;
+  transition:
+    transform var(--panel-open-dur) var(--panel-ease),
+    opacity   var(--panel-open-dur) var(--panel-ease),
+    filter    var(--panel-open-dur) var(--panel-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-panel-slide { transition: none !important; }
+}/* Transitions.dev — Avatar group hover */
+
+/*
+  Usage:
+    <!-- Apply .t-avatar to each item in your group (avatar,
+         chip, badge, button — anything). Bring your own size,
+         shape, and stacking; this stylesheet only owns the
+         hover transform + transition. -->
+    <div class="t-avatar-group">
+      <div class="t-avatar"><!-- your item --></div>
+      <div class="t-avatar"><!-- your item --></div>
+      <!-- … -->
+    </div>
+
+  Wire-up (vanilla JS):
+    On `mouseenter` of any .t-avatar, walk every sibling and
+    set inline:
+      el.style.setProperty('--shift',
+        (lift * Math.pow(falloff, distance)).toFixed(3) + 'px');
+      el.style.setProperty('--scale-active',
+        i === activeIdx ? scale : 1);
+    Set transition-timing-function inline BEFORE the
+    variable writes — use --avatar-ease-in on hover-in and
+    --avatar-ease-out on the root's `mouseleave` (resets
+    --shift to 0 and --scale-active to 1).
+*/
+
+:root {
+  --avatar-lift: -4px;
+  --avatar-dur: 320ms;
+  --avatar-scale: 1.05;
+  --avatar-falloff: 0.45;
+  --avatar-ease-in: cubic-bezier(0.22, 1, 0.36, 1);
+  --avatar-ease-out: cubic-bezier(0.34, 3.85, 0.64, 1);
+}
+
+/* Hover-spring transition only — bring your own avatar/chip
+   styling (size, shape, border, stacking, background). */
+.t-avatar {
+  transform-origin: center;
+  /* translateY before scale so scale doesn't amplify the lift offset. */
+  transform:
+    translateY(var(--shift, 0px))
+    scale(var(--scale-active, 1));
+  transition: transform var(--avatar-dur) var(--avatar-ease-in);
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-avatar { transition: none !important; transform: none !important; }
+}
+/* Transitions.dev — Error state shake */
+
+/*
+  Usage:
+    <!-- Apply .t-input-wrap to your wrapper, .t-input to the
+         element that should shake (your input field, its
+         bordered wrapper — whatever owns the visible border),
+         and .t-error-msg to the message you want to reveal.
+         Bring your own sizing, padding, border colors, and
+         typography. -->
+    <div class="t-input-wrap">
+      <div class="t-input">
+        <input type="text">
+      </div>
+      <p class="t-error-msg">Please enter a valid email.</p>
+    </div>
+
+  Trigger:
+    - Add `.is-error` to .t-input-wrap and .t-input. Your
+      own border-color rules drive the visible color; this
+      stylesheet only owns the tween.
+    - Restart the shake by removing `.is-shaking` from
+      .t-input, forcing a reflow, then re-adding it.
+    - Optional: after --revert-hold ms, drop both
+      `.is-error` classes so border + message fade back
+      to neutral over --revert-dur.
+
+  Per-segment ease: each keyframe stop carries its own
+  animation-timing-function so each leg follows the Figma
+  cubic-bezier curve independently.
+*/
+
+:root {
+  --shake-distance: 6px;
+  --shake-overshoot: 4px;
+  --shake-dur-a: 80ms;
+  --shake-dur-b: 60ms;
+  --shake-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --revert-hold: 3000ms;
+  --revert-dur: 280ms;
+}
+
+/* Border-color tween. Define your input's default / focused
+   / error border-color in your own component CSS — this rule
+   only owns the interpolation. Use a constant border-width
+   across states so the tween never shifts inner content. */
+.t-input {
+  transition: border-color 150ms ease-out;
+  will-change: transform;
+}
+.t-input.is-error {
+  /* Error border auto-reverts on the hold timer, so the
+     fade-out uses the slower revert duration (matches the
+     message fade). */
+  transition: border-color var(--revert-dur, 280ms) ease-out;
+}
+
+/* Error message reveal. Visibility is delayed by --revert-dur
+   on hide so the message stays painted for the full opacity
+   fade-out. Entering .is-error drops the delay to 0 so the
+   message becomes visible immediately. */
+.t-error-msg {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity    var(--revert-dur, 280ms) ease-out,
+    visibility 0s linear var(--revert-dur, 280ms);
+}
+.t-input-wrap.is-error .t-error-msg {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity    var(--revert-dur, 280ms) ease-out,
+    visibility 0s linear 0s;
+}
+
+/* Multi-segment keyframe with per-stop easing so each leg
+   of the shake follows its own cubic-bezier independently.
+   %-stops are cumulative durations as a fraction of the
+   total (80, 60, 80, 60 = 280ms): 28.57%, 57.14%, 78.57%,
+   100%. Recompute if any segment duration changes. */
+.t-input.is-shaking {
+  animation: t-input-shake calc(
+      var(--shake-dur-a) * 2 + var(--shake-dur-b) * 2
+    ) linear;
+}
+@keyframes t-input-shake {
+  0%      { transform: translateX(0);                                 animation-timing-function: var(--shake-ease); }
+  28.57%  { transform: translateX(var(--shake-distance));             animation-timing-function: var(--shake-ease); }
+  57.14%  { transform: translateX(calc(var(--shake-distance) * -1)); animation-timing-function: var(--shake-ease); }
+  78.57%  { transform: translateX(var(--shake-overshoot));            animation-timing-function: var(--shake-ease); }
+  100%    { transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-input { animation: none !important; transform: none !important; }
+}/* Transitions.dev — Success check */
+
+/*
+  Usage:
+    <!-- Wrap your icon (SVG, image, anything) in .t-success-check.
+         The wrapper drives fade + rotate + blur + Y-bob; if your
+         icon is an SVG <path>, it gets the stroke-draw animation.
+         Bring your own icon size / colors. -->
+    <span class="t-success-check" data-state="out" aria-hidden="true">
+      <svg viewBox="0 0 48 48" fill="none">
+        <!-- your icon path(s) here -->
+      </svg>
+    </span>
+
+  Trigger:
+    - Cold load is data-state="out" (opacity 0; no animation).
+    - Show: set data-state="in" (fade + rotate + blur + Y-bob
+      + path draw run in parallel).
+
+  Snippet covers the appear transition only — bring your own
+  hide behavior (e.g. unmount, opacity:0, or a custom exit).
+*/
+
+:root {
+  --check-opacity-dur: 550ms;
+  --check-rotate-dur: 550ms;
+  --check-rotate-from: 80deg;
+  --check-bob-dur: 450ms;
+  --check-y-amount: 40px;
+  --check-blur-dur: 500ms;
+  --check-blur-from: 10px;
+  --check-path-dur: 550ms;
+  --check-path-delay: 80ms;
+  --check-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --check-ease-opacity: cubic-bezier(0.22, 1, 0.36, 1);
+  --check-ease-rotate: cubic-bezier(0.22, 1, 0.36, 1);
+  --check-ease-bob: cubic-bezier(0.34, 1.35, 0.64, 1);
+  --check-ease-path: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Wrapper drives the appear animation; it doesn't own any
+   sizing or color so you can drop in any icon. */
+.t-success-check {
+  display: inline-block;
+  transform-origin: center;
+  opacity: 0;
+  will-change: transform, opacity, filter;
+}
+/* overflow: visible keeps the stroke from clipping while it
+   draws; display: block kills the inline whitespace under SVGs. */
+.t-success-check svg { display: block; overflow: visible; }
+/* Stroke-draw setup. Replace 20 with the result of
+   path.getTotalLength() for your path; round caps mean any
+   sub-pixel overshoot is invisible. */
+.t-success-check svg path {
+  stroke-dasharray: 20;
+  stroke-dashoffset: 20;
+}
+
+.t-success-check[data-state="in"] {
+  animation:
+    t-check-fade   var(--check-opacity-dur) var(--check-ease-opacity) forwards,
+    t-check-rotate var(--check-rotate-dur)  var(--check-ease-rotate)  forwards,
+    t-check-blur   var(--check-blur-dur)    var(--check-ease-out)     forwards,
+    t-check-bob    var(--check-bob-dur)     var(--check-ease-bob)     forwards;
+}
+.t-success-check[data-state="in"] svg path {
+  animation: t-check-draw var(--check-path-dur) var(--check-ease-path) var(--check-path-delay, 0ms) forwards;
+}
+
+@keyframes t-check-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes t-check-rotate {
+  from { transform: rotate(var(--check-rotate-from)); }
+  to   { transform: rotate(0deg); }
+}
+@keyframes t-check-blur {
+  from { filter: blur(var(--check-blur-from)); }
+  to   { filter: blur(0); }
+}
+@keyframes t-check-bob {
+  from { translate: 0 var(--check-y-amount); }
+  to   { translate: 0 0; }
+}
+@keyframes t-check-draw { to { stroke-dashoffset: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .t-success-check { animation: none !important; opacity: 1; }
+  .t-success-check svg path { animation: none !important; stroke-dashoffset: 0 !important; }
+}
+
+/* Transitions.dev — Texts reveal */
+
+/*
+  Usage:
+    <div class="t-stagger">
+      <strong class="t-stagger-line t-stagger-line--1">…</strong>
+      <span class="t-stagger-line t-stagger-line--2">…</span>
+    </div>
+
+  State:
+    - Add `.is-shown` to play the staggered entrance.
+    - Add `.is-hiding` (and remove `.is-shown`) to fade
+      out in place over a short 200ms — independent of the
+      entrance timing so the exit doesn't replay the stagger.
+
+  Add more lines by adding `.t-stagger-line--N` with
+  `transition-delay: calc(var(--stagger-stagger) * (N - 1))`.
+*/
+
+:root {
+  --stagger-dur: 600ms;
+  --stagger-distance: 12px;
+  --stagger-stagger: 40ms;
+  --stagger-blur: 3px;
+  --stagger-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Lines start translated down + blurred + invisible; .is-shown
+   on the parent flips them to their resting state. The second
+   line's transition-delay holds it back by --stagger-stagger
+   so the eye lands on the headline first. */
+.t-stagger-line {
+  display: block;
+  opacity: 0;
+  transform: translateY(var(--stagger-distance));
+  filter: blur(var(--stagger-blur));
+  transition:
+    opacity   var(--stagger-dur) var(--stagger-ease),
+    transform var(--stagger-dur) var(--stagger-ease),
+    filter    var(--stagger-dur) var(--stagger-ease);
+  will-change: transform, opacity, filter;
+}
+.t-stagger-line--2 { transition-delay: var(--stagger-stagger); }
+
+.t-stagger.is-shown .t-stagger-line {
+  opacity: 1;
+  transform: translateY(0);
+  filter: blur(0);
+}
+/* Exit decouples from the stagger: same fade for every line,
+   no Y return, no blur — so the disappearance reads as a
+   single quiet fade instead of a reverse reveal. */
+.t-stagger.is-hiding .t-stagger-line {
+  opacity: 0;
+  transform: translateY(0);
+  filter: blur(0);
+  transition:
+    opacity 200ms ease,
+    transform 0s linear,
+    filter 0s linear;
+  transition-delay: 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-stagger-line { transition: none !important; }
+}
+/* Transitions.dev — Skeleton loader and reveal */
+
+/*
+  Usage:
+    <div class="t-skel" data-state="loading">
+      <div class="t-skel-skeleton is-pulsing">…</div>
+      <div class="t-skel-content">…</div>
+    </div>
+
+  State:
+    - Mount with `.is-pulsing` on the skeleton so it pulses
+      --pulse-count times.
+    - When data arrives, add `.is-revealed` to .t-skel — the
+      skeleton fades out + blurs and the content fades in +
+      un-blurs over --reveal-dur.
+    - To replay the loading state without animating the
+      reverse: add `.is-resetting` to .t-skel, remove
+      `.is-revealed`, force a reflow, then drop `.is-resetting`.
+
+  Bring your own avatar / text / wrapping. The skeleton stays
+  in the same flex slot as the content so the swap is
+  layout-free.
+*/
+
+:root {
+  --pulse-dur: 1000ms;
+  --pulse-count: 1;
+  --pulse-min: 0.5;
+  --reveal-dur: 400ms;
+  --reveal-blur: 2px;
+  --reveal-ease: ease-in-out;
+}
+
+/* The wrap stacks two layers on the same coordinates. The
+   skeleton owns the cold pulse + the fade-out side of the
+   reveal; the content owns the fade-in side. They share the
+   same duration / ease so the swap reads as one motion. */
+.t-skel { position: relative; }
+.t-skel-skeleton,
+.t-skel-content {
+  position: absolute;
+  inset: 0;
+}
+
+.t-skel-skeleton {
+  z-index: 1;
+  opacity: 1;
+  filter: blur(0);
+  transition:
+    opacity var(--reveal-dur) var(--reveal-ease),
+    filter  var(--reveal-dur) var(--reveal-ease);
+}
+.t-skel-content {
+  z-index: 2;
+  opacity: 0;
+  filter: blur(var(--reveal-blur));
+  transition:
+    opacity var(--reveal-dur) var(--reveal-ease),
+    filter  var(--reveal-dur) var(--reveal-ease);
+}
+.t-skel.is-revealed .t-skel-skeleton {
+  opacity: 0;
+  filter: blur(var(--reveal-blur));
+}
+.t-skel.is-revealed .t-skel-content {
+  opacity: 1;
+  filter: blur(0);
+}
+/* Snap-back when replaying: kill transitions so the reverse
+   (revealed → skeleton) is instant. Drop `.is-resetting`
+   after a forced reflow and the next reveal animates again. */
+.t-skel.is-resetting .t-skel-skeleton,
+.t-skel.is-resetting .t-skel-content {
+  transition: none !important;
+}
+
+/* Pulse: place the animation on the bar/avatar children, not
+   on the skeleton itself, so the skeleton's opacity / filter
+   stay free for the cross-fade transition above. */
+.t-skel-skeleton.is-pulsing > * {
+  animation: t-skel-pulse var(--pulse-dur) ease-in-out var(--pulse-count);
+}
+@keyframes t-skel-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: var(--pulse-min); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-skel-skeleton, .t-skel-content {
+    transition: none !important;
+  }
+  .t-skel-skeleton.is-pulsing > * { animation: none !important; }
+}/* Transitions.dev — Tabs sliding */
+
+/*
+  Usage:
+    <div class="t-tabs" role="tablist">
+      <span class="t-tabs-pill" aria-hidden="true"></span>
+      <button class="t-tab" role="tab" aria-selected="true">Plan</button>
+      <button class="t-tab" role="tab" aria-selected="false">Debug</button>
+      <button class="t-tab" role="tab" aria-selected="false">Ask</button>
+    </div>
+
+  Wire-up:
+    On click, flip aria-selected on each tab and write the
+    active tab's offsetLeft / offsetWidth onto the pill:
+      pill.style.transform = `translateX(${tab.offsetLeft}px)`;
+      pill.style.width     = `${tab.offsetWidth}px`;
+    On first paint and resize, write the same values WITHOUT
+    a transition (suspend with `transition: none`, force a
+    reflow, restore) so the pill snaps to position before any
+    animation can run.
+*/
+
+:root {
+  --tabs-dur: 200ms;
+  --tabs-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --tabs-text-muted: rgba(239, 239, 239, 0.5);
+  --tabs-text-active: #efefef;
+  --tabs-bar-bg: #1c1c1c;
+  --tabs-pill-bg: #494949;
+}
+
+/* The bar is just a flex container with padding for the pill
+   to sit inside. Tabs sit on z-index: 1, the pill on z-index: 0,
+   so labels read above the pill background. */
+.t-tabs {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 48px;
+  background: var(--tabs-bar-bg);
+}
+.t-tab {
+  position: relative;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  height: 30px;
+  padding: 4px 12px;
+  color: var(--tabs-text-muted);
+  cursor: pointer;
+  border-radius: 48px;
+  z-index: 1;
+  transition: color var(--tabs-dur) var(--tabs-ease);
+}
+.t-tab:not([aria-selected="true"]):hover,
+.t-tab[aria-selected="true"] {
+  color: var(--tabs-text-active);
+}
+
+/* The pill: width + transform are written inline by JS so
+   the transition tweens between the previous and next
+   measured positions. */
+.t-tabs-pill {
+  position: absolute;
+  top: 3px;
+  left: 0;
+  height: 30px;
+  width: 0;
+  background: var(--tabs-pill-bg);
+  border-radius: 48px;
+  transform: translateX(0);
+  transition:
+    transform var(--tabs-dur) var(--tabs-ease),
+    width     var(--tabs-dur) var(--tabs-ease);
+  will-change: transform, width;
+  z-index: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-tabs-pill, .t-tab { transition: none !important; }
+}
+/* Transitions.dev — Tooltip open/close */
+
+/*
+  Usage:
+    <span class="t-tt-wrap">
+      <button class="t-tt-trigger" aria-describedby="tt-1">…</button>
+      <span class="t-tt" id="tt-1" role="tooltip">Tooltip text</span>
+    </span>
+
+  Pure CSS — no JS. The wrap (not the trigger) is the hover
+  target so the pointer can drift onto the tooltip without
+  flicker. transition-delay only applies in the hover/focus
+  rule, so leaving snaps it to 0 and the disappear plays
+  immediately. Trigger styling is yours; only the tooltip
+  positioning + its transition live here.
+*/
+
+:root {
+  --tt-in-dur: 150ms;
+  --tt-out-dur: 50ms;
+  --tt-scale: 0.98;
+  --tt-delay: 80ms;
+  --tt-in-ease: ease-out;
+  --tt-out-ease: ease-out;
+  --tt-bg: #222222;
+  --tt-fg: #f0f0f0;
+}
+
+.t-tt-wrap {
+  position: relative;
+  display: inline-block;
+}
+.t-tt {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translate(-50%, 0) scale(var(--tt-scale));
+  transform-origin: 50% 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--tt-bg);
+  color: var(--tt-fg);
+  white-space: nowrap;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.06),
+    0 2px 6px 0 rgba(0, 0, 0, 0.05),
+    0 4px 42px 0 rgba(0, 0, 0, 0.06);
+  opacity: 0;
+  pointer-events: none;
+  /* Default rule controls the LEAVE state. transition-delay
+     stays unset so leaving plays without delay. */
+  transition:
+    opacity   var(--tt-out-dur) var(--tt-out-ease),
+    transform var(--tt-out-dur) var(--tt-out-ease);
+}
+/* The 50ms delay belongs ONLY to the hover rule so leaving
+   the trigger snaps the delay back to 0 and the disappear
+   plays immediately. */
+.t-tt-wrap:hover .t-tt,
+.t-tt-trigger:focus-visible + .t-tt {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+  transition-duration: var(--tt-in-dur);
+  transition-timing-function: var(--tt-in-ease);
+  transition-delay: var(--tt-delay);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-tt { transition: none !important; }
+}
+/* Transitions.dev — Panel reveal */
+
+/*
+  Usage:
+    <div class="t-panel-slide" data-open="false">
+      <!-- your panel contents -->
+    </div>
+
+  The panel slides on the Y axis, fades opacity 0 ↔ 1,
+  and cross-blurs --panel-blur ↔ 0, all on the same
+  duration / ease so a shorter travel (e.g. 50% of the
+  panel height) still reads as a full open / close.
+  Wrap it in your own container with `overflow: hidden`
+  if you want the closed state fully clipped. Set
+  --panel-translate-y to the travel distance (e.g. half
+  the panel's own height).
+*/
+
+:root {
+  --panel-open-dur: 400ms;
+  --panel-close-dur: 350ms;
+  --panel-translate-y: calc(187px * 0.5);
+  --panel-blur: 2px;
+  --panel-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.t-panel-slide {
+  transform: translateY(var(--panel-translate-y));
+  opacity: 0;
+  filter: blur(var(--panel-blur));
+  pointer-events: none;
+  transition:
+    transform var(--panel-close-dur) var(--panel-ease),
+    opacity   var(--panel-close-dur) var(--panel-ease),
+    filter    var(--panel-close-dur) var(--panel-ease);
+  will-change: transform, opacity, filter;
+}
+.t-panel-slide[data-open="true"] {
+  transform: translateY(0);
+  opacity: 1;
+  filter: blur(0);
+  pointer-events: auto;
+  transition:
+    transform var(--panel-open-dur) var(--panel-ease),
+    opacity   var(--panel-open-dur) var(--panel-ease),
+    filter    var(--panel-open-dur) var(--panel-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-panel-slide { transition: none !important; }
 }

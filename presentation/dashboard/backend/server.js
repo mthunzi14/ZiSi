@@ -60,7 +60,7 @@ app.post('/api/control/reset', (req, res) => {
         const pythonCmd = process.platform === 'win32' ? 'C:\\Python313\\python.exe' : '/root/ZiSi/venv/bin/python';
 
         // 3. Execute clean_slate.py with --nuke and --archive flags
-        const cmd = `${pythonCmd} miscellaneous/clean_slate.py --archive --force --balance 100 --nuke`;
+        const cmd = `${pythonCmd} miscellaneous/clean_slate.py --archive --force --balance 50 --nuke`;
         console.log(`[CONTROL] Running reset: ${cmd}`);
         
         exec(cmd, { cwd: BOT_ROOT }, (error, stdout, stderr) => {

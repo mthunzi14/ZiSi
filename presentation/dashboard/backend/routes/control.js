@@ -102,7 +102,8 @@ router.post('/reset', (req, res) => {
   try {
     import('child_process').then(({ exec }) => {
       const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-      exec(`${pythonCmd} clean_slate.py --archive --force --balance 100`, { cwd: BOT_ROOT }, (error, stdout, stderr) => {
+      const startingBalance = req.body && typeof req.body.balance === 'number' ? req.body.balance : 50;
+      exec(`${pythonCmd} clean_slate.py --archive --force --balance ${startingBalance}`, { cwd: BOT_ROOT }, (error, stdout, stderr) => {
         if (error) {
           console.error(`[CONTROL] Reset error: ${error}`);
           return res.status(500).json({ error: error.message, details: stderr });

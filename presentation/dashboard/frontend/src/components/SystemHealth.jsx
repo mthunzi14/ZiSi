@@ -44,8 +44,8 @@ function SecHead({ title, color }) {
   return (
     <div style={{
       fontSize: 8, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase',
-      color: color || '#c59b27', marginTop: 10, marginBottom: 3, paddingBottom: 3,
-      borderBottom: `1px solid ${color || '#c59b27'}33`,
+      color: color || '#00cbd6', marginTop: 10, marginBottom: 3, paddingBottom: 3,
+      borderBottom: `1px solid ${color || '#00cbd6'}33`,
     }}>{title}</div>
   );
 }
@@ -137,7 +137,7 @@ export default function SystemHealth({ state = {}, positions = {}, candles = [],
             color={parseFloat(pf) >= 1.5 || pf === '∞' ? '#10b981' : parseFloat(pf) >= 1 ? '#f97316' : '#ef4444'} />
         </div>
 
-        <SecHead title="Infrastructure" color="#c59b27" />
+        <SecHead title="Infrastructure" color="#00cbd6" />
         <DataRow label="Engine heartbeat"  value={heartbeat}              ok={isAlive}   warn={isStale}  off={isOffline} />
         <DataRow label="Session uptime"    value={uptime}                 ok={!!state.running} warn={false} off={!state.running} />
         <DataRow label="Open positions"    value={`${active.length} / 6`} ok={active.length <= 3} warn={active.length > 3 && active.length < 6} off={active.length >= 6} />

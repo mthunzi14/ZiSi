@@ -46,7 +46,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
 
   // Archive & Reset Clean Slate
   const handleResetSession = async () => {
-    if (!window.confirm("CAUTION: This will archive your current trading history and reset ZiSi to a clean $100 starting balance. Do you want to proceed?")) {
+    if (!window.confirm("CAUTION: This will archive your current trading history and reset ZiSi to a clean $50 starting balance. Do you want to proceed?")) {
       return;
     }
     setIsResetting(true);
@@ -56,7 +56,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
       const data = await res.json();
       if (res.ok) {
         setResetOutput(data.output || "Database successfully cleared and archived.");
-        alert("Clean reset executed successfully! All trading history archived. Starting balance is now $100.00.");
+        alert("Clean reset executed successfully! All trading history archived. Starting balance is now $50.00.");
         window.location.reload(); // Refresh page to reload state
       } else {
         setResetOutput("Error executing reset: " + (data.error || "Unknown error"));
@@ -113,7 +113,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
       <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '32px' }}>
         
         {/* LEFT CARD: Operations Panel */}
-        <div className="card shadow-md stagger-children" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div className="card shadow-md stagger-children border-beam-card" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
           <div>
             <h3 style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: '18px', color: 'var(--color-obsidian)', marginBottom: '4px' }}>
               Engine Operations Deck
@@ -156,7 +156,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
             <button 
               onClick={handleTogglePause}
               disabled={isTogglingPause}
-              className="btn-primary flex-1 py-3 text-[14px]"
+              className="btn-primary flex-1 py-3 text-[14px] metal-fx"
               style={{ 
                 height: '46px',
                 borderRadius: '12px', 
@@ -187,7 +187,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
             <button 
               onClick={handleResetSession}
               disabled={isResetting}
-              className="btn-danger flex-1 py-3 text-[14px]"
+              className="btn-danger flex-1 py-3 text-[14px] metal-fx"
               style={{ 
                 height: '46px',
                 borderRadius: '12px',
@@ -217,7 +217,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
         </div>
 
         {/* RIGHT CARD: Configurations Control */}
-        <div className="card shadow-md stagger-children" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div className="card shadow-md stagger-children border-beam-card" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
           <div>
             <h3 style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: '18px', color: 'var(--color-obsidian)', marginBottom: '4px' }}>
               Core Parameters Deck
@@ -265,7 +265,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
               />
             </div>
 
-            <button type="submit" className="btn-ghost" style={{ height: '40px', borderRadius: '12px', fontSize: '13px', fontWeight: 'bold' }}>
+            <button type="submit" className="btn-ghost metal-fx" style={{ height: '40px', borderRadius: '12px', fontSize: '13px', fontWeight: 'bold' }}>
               💾 Apply Parameters to Engine
             </button>
 
@@ -279,7 +279,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
       </div>
 
       {/* FULL WIDTH CARD: Sandbox Manual Signal Injector */}
-      <div className="card shadow-md">
+      <div className="card shadow-md border-beam-card">
         <div style={{ marginBottom: '24px' }}>
           <h3 style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: '18px', color: 'var(--color-obsidian)', marginBottom: '4px' }}>
             Simulated Sandbox Ticker
@@ -311,6 +311,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
               <button 
                 type="button"
                 onClick={() => setDirection('YES')}
+                className="metal-fx"
                 style={{ 
                   flex: 1, 
                   border: 'none', 
@@ -327,6 +328,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
               <button 
                 type="button"
                 onClick={() => setDirection('NO')}
+                className="metal-fx"
                 style={{ 
                   flex: 1, 
                   border: 'none', 
@@ -359,7 +361,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
           <button 
             type="submit" 
             disabled={isPlacingTrade}
-            className="btn-primary" 
+            className="btn-primary metal-fx" 
             style={{ 
               height: '40px', 
               borderRadius: '12px', 
