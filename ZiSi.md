@@ -1,6 +1,6 @@
-# ZiSi Bot (zc) — System Documentation & Operator's Manual
+# ZiSi Bot — System Documentation & Operator's Manual
 
-This manual provides comprehensive documentation on the architecture, operation, deployment, and troubleshooting of the **ZiSi Bot (zc)**. It is written to serve as a clear-cut reference for humans, AI tools, and developers.
+This manual provides comprehensive documentation on the architecture, operation, deployment, and troubleshooting of the **ZiSi Bot**. It is written to serve as a clear-cut reference for humans, AI tools, and developers.
 
 ---
 
@@ -21,8 +21,8 @@ graph TD
     end
 
     subgraph Laptop / Local environment
-        SSH_Tunnel[SSH Port Forwarding: 5001 -> 5000]
-        Browser[Web Browser: http://localhost:5001]
+        SSH_Tunnel[SSH Port Forwarding: 9090 -> 5000]
+        Browser[Web Browser: http://localhost:9090]
     end
 
     Binance_WS[Binance Spot WS] --> P_Bot
@@ -45,6 +45,7 @@ graph TD
 * `infrastructure/state/state_manager.py`: Authoritative state holder. Manages balance, starting balance, and writes updates atomically.
 * `presentation/dashboard/`: Contains the React frontend and Node.js backend.
 * `miscellaneous/clean_slate.py`: Reset script to archive historical logs and initialize a fresh starting balance.
+* `tools/backup_and_rotate_logs.py`: Local backup utility to archive trades/logs and rotate VPS logs.
 
 ---
 
@@ -65,13 +66,13 @@ A common issue is the "stray paper-trading daemon" running locally on your lapto
    ```
 
 ### Connecting to the VPS Dashboard:
-To avoid port conflicts, always forward the VPS dashboard port 5000 to local port **5001** on your laptop:
+To avoid port conflicts, always forward the VPS dashboard port 5000 to local port **9090** on your laptop:
 ```bash
-ssh -L 5001:localhost:5000 root@204.168.222.48
+ssh -L 9090:localhost:5000 root@204.168.222.48
 ```
 Then, open your browser and navigate to:
 ```
-http://localhost:5001
+http://localhost:9090
 ```
 This guarantees you are viewing the live VPS dashboard data.
 
@@ -162,3 +163,28 @@ If you need to archive old database files and reset the balance to $50:
    ```bash
    pm2 restart zisi-bot
    ```
+
+---
+
+## 📥 6. Local Backup & VPS Log Rotation
+
+To keep the VPS clean and prevent its memory or disk space from filling up with massive logs, ZiSi features an automated local log archiver and remote clear route.
+
+### Architecture:
+1. **VPS Clear Route:** The dashboard backend exposes a `POST /api/bot-logs/clear` endpoint. When triggered, it truncates all PM2 and console log files back to 0 bytes on the VPS.
+2. **Local Archiver Script:** `tools/backup_and_rotate_logs.py` runs on your local Windows machine. It pulls the trades and logs, appends them to local history, and then clears the VPS logs.
+
+### How to Run:
+Every few days or when dashboard logs grow large:
+1. Make sure your SSH tunnel is active on port 9090 (pointing to VPS port 5000):
+   ```bash
+   ssh -L 9090:localhost:5000 root@204.168.222.48
+   ```
+2. Open PowerShell locally on your laptop and run:
+   ```powershell
+   python tools/backup_and_rotate_logs.py
+   ```
+
+### Output Paths on Local Laptop:
+* **Trade History:** Safely appended and deduplicated in `archive/local_vps_trades_archive.json`.
+* **Console Logs:** Appended to `archive/local_vps_console_history.log`.
