@@ -199,8 +199,8 @@ def _validate(config: dict) -> bool:
 
     # Balance check
     balance = config.get("ACCOUNT_BALANCE", 0)
-    if not isinstance(balance, (int, float)) or balance <= 0:
-        errors.append("ACCOUNT_BALANCE must be > 0")
+    if not isinstance(balance, (int, float)):
+        errors.append("ACCOUNT_BALANCE must be a number")
 
     # Mode check
     if config.get("BOT_MODE") not in ("paper_trading", "live_trading"):

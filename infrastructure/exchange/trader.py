@@ -945,12 +945,19 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         elif not stop_loss or stop_loss <= 0:
             stop_loss = round(entry_price * cfg.get("POSITION_STOP_LOSS_MULTIPLIER", 0.50), 4)
 
+        # Evaluate expired status
+        _expiry_ts = pos.get("expiry_ts")
+        if is_updown and _expiry_ts:
+            is_expired = now.timestamp() >= float(_expiry_ts)
+        else:
+            is_expired = age_minutes >= effective_max_minutes
+
         # ── Real-world resolution for expired UPDOWN positions ──────────────────
         # Replicates Polymarket exactly: fetch the Binance candle that closed at
         # expiry_ts, compare close vs open, settle at 99¢ (win) or 1¢ (loss).
         # This eliminates the CLOB polling lag that was catching partial prices.
         _binance_resolved = False
-        if is_updown and age_minutes >= effective_max_minutes:
+        if is_updown and is_expired:
             _br = _resolve_updown_by_binance_candle(pos)
             if _br is not None:
                 exit_price = _br
@@ -1030,7 +1037,6 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
                 log.info("[LIVE-EXIT] Using stored price %.4f for %s (live fetch unavailable)", exit_price, order_id)
 
         # Evaluate exit triggers
-        is_expired = age_minutes >= effective_max_minutes
         is_target_hit = exit_price >= target_price
         is_stop_hit = exit_price <= stop_loss if not _is_short_tf else False
         is_time_decay_hit = is_updown and not _is_short_tf and not is_expired and age_minutes >= 0.7 * effective_max_minutes

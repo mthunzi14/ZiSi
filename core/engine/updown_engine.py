@@ -1264,6 +1264,10 @@ class UpDownEngine:
         try:
             for offset in offsets:
                 offset_ts = start_ts + (offset * interval)
+                if offset_ts + interval <= now_ts:
+                    # Skip expired markets to prevent calling _resolve_l2_prices on them
+                    # which always fails and triggers the L2 circuit breaker backoff.
+                    continue
                 slug = f"{coin_lower}-updown-{dur_min}m-{offset_ts}"
 
                 async with session.get(gamma_url, params={"slug": slug}, timeout=5) as r:
