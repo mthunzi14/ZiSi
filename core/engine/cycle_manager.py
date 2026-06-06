@@ -219,6 +219,9 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             open_price = float(klines[-1][1])
             pct_move = (pyth_price - open_price) / open_price
             
+            import infrastructure.state.state_manager as state_mgr
+            open_positions = state_mgr.get_open_positions()
+            
             if t_minus == 2:
                 _lat_threshold = 0.008  # T-2s sweeper: need 0.8%+ move for near-certainty
             elif t_minus == 5:

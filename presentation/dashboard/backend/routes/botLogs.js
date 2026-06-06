@@ -51,8 +51,16 @@ function readLastLines(filePath, maxLines) {
 router.get('/', (req, res) => {
   const n = Math.min(parseInt(req.query.lines || '100', 10), 500);
   const filter = (req.query.filter || '').toLowerCase();
+  const fileParam = req.query.file;
 
-  for (const logPath of LOG_CANDIDATES) {
+  let candidates = LOG_CANDIDATES;
+  if (fileParam === 'positions') {
+    candidates = [path.join(BOT_ROOT, 'infrastructure', 'exchange', 'positions_state.json')];
+  } else if (fileParam === 'account') {
+    candidates = [path.join(BOT_ROOT, 'account_state.json')];
+  }
+
+  for (const logPath of candidates) {
     if (!fs.existsSync(logPath)) continue;
     try {
       let lines = readLastLines(logPath, n);

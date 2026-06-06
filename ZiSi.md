@@ -188,3 +188,52 @@ Every few days or when dashboard logs grow large:
 ### Output Paths on Local Laptop:
 * **Trade History:** Safely appended and deduplicated in `archive/local_vps_trades_archive.json`.
 * **Console Logs:** Appended to `archive/local_vps_console_history.log`.
+
+---
+
+## 🚀 7. Operator Cheat Sheet: One-Liner Commands
+
+### A. Deployment After Changes (With Balance Clean Slate to $50)
+If you want to pull the latest git commits, reset the balance to $50, clear open/closed positions, and restart everything:
+```bash
+cd /root/ZiSi && git pull origin main && python3 miscellaneous/clean_slate.py --balance 50.0 --force && pm2 restart zisi-bot && pm2 restart zisi-dashboard
+```
+
+### B. Deployment After Changes (No Clean Slate / Keep Current Balance & Trades)
+If you want to pull the latest git commits and restart the bot/dashboard without losing your current balance or active trades:
+```bash
+cd /root/ZiSi && git pull origin main && pm2 restart zisi-bot && pm2 restart zisi-dashboard
+```
+
+### C. Local Backup & Log Truncation
+Run this on your local laptop to pull logs/trades and empty the VPS log files:
+```powershell
+python tools/backup_and_rotate_logs.py
+```
+
+### D. Accessing Logs, State, & Controls via API (For AI Tools or Scripts)
+The dashboard exposes the following endpoints (available over the SSH tunnel on `http://localhost:9090` or locally on the VPS on `http://localhost:5000`):
+
+#### 📋 Logs & Files
+* **GET `/api/bot-logs?lines=100&file=positions`**: Fetches the last $N$ lines of log output. If `file` is set to `positions` or `account`, it bypasses logs and reads raw file contents from `positions_state.json` or `account_state.json`.
+* **POST `/api/bot-logs/clear`**: Truncates all console and PM2 log files on the VPS to 0 bytes to prevent disk fullness.
+
+#### 📈 Positions & Metrics
+* **GET `/api/positions`**: Fetches all active and closed positions, along with a summary of win rates and total PnL.
+* **GET `/api/positions/active`**: Fetches only active/open positions with enriched live CLOB pricing.
+* **GET `/api/positions/closed`**: Fetches all closed positions.
+* **GET `/api/health`**: Comprehensive health status containing Pyth price feeds, account balance, win/loss stats, regime detection state, and ML cycle progress.
+* **GET `/api/metrics`**: Returns bot performance metrics.
+* **GET `/api/equity`**: Returns balance history for graphing equity curves.
+
+#### 🕹️ Control & Reset
+* **POST `/api/control/reset`**: Runs a clean slate reset on the VPS. Body format: `{"balance": 50}`. (Note: The user should restart `zisi-bot` using PM2 afterwards to ensure in-memory state matches disk state).
+* **GET `/api/control/status`**: Returns the current running state (`running` or `paused`).
+* **POST `/api/control/pause`**: Pauses the bot scanning loop.
+* **POST `/api/control/resume`**: Resumes the bot scanning loop.
+* **GET `/api/control/mules`**: Fetches enabled/disabled statuses of the trading accounts (mule1 = PBOT6, mule2 = WALLET2).
+* **POST `/api/control/mule/:id/:action`**: Enables or disables a specific mule.
+  * `:id` can be `mule1` or `mule2`.
+  * `:action` can be `enable` or `disable`.
+
+
