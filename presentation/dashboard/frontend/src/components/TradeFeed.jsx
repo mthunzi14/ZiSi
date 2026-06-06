@@ -1,5 +1,5 @@
 // TradeFeed.jsx — tabbed trade ledger: Open Positions + Trade History
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import SpotlightMask from './common/SpotlightMask';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -1141,7 +1141,13 @@ function SrcPill({ src, active, count, pnl, onClick }) {
 export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {} }) {
   const [tab, setTab] = useState('open');
   const [srcFilter, setSrcFilter] = useState('ALL');
+  const [limit, setLimit] = useState(25);
   const [engineStatus, setEngineStatus] = useState({ status: 'SCANNING', detail: '' });
+
+  // Reset limit to 25 when the filter source or tab changes
+  useEffect(() => {
+    setLimit(25);
+  }, [srcFilter, tab]);
 
   useEffect(() => {
     const poll = () =>
@@ -1152,22 +1158,33 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
   }, []);
 
   const active = positions?.active || [];
-  const closed = [...(positions?.closed || [])].sort(
-    (a, b) => new Date(b.exit_time || 0) - new Date(a.exit_time || 0)
-  );
+  
+  const closed = useMemo(() => {
+    return [...(positions?.closed || [])].sort(
+      (a, b) => new Date(b.exit_time || 0) - new Date(a.exit_time || 0)
+    );
+  }, [positions?.closed]);
 
   // Total unrealized P&L across all open positions
   const totalUnrPnl = active.reduce((s, p) => s + parseFloat(p.unrealized_pnl || 0), 0);
   const totalUnrColor = totalUnrPnl > 0 ? 'var(--color-profit)' : totalUnrPnl < 0 ? 'var(--color-loss)' : 'var(--color-text-muted)';
 
   // Per-source counts + P&L for filter pills
-  const srcStats = SRC_FILTERS.slice(1).map(src => {
-    const filtered = filterBySrc(closed, src);
-    const pnl = filtered.reduce((s, p) => s + parseFloat(p.realized_pnl ?? 0), 0);
-    return { src, count: filtered.length, pnl: filtered.length > 0 ? pnl : null };
-  });
+  const srcStats = useMemo(() => {
+    return SRC_FILTERS.slice(1).map(src => {
+      const filtered = filterBySrc(closed, src);
+      const pnl = filtered.reduce((s, p) => s + parseFloat(p.realized_pnl ?? 0), 0);
+      return { src, count: filtered.length, pnl: filtered.length > 0 ? pnl : null };
+    });
+  }, [closed]);
 
-  const visibleClosed = filterBySrc(closed, srcFilter);
+  const filteredClosed = useMemo(() => {
+    return filterBySrc(closed, srcFilter);
+  }, [closed, srcFilter]);
+
+  const visibleClosed = useMemo(() => {
+    return filteredClosed.slice(0, limit);
+  }, [filteredClosed, limit]);
 
   return (
     <SpotlightMask>
@@ -1262,7 +1279,34 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
                 ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>
                     {srcFilter === 'ALL' ? 'No closed trades yet' : `No ${srcFilter} trades yet`}
                   </div>
-                : visibleClosed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} />)
+                : (
+                  <>
+                    {visibleClosed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} />)}
+                    {filteredClosed.length > limit && (
+                      <button 
+                        onClick={() => setLimit(prev => prev + 50)}
+                        style={{
+                          width: 'calc(100% - 16px)',
+                          margin: '8px 8px 16px 8px',
+                          padding: '10px',
+                          background: 'rgba(0, 203, 214, 0.05)',
+                          border: '1px dashed rgba(0, 203, 214, 0.25)',
+                          color: 'var(--color-accent)',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          fontWeight: '600',
+                          fontSize: '11px',
+                          textAlign: 'center',
+                          display: 'block',
+                          transition: 'all 200ms ease'
+                        }}
+                        className="load-more-btn"
+                      >
+                        Load More Trades ({filteredClosed.length - limit} remaining...)
+                      </button>
+                    )}
+                  </>
+                )
               }
             </div>
           </>

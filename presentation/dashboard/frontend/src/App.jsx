@@ -406,7 +406,7 @@ export default function App() {
           </section>
 
           <section className="t-page" data-page-id="2">
-            <Analytics state={state} positions={positions} />
+            <Analytics closed={positions.closed} />
           </section>
 
           <section className="t-page" data-page-id="3">

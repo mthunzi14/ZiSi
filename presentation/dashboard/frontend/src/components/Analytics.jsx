@@ -1,4 +1,5 @@
 // Analytics.jsx — Trader-facing performance breakdown (6 panels)
+import { useMemo, memo } from 'react';
 import {
   BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip,
@@ -163,18 +164,18 @@ function CustomBar(props) {
 
 // ── main component ────────────────────────────────────────────────────────────
 
-export default function Analytics({ state = {}, positions = {} }) {
-  const closed = positions.closed || [];
-
-  const assetStats    = buildAssetStats(closed);
-  const exitBreakdown = buildExitBreakdown(closed);
-  const volumeSeries  = buildVolumeSeries(closed);
-  const hourlyPnl     = buildHourlyPnl(closed);
-  const runningEv     = buildRunningEv(closed);
-  const typeStats     = buildTypeStats(closed);
+const Analytics = memo(function Analytics({ closed = [] }) {
+  const assetStats    = useMemo(() => buildAssetStats(closed), [closed]);
+  const exitBreakdown = useMemo(() => buildExitBreakdown(closed), [closed]);
+  const volumeSeries  = useMemo(() => buildVolumeSeries(closed), [closed]);
+  const hourlyPnl     = useMemo(() => buildHourlyPnl(closed), [closed]);
+  const runningEv     = useMemo(() => buildRunningEv(closed), [closed]);
+  const typeStats     = useMemo(() => buildTypeStats(closed), [closed]);
 
   const totalTrades = closed.length;
-  const totalPnl    = Math.round(closed.reduce((s, t) => s + parseFloat(t.realized_pnl || 0), 0) * 100) / 100;
+  const totalPnl    = useMemo(() => {
+    return Math.round(closed.reduce((s, t) => s + parseFloat(t.realized_pnl || 0), 0) * 100) / 100;
+  }, [closed]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }} className="page-fade-enter">
@@ -371,4 +372,6 @@ export default function Analytics({ state = {}, positions = {} }) {
 
     </div>
   );
-}
+});
+
+export default Analytics;
