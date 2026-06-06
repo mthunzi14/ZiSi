@@ -241,33 +241,39 @@ class BinanceWebSocketIngest:
         new_ask = float(tick.get("a", 0.0))
         new_ask_qty = float(tick.get("A", 0.0))
 
+        old_bid = 0.0
+        old_ask = 0.0
+
         async with _market_books_lock:
-            old = _market_books[symbol]
-            old_bid, old_bid_qty = old["bid_price"], old["bid_qty"]
-            old_ask, old_ask_qty = old["ask_price"], old["ask_qty"]
+            old = _market_books.get(symbol)
+            if old:
+                old_bid = old.get("bid_price", 0.0)
+                old_bid_qty = old.get("bid_qty", 0.0)
+                old_ask = old.get("ask_price", 0.0)
+                old_ask_qty = old.get("ask_qty", 0.0)
 
-            if new_bid > old_bid:
-                delta_v_bid = new_bid_qty
-            elif new_bid == old_bid:
-                delta_v_bid = new_bid_qty - old_bid_qty
-            else:
-                delta_v_bid = 0.0
+                if new_bid > old_bid:
+                    delta_v_bid = new_bid_qty
+                elif new_bid == old_bid:
+                    delta_v_bid = new_bid_qty - old_bid_qty
+                else:
+                    delta_v_bid = 0.0
 
-            if new_ask < old_ask:
-                delta_v_ask = new_ask_qty
-            elif new_ask == old_ask:
-                delta_v_ask = new_ask_qty - old_ask_qty
-            else:
-                delta_v_ask = 0.0
+                if new_ask < old_ask:
+                    delta_v_ask = new_ask_qty
+                elif new_ask == old_ask:
+                    delta_v_ask = new_ask_qty - old_ask_qty
+                else:
+                    delta_v_ask = 0.0
 
-            total_volume = delta_v_bid + delta_v_ask
-            ofi = (delta_v_bid - delta_v_ask) / total_volume if total_volume > 0 else 0.0
-            alpha = 0.20
-            old["ofi_value"] = round(alpha * ofi + (1.0 - alpha) * old["ofi_value"], 4)
-            old["bid_price"] = new_bid
-            old["bid_qty"] = new_bid_qty
-            old["ask_price"] = new_ask
-            old["ask_qty"] = new_ask_qty
+                total_volume = delta_v_bid + delta_v_ask
+                ofi = (delta_v_bid - delta_v_ask) / total_volume if total_volume > 0 else 0.0
+                alpha = 0.20
+                old["ofi_value"] = round(alpha * ofi + (1.0 - alpha) * old["ofi_value"], 4)
+                old["bid_price"] = new_bid
+                old["bid_qty"] = new_bid_qty
+                old["ask_price"] = new_ask
+                old["ask_qty"] = new_ask_qty
 
         if new_bid > 0 and old_bid > 0:
             _pct = (new_bid - old_bid) / old_bid
@@ -286,7 +292,9 @@ class BinanceWebSocketIngest:
         now = time.time()
 
         async with _market_books_lock:
-            book = _market_books[symbol]
+            book = _market_books.get(symbol)
+            if not book:
+                return
             book["trades_history"].append((now, delta))
             # Prune > 60s (max window we need)
             cutoff = now - 61.0
