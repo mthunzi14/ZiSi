@@ -1,5 +1,5 @@
-const CACHE = 'zisi-v1';
-const STATIC = ['/', '/index.html', '/manifest.json', '/zisi_desktop_icon.png'];
+const CACHE = 'zisi-v3';
+const STATIC = ['/', '/index.html', '/manifest.json', '/zisi_icon_v3.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(

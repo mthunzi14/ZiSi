@@ -1,18 +1,19 @@
 {
-  "short_name": "ZiSi",
-  "name": "ZiSi Workstation",
+  "short_name": "ZiSi.",
+  "name": "ZiSi Workstation v3",
   "description": "ZiSi Quantitative Trading Dashboard",
   "icons": [
     {
-      "src": "/zisi_desktop_icon.png?v=2",
+      "src": "/zisi_icon_v3.png?v=3",
       "type": "image/png",
       "sizes": "192x192",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
-      "src": "/zisi_desktop_icon.png?v=2",
+      "src": "/zisi_icon_v3.png?v=3",
       "type": "image/png",
-      "sizes": "512x512"
+      "sizes": "512x512",
+      "purpose": "any"
     }
   ],
   "start_url": "/",
