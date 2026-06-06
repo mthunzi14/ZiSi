@@ -617,21 +617,9 @@ class UpDownEngine:
                 _min_edge = max(_min_edge, 0.10)
                 log.info("[FV-15M-FLOOR] %s/15m min_edge floor=0.10 → %.2f", self.asset, _min_edge)
 
-            # FV trend-confirm soft penalty: if both recent closed candles oppose FV
-            # direction, raise the bar — mean reversion against consecutive same-direction
-            # candles is low-probability in trending markets.
-            if len(klines) >= 4:
-                _tc_last_bull = float(klines[-2][4]) > float(klines[-2][1])
-                _tc_prev_bull = float(klines[-3][4]) > float(klines[-3][1])
-                _fv_wants_up = _fv["direction"] == "UP"
-                if _tc_last_bull == _tc_prev_bull and _tc_last_bull != _fv_wants_up:
-                    _min_edge = max(_min_edge, _min_edge + 0.06)
-                    log.info(
-                        "[FV-TREND-SOFT] %s/%s: 2 consec %s candles oppose FV %s — min_edge→%.2f",
-                        self.asset, self.timeframe,
-                        "UP" if _tc_last_bull else "DOWN",
-                        _fv["direction"], _min_edge,
-                    )
+            # FV trend-confirm soft penalty: disabled for non-DOGE to match peak session
+            # (was raising the bar by 0.06 in trend opposing scenarios)
+            pass
 
             # Macro-aware FV edge penalty: raises the edge bar when the 8-candle macro
             # trend conflicts with FV direction, preventing macro-opposing FV entries.
@@ -685,7 +673,7 @@ class UpDownEngine:
                             break
                 except Exception:
                     pass
-            _corroboration_multiplier = 1.3 if _corroborated else (0.7 if self.asset in ("DOGE", "SOL", "XRP") else 1.0)
+            _corroboration_multiplier = 1.3 if _corroborated else (0.7 if self.asset == "DOGE" else 1.0)
             log.info(
                 "[CORROBORATE] %s/5m: %s FV %s — size_mult=%.1f",
                 self.asset,
@@ -724,19 +712,8 @@ class UpDownEngine:
                     _fv = {"direction": None, "edge": 0.0, "archetype": None}
                     return None
 
-        # P5 & P6: SIGNAL Price Gates
-        if entry_source == "SIG":
-            _quote = up_price if direction == "UP" else dn_price
-            if direction == "UP":
-                _ceil = 0.60 if self.timeframe == "5m" else 0.65
-                if _quote > _ceil:
-                    log.info("[SIG-PRICE-GATE] %s/%s UP entry price %.2f > ceiling %.2f — skip",
-                             self.asset, self.timeframe, _quote, _ceil)
-                    return None
-            if _quote < 0.20:
-                log.info("[SIG-PRICE-GATE] %s/%s %s entry price %.2f < floor 0.20 — skip",
-                         self.asset, self.timeframe, direction, _quote)
-                return None
+        # P5 & P6: SIGNAL Price Gates — disabled to match peak session
+        pass
 
         # DIR-COOLDOWN removed: Bone Reaper Mode fires every candle regardless of prior direction
 
@@ -761,7 +738,7 @@ class UpDownEngine:
                     return None
 
             # Serve active choppy cooldown before updating history
-            if self._choppy_candles > 0:
+            if self.asset == "DOGE" and self._choppy_candles > 0:
                 self._choppy_candles -= 1
                 log.info(
                     "[CHOPPY] %s/%s: cooling down (%d candle(s) remaining)",
@@ -786,7 +763,8 @@ class UpDownEngine:
                         "[CHOPPY] %s/%s: %d slope flips, slope=%.3f%% — 2-candle pause",
                         self.asset, self.timeframe, _flips, _slope * 100,
                     )
-                    return None
+                    if self.asset == "DOGE":
+                        return None
         # ─────────────────────────────────────────────────────────────────────
 
         # Macro trend gate (8-candle): if 6+/8 last closed candles all point in
@@ -798,7 +776,7 @@ class UpDownEngine:
         # In choppy sessions (alternating candles), 6/8 consensus is rarely reached →
         # gate is invisible at night. In trending sessions, it fires on nearly every
         # countertrend attempt. 3/3 unanimity already handled by FV-TREND-SOFT above.
-        if len(klines) >= 10:
+        if self.asset == "DOGE" and len(klines) >= 10:
             _macro_candles = klines[-9:-1]  # last 8 closed candles
             _macro_up = sum(1 for k in _macro_candles if float(k[4]) > float(k[1]))
             _macro_dn = 8 - _macro_up
