@@ -9,6 +9,8 @@ import fs from 'fs';
 const router = express.Router();
 
 const LOG_CANDIDATES = [
+  '/root/.pm2/logs/zisi-bot-out.log',
+  '/root/.pm2/logs/zisi-bot-error.log',
   '/root/.pm2/logs/zisi-dashboard-error.log',
   '/root/.pm2/logs/zisi-dashboard-out.log',
 ];

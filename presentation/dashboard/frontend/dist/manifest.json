@@ -4,13 +4,13 @@
   "description": "ZiSi Quantitative Trading Dashboard",
   "icons": [
     {
-      "src": "/zisi_desktop_icon.png",
+      "src": "/zisi_desktop_icon.png?v=2",
       "type": "image/png",
       "sizes": "192x192",
       "purpose": "any maskable"
     },
     {
-      "src": "/zisi_desktop_icon.png",
+      "src": "/zisi_desktop_icon.png?v=2",
       "type": "image/png",
       "sizes": "512x512"
     }
