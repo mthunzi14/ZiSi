@@ -1033,7 +1033,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         is_expired = age_minutes >= effective_max_minutes
         is_target_hit = exit_price >= target_price
         is_stop_hit = exit_price <= stop_loss if not _is_short_tf else False
-        is_time_decay_hit = is_updown and not is_expired and age_minutes >= 0.7 * effective_max_minutes
+        is_time_decay_hit = is_updown and not _is_short_tf and not is_expired and age_minutes >= 0.7 * effective_max_minutes
 
         # 80% drawdown stop-loss: if price dropped to ≤20% of entry, position is
         # almost certainly wrong direction. Exit now to save 80% of stake.

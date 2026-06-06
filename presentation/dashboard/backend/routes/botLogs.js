@@ -8,11 +8,15 @@ import fs from 'fs';
 
 const router = express.Router();
 
+const BOT_ROOT = path.join(__dirname, '../../../../');
+
 const LOG_CANDIDATES = [
+  path.join(BOT_ROOT, 'zisi_bot_console.log'),
+  '/root/ZiSi/zisi_bot_console.log',
+  '/root/.pm2/logs/zisi-dashboard-out.log',
   '/root/.pm2/logs/zisi-bot-out.log',
   '/root/.pm2/logs/zisi-bot-error.log',
   '/root/.pm2/logs/zisi-dashboard-error.log',
-  '/root/.pm2/logs/zisi-dashboard-out.log',
 ];
 
 router.get('/', (req, res) => {
