@@ -22,6 +22,32 @@ const LOG_CANDIDATES = [
   '/root/.pm2/logs/zisi-dashboard-error.log',
 ];
 
+function readLastLines(filePath, maxLines) {
+  const stat = fs.statSync(filePath);
+  const fd = fs.openSync(filePath, 'r');
+  
+  // Read the last 1MB or the whole file if it is smaller
+  const bufferSize = Math.min(stat.size, 1024 * 1024);
+  if (bufferSize <= 0) {
+    fs.closeSync(fd);
+    return [];
+  }
+  
+  const buffer = Buffer.alloc(bufferSize);
+  fs.readSync(fd, buffer, 0, bufferSize, stat.size - bufferSize);
+  fs.closeSync(fd);
+  
+  const raw = buffer.toString('utf-8');
+  let lines = raw.split('\n');
+  
+  // Discard the first line if it was cut in half
+  if (stat.size > bufferSize && lines.length > 1) {
+    lines.shift();
+  }
+  
+  return lines;
+}
+
 router.get('/', (req, res) => {
   const n = Math.min(parseInt(req.query.lines || '100', 10), 500);
   const filter = (req.query.filter || '').toLowerCase();
@@ -29,9 +55,11 @@ router.get('/', (req, res) => {
   for (const logPath of LOG_CANDIDATES) {
     if (!fs.existsSync(logPath)) continue;
     try {
-      const raw = fs.readFileSync(logPath, 'utf-8');
-      let lines = raw.split('\n').filter(l => l.trim());
-      if (filter) lines = lines.filter(l => l.toLowerCase().includes(filter));
+      let lines = readLastLines(logPath, n);
+      lines = lines.filter(l => l.trim());
+      if (filter) {
+        lines = lines.filter(l => l.toLowerCase().includes(filter));
+      }
       const tail = lines.slice(-n);
       return res.json({ lines: tail, total: lines.length, path: logPath });
     } catch (e) {
