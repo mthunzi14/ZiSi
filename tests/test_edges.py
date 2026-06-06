@@ -25,13 +25,12 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
 
     def test_fair_value_safety_price_floor(self):
         # Default value params: edge_margin = 0.05
-        # 1. Entry price < 0.35 (e.g. 0.30) should be clamped and blocked (returns None direction)
+        # 1. Entry price < 0.35 (e.g. 0.30) should now pass since safety floor is removed
         # Spot is 101, strike is 100, so fp_up is high (~0.75).
-        # up_price = 0.30. Expected edge_up = 0.75 - 0.30 = 0.45 (clears edge_margin),
-        # but contract price 0.30 is < 0.35 safety floor.
+        # up_price = 0.30. Expected edge_up = 0.75 - 0.30 = 0.45 (clears edge_margin).
         dec = decide_value_entry(fp_up=0.75, up_price=0.30, dn_price=0.70, t_min=2.0, total_min=5.0)
-        self.assertIsNone(dec["direction"])
-        self.assertEqual(dec["edge"], 0.0)
+        self.assertEqual(dec["direction"], "UP")
+        self.assertAlmostEqual(dec["edge"], 0.45, places=4)
 
         # 2. Entry price >= 0.35 (e.g. 0.40) should pass
         dec_pass = decide_value_entry(fp_up=0.75, up_price=0.40, dn_price=0.60, t_min=2.0, total_min=5.0)

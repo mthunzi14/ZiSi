@@ -394,100 +394,10 @@ class UpDownEngine:
             log.warning("[ENGINE] %s/%s: RSI calculation returned None.", self.asset, self.timeframe)
             return None
 
-        # Volume gate
-        volumes = [float(k[5]) for k in klines]
-        avg_vol = sum(volumes[:-1]) / max(1, len(volumes) - 1)
-        cur_vol = volumes[-2] if len(volumes) >= 2 else volumes[-1]
-        floor = VOLUME_GATE_FLOORS.get(self.asset, 0.0)
-        if cur_vol < floor and cur_vol < 0.30 * avg_vol:
-            log.info("[ENGINE] %s/%s: volume gate fail (current vol %.1f < floor %.1f or < 30%% of avg %.1f)", self.asset, self.timeframe, cur_vol, floor, avg_vol)
-            return None
-            
-        # Volume Climax Detector (Blow-off Top/Bottom) - Loosened to 6.0x for 5m markets to avoid false blocking of strong breakouts
-        vol_climax_threshold = 6.0 if self.timeframe == "5m" else 3.0
-        if cur_vol > vol_climax_threshold * avg_vol:
-            log.info("[ENGINE] %s/%s: Volume climax detected (current vol %.1f > %.1fx avg %.1f). Blocking trade to avoid blow-off top/bottom.", self.asset, self.timeframe, cur_vol, vol_climax_threshold, avg_vol)
-            return None
-
-        # Volume surge block: a sudden 4× spike vs rolling 5-candle avg signals a macro
-        # move starting — FV model is too slow to reprice mid-surge, pause 2 candles.
-        if len(volumes) >= 7:
-            _roll_avg_vol = sum(volumes[-7:-2]) / 5
-            if _roll_avg_vol > 0 and cur_vol > 4.0 * _roll_avg_vol:
-                log.info(
-                    "[VOL-SURGE] %s/%s: spike %.0f > 4x avg %.0f — 2-candle pause",
-                    self.asset, self.timeframe, cur_vol, _roll_avg_vol,
-                )
-                self._choppy_candles = max(self._choppy_candles, 2)
-                return None
-
         # Retrieve real-time Spot Order Flow Imbalance (OFI)
         ofi = await get_current_ofi(self.asset)
 
-        from core.engine.regime_filter import get_regime_mode
-        regime = get_regime_mode(self.timeframe)
-
-        # Check if there is a strong 4/4 trend agreement for RSI trigger loosening (Sprint 11)
-        trend_up_agreement = False
-        trend_dn_agreement = False
-        try:
-            from core.engine.confluence_engine import ConfluenceEngine
-            from core.engine.edge_orchestrator import edge_orchestrator
-            if edge_orchestrator and getattr(edge_orchestrator, "_confluence", None):
-                conf_engine = edge_orchestrator._confluence
-            else:
-                conf_engine = ConfluenceEngine()
-            conf_up = await conf_engine.get_confluence(session, self.asset, "UP")
-            if conf_up.get("score", 0) == 4:
-                trend_up_agreement = True
-                log.info("[ENGINE] %s/%s: Strong 4/4 UP trend agreement detected. Activating UP RSI trigger loosening.", self.asset, self.timeframe)
-            else:
-                conf_dn = await conf_engine.get_confluence(session, self.asset, "DOWN")
-                if conf_dn.get("score", 0) == 4:
-                    trend_dn_agreement = True
-                    log.info("[ENGINE] %s/%s: Strong 4/4 DOWN trend agreement detected. Activating DOWN RSI trigger loosening.", self.asset, self.timeframe)
-        except Exception as e:
-            log.warning("[ENGINE] Failed to check trend agreement for RSI loosening: %s", e)
-
-        # Read live volatility percentiles for the 5m volatility veto. Kept OUT of the pure
-        # signal core (decide_signal does no file I/O) so the signal stays deterministic.
-        _atr_pct = _bbw_pct = None
-        try:
-            import json as _json
-            from pathlib import Path as _Path
-            _rs = _Path(__file__).parent.parent.parent / "regime_status.json"
-            if _rs.exists():
-                _d = _json.loads(_rs.read_text(encoding="utf-8"))
-                _atr_pct = float(_d.get("atr_percentile", 50.0))
-                _bbw_pct = float(_d.get("bbw_percentile", 50.0))
-        except Exception:
-            pass
-
-        # Raw direction from the shared signal core (single source of truth)
-        from core.engine.signal_core import decide_signal
-        _dec = decide_signal(
-            rsi,
-            mom,
-            ofi,
-            self.timeframe,
-            regime=regime,
-            trend_up_agreement=trend_up_agreement,
-            trend_dn_agreement=trend_dn_agreement,
-            use_session_scaling=True,
-            atr_percentile=_atr_pct,
-            bbw_percentile=_bbw_pct,
-        )
-        if _dec["blocked"]:
-            log.info("[ENGINE] %s/%s: Spot OFI divergence — blocking entry.", self.asset, self.timeframe)
-            return None
-        raw_dir = _dec["direction"]
-        score_base = _dec["score"]
-        if _dec["is_reversal"]:
-            log.warning("[REVERSAL] %s/%s RSI=%.2f reversal-snipe %s.", self.asset, self.timeframe, rsi, raw_dir)
-        elif raw_dir is None:
-            log.info("[ENGINE] %s/%s: RSI=%.2f Mom=%.4f -> NEUTRAL (dual-only path).", self.asset, self.timeframe, rsi, mom)
-
-        # Market + real L2 prices (no 50c fallback)
+        # Fetch market L2 quotes early
         market = await self._fetch_market(session)
         if not market:
             return None
@@ -495,322 +405,331 @@ class UpDownEngine:
         up_price = market["up_price"]
         dn_price = market["dn_price"]
         is_dual_eligible = self.should_dual_enter(up_price, dn_price)
+        regime = get_regime_mode(self.timeframe)
 
-        # ── Fair-value primary entry (additive). Reversal-snipe keeps priority;
-        #    fair-value fills at the REAL L2 quote (never at fair value). ──
-        _fv = {"direction": None}  # default: no FV signal
+        # ── Fair-value primary entry (prioritized check) ──
+        # Check if we have a valid fair-value signal that clears the margin first.
+        # If we do, we bypass volume, OFI, and trend gates entirely.
+        _fv = {"direction": None}
+        is_fv_trade = False
         try:
             from config import FAIR_VALUE_MODE
         except Exception:
             FAIR_VALUE_MODE = False
-        if FAIR_VALUE_MODE and not _dec["is_reversal"]:
+
+        if FAIR_VALUE_MODE:
             _now_ts = datetime.now(timezone.utc).timestamp()
             _candle_open_ts = float(klines[-1][0]) / 1000.0
-            # Guard: if candle open is older than 2× the candle duration it's bad data — use now
             _candle_duration_s = 3600 if self.timeframe == "1h" else (900 if self.timeframe == "15m" else 300)
             if _candle_open_ts < (_now_ts - _candle_duration_s * 2):
                 _candle_open_ts = _now_ts
             _elapsed_min = max(0.0, (_now_ts - _candle_open_ts) / 60.0)
-            # Candle timing gate: FV edge decays near candle close — check max elapsed
-            if self.timeframe == "5m" and _elapsed_min > 4.5:
-                log.info("[TIMING-GATE] %s/5m: %.1f min — too late, skip", self.asset, _elapsed_min)
-                return None
-            if self.timeframe == "1h" and _elapsed_min > 59.5:
-                log.info("[TIMING-GATE] %s/1h: %.1f min — too late, skip", self.asset, _elapsed_min)
-                return None
-            # Minimum time gate: need real price movement before FV can be meaningful
+
+            # Timing gate check
             _fv_min = 5.0 if self.timeframe == "1h" else 1.0
-            if _elapsed_min < _fv_min:
-                log.info(
-                    "[TIMING-GATE-MIN] %s/%s: %.1f min — FV needs ≥%.0fmin of data",
-                    self.asset, self.timeframe, _elapsed_min, _fv_min,
-                )
-                _fv = {"direction": None, "edge": 0.0, "archetype": None}
-            else:
+            _timing_ok = True
+            if self.timeframe == "5m" and _elapsed_min > 4.5:
+                _timing_ok = False
+            elif self.timeframe == "1h" and _elapsed_min > 59.5:
+                _timing_ok = False
+            elif _elapsed_min < _fv_min:
+                _timing_ok = False
+
+            if _timing_ok:
                 _fv = self._fair_value_entry(klines, closes[-1], up_price, dn_price, _elapsed_min)
 
-            # P4 15m FV Archetype Gate
-            if self.timeframe == "15m" and _fv.get("direction") is not None:
-                _fv_arch = _fv.get("archetype", "moderate")
-                if _fv_arch == "moderate":
-                    from config import get_config
-                    start_utc = int(get_config("FV_NIGHT_SESSION_START_UTC", 2))
-                    end_utc = int(get_config("FV_NIGHT_SESSION_END_UTC", 9))
-                    cur_utc_hour = datetime.now(timezone.utc).hour
-                    is_night = (start_utc <= cur_utc_hour < end_utc) if start_utc < end_utc else (cur_utc_hour >= start_utc or cur_utc_hour < end_utc)
-                    is_range = (regime == "RANGE")
-                    if not is_range and not is_night:
-                        log.info(
-                            "[FV-15M-ARCH-GATE] %s/15m: moderate FV archetype blocked — regime is %s, hour=%d UTC (not range/night)",
-                            self.asset, regime, cur_utc_hour
-                        )
-                        _fv = {"direction": None, "edge": 0.0, "archetype": None}
-            if _fv["direction"] is not None:
-                raw_dir = _fv["direction"]
-                score_base = min(0.90, 0.55 + min(0.30, _fv["edge"]) +
-                                 (0.05 if _fv["archetype"] == "near_certainty" else 0.0))
-                log.info("[FAIR-VALUE] %s/%s %s | fp=%.3f quote=%.3f edge=%.3f (%s)",
-                         self.asset, self.timeframe, raw_dir, _fv["fp_up"],
-                         up_price if raw_dir == "UP" else dn_price, _fv["edge"], _fv["archetype"])
-                try:
-                    from infrastructure.state.fair_value_log import log_fair_value_entry
-                    log_fair_value_entry({
-                        "asset": self.asset, "timeframe": self.timeframe, "direction": raw_dir,
-                        "fp_up": _fv["fp_up"], "quote": (up_price if raw_dir == "UP" else dn_price),
-                        "edge": _fv["edge"], "archetype": _fv["archetype"],
-                        "elapsed_min": round(_elapsed_min, 2), "entry_ts": _now_ts,
-                    })
-                except Exception:
-                    pass
+                # P4 15m FV Archetype Gate
+                if self.timeframe == "15m" and _fv.get("direction") is not None:
+                    _fv_arch = _fv.get("archetype", "moderate")
+                    if _fv_arch == "moderate":
+                        from config import get_config
+                        start_utc = int(get_config("FV_NIGHT_SESSION_START_UTC", 2))
+                        end_utc = int(get_config("FV_NIGHT_SESSION_END_UTC", 9))
+                        cur_utc_hour = datetime.now(timezone.utc).hour
+                        is_night = (start_utc <= cur_utc_hour < end_utc) if start_utc < end_utc else (cur_utc_hour >= start_utc or cur_utc_hour < end_utc)
+                        is_range = (regime == "RANGE")
+                        if not is_range and not is_night:
+                            _fv = {"direction": None, "edge": 0.0, "archetype": None}
 
-        # ── FV edge gate (tiered) + cross-TF conflict check ──────────────────
-        # Applies only when FV fired. Does not touch the SIG path.
-        if _fv.get("direction") is not None:
-            _entry_price_fv = up_price if _fv["direction"] == "UP" else dn_price
+                if _fv.get("direction") is not None:
+                    # Apply tiered edge gate and penalties
+                    _entry_price_fv = up_price if _fv["direction"] == "UP" else dn_price
+                    _cross_tf_conflict = False
+                    if self.timeframe == "5m":
+                        try:
+                            _k15 = await _fetch_klines_async(session, self.asset, "15m", 5)
+                            if len(_k15) >= 2:
+                                _last15_bull = float(_k15[-2][4]) > float(_k15[-2][1])
+                                _cross_tf_conflict = (_last15_bull != (_fv["direction"] == "UP"))
+                        except Exception:
+                            pass
 
-            # Cross-TF: check whether last closed 15m candle on same asset
-            # points OPPOSITE to the 5m FV direction (medium penalty = +0.08 edge bar).
-            _cross_tf_conflict = False
-            if self.timeframe == "5m":
-                try:
-                    _k15 = await _fetch_klines_async(session, self.asset, "15m", 5)
-                    if len(_k15) >= 2:
-                        _last15_bull = float(_k15[-2][4]) > float(_k15[-2][1])
-                        _cross_tf_conflict = (_last15_bull != (_fv["direction"] == "UP"))
-                        if _cross_tf_conflict:
-                            log.info(
-                                "[CROSS-TF] %s/5m: 15m candle %s contradicts FV %s — raising edge bar",
-                                self.asset, "UP" if _last15_bull else "DN", _fv["direction"],
-                            )
-                except Exception:
-                    pass
+                    if _entry_price_fv >= 0.50 and _entry_price_fv < 0.65:
+                        _min_edge = 0.12
+                    elif _entry_price_fv >= 0.65:
+                        _min_edge = 0.10
+                    else:
+                        _min_edge = 0.05
 
-            # Range-based minimum edge derived from 136-trade session data:
-            # 50-65¢: 45% WR (losing zone) → raise bar to 0.12
-            # >65¢: risky, moderate raise to 0.10
-            # 25-50¢: profit zone → keep base at 0.05
-            # Cross-TF conflict still adds a penalty on top
-            if _entry_price_fv >= 0.50 and _entry_price_fv < 0.65:
-                _min_edge = 0.12
-            elif _entry_price_fv >= 0.65:
-                _min_edge = 0.10
-            else:
-                _min_edge = 0.05
-            # Cross-TF conflict always raises bar by additional 0.03
-            if _cross_tf_conflict:
-                _min_edge = max(_min_edge, _min_edge + 0.03)
-            # ETH-specific: 40-65¢ range was 0W/3L in session data
-            if self.asset == "ETH" and 0.40 <= _entry_price_fv < 0.65:
-                _min_edge = max(_min_edge, 0.15)
-                log.info("[ETH-FV-GATE] ETH %.0fc in weak zone — min_edge raised to %.2f",
-                         _entry_price_fv * 100, _min_edge)
+                    if _cross_tf_conflict:
+                        _min_edge = max(_min_edge, _min_edge + 0.03)
+                    if self.asset == "ETH" and 0.40 <= _entry_price_fv < 0.65:
+                        _min_edge = max(_min_edge, 0.15)
+                    if self.asset == "SOL":
+                        _min_edge = max(_min_edge, 0.15)
+                    if self.timeframe == "15m":
+                        _min_edge = max(_min_edge, 0.10)
 
-            # SOL FV floor: SOL amplifies BTC trend moves 1.5-2x — requires stronger
-            # mean-reversion confirmation before entering. 14% WR in trending sessions.
-            if self.asset == "SOL":
-                _min_edge = max(_min_edge, 0.15)
-                log.info("[SOL-FV-FLOOR] SOL FV min_edge floor=0.15 → %.2f", _min_edge)
+                    # Macro-aware FV edge penalty
+                    if len(klines) >= 10:
+                        _fv_m8 = klines[-9:-1]
+                        _fv_m_up = sum(1 for k in _fv_m8 if float(k[4]) > float(k[1]))
+                        _fv_m_dn = 8 - _fv_m_up
+                        _fv_is_up = _fv["direction"] == "UP"
+                        if (_fv_m_up >= 6 and not _fv_is_up) or (_fv_m_dn >= 6 and _fv_is_up):
+                            _min_edge = max(_min_edge, 0.25)
+                        elif (_fv_m_up >= 5 and not _fv_is_up) or (_fv_m_dn >= 5 and _fv_is_up):
+                            _min_edge = max(_min_edge, 0.18)
 
-            # FV/15m base floor: 15-minute candles carry more trend momentum than 5m;
-            # require meaningful edge before entering. 18.2% WR in trending sessions.
-            if self.timeframe == "15m":
-                _min_edge = max(_min_edge, 0.10)
-                log.info("[FV-15M-FLOOR] %s/15m min_edge floor=0.10 → %.2f", self.asset, _min_edge)
+                    if _fv["edge"] >= _min_edge:
+                        # Peer corroboration size calculation
+                        _PEERS = {
+                            "BTC": ["ETH", "SOL"], "ETH": ["BTC", "SOL"],
+                            "SOL": ["BTC", "ETH"], "XRP": ["BTC", "ETH"],
+                            "DOGE": ["BTC"],
+                        }
+                        _corroborated = False
+                        for _peer in _PEERS.get(self.asset, []):
+                            try:
+                                _pk = await _fetch_klines_async(session, _peer, "5m", 5)
+                                if len(_pk) >= 2:
+                                    _peer_bull = float(_pk[-2][4]) > float(_pk[-2][1])
+                                    if _peer_bull == (_fv["direction"] == "UP"):
+                                        _corroborated = True
+                                        break
+                            except Exception:
+                                pass
+                        _corroboration_multiplier = 1.3 if _corroborated else (0.7 if self.asset in ("DOGE", "SOL", "XRP") else 1.0)
 
-            # FV trend-confirm soft penalty: disabled for non-DOGE to match peak session
-            # (was raising the bar by 0.06 in trend opposing scenarios)
-            pass
+                        # We have a valid Fair Value trade signal! Set direction and score.
+                        raw_dir = _fv["direction"]
+                        direction = apply_regime(raw_dir, regime)
+                        if self.invert_signal:
+                            direction = "DOWN" if direction == "UP" else "UP"
+                        
+                        score_base = min(0.90, 0.55 + min(0.30, _fv["edge"]) + (0.05 if _fv["archetype"] == "near_certainty" else 0.0))
+                        
+                        log.info("[FAIR-VALUE] %s/%s %s | fp=%.3f quote=%.3f edge=%.3f (%s)",
+                                 self.asset, self.timeframe, raw_dir, _fv["fp_up"],
+                                 up_price if raw_dir == "UP" else dn_price, _fv["edge"], _fv["archetype"])
 
-            # Macro-aware FV edge penalty: raises the edge bar when the 8-candle macro
-            # trend conflicts with FV direction, preventing macro-opposing FV entries.
-            # 5+/8 conflict (soft) → +0.08 penalty; 6+/8 conflict (hard) → +0.15 penalty.
-            if len(klines) >= 10:
-                _fv_m8 = klines[-9:-1]
-                _fv_m_up = sum(1 for k in _fv_m8 if float(k[4]) > float(k[1]))
-                _fv_m_dn = 8 - _fv_m_up
-                _fv_is_up = _fv["direction"] == "UP"
-                if (_fv_m_up >= 6 and not _fv_is_up) or (_fv_m_dn >= 6 and _fv_is_up):
-                    _min_edge = max(_min_edge, 0.25)
+                        try:
+                            from infrastructure.state.fair_value_log import log_fair_value_entry
+                            log_fair_value_entry({
+                                "asset": self.asset, "timeframe": self.timeframe, "direction": raw_dir,
+                                "fp_up": _fv["fp_up"], "quote": (up_price if raw_dir == "UP" else dn_price),
+                                "edge": _fv["edge"], "archetype": _fv["archetype"],
+                                "elapsed_min": round(_elapsed_min, 2), "entry_ts": _now_ts,
+                            })
+                        except Exception:
+                            pass
+
+                        # Set entry source and bypass momentum cascade
+                        entry_source = "FAIR_VAL"
+                        is_fv_trade = True
+
+        if not is_fv_trade:
+            # Volume gate
+            volumes = [float(k[5]) for k in klines]
+            avg_vol = sum(volumes[:-1]) / max(1, len(volumes) - 1)
+            cur_vol = volumes[-2] if len(volumes) >= 2 else volumes[-1]
+            floor = VOLUME_GATE_FLOORS.get(self.asset, 0.0)
+            if cur_vol < floor and cur_vol < 0.30 * avg_vol:
+                log.info("[ENGINE] %s/%s: volume gate fail (current vol %.1f < floor %.1f or < 30%% of avg %.1f)", self.asset, self.timeframe, cur_vol, floor, avg_vol)
+                return None
+                
+            # Volume Climax Detector
+            vol_climax_threshold = 6.0 if self.timeframe == "5m" else 3.0
+            if cur_vol > vol_climax_threshold * avg_vol:
+                log.info("[ENGINE] %s/%s: Volume climax detected (current vol %.1f > %.1fx avg %.1f). Blocking trade to avoid blow-off top/bottom.", self.asset, self.timeframe, cur_vol, vol_climax_threshold, avg_vol)
+                return None
+
+            # Volume surge block
+            if len(volumes) >= 7:
+                _roll_avg_vol = sum(volumes[-7:-2]) / 5
+                if _roll_avg_vol > 0 and cur_vol > 4.0 * _roll_avg_vol:
                     log.info(
-                        "[FV-MACRO] %s/%s: hard macro conflict %d/8 vs FV %s — edge bar %.2f",
-                        self.asset, self.timeframe,
-                        _fv_m_up if not _fv_is_up else _fv_m_dn,
-                        _fv["direction"], _min_edge,
+                        "[VOL-SURGE] %s/%s: spike %.0f > 4x avg %.0f — 2-candle pause",
+                        self.asset, self.timeframe, cur_vol, _roll_avg_vol,
                     )
-                elif (_fv_m_up >= 5 and not _fv_is_up) or (_fv_m_dn >= 5 and _fv_is_up):
-                    _min_edge = max(_min_edge, 0.18)
-                    log.info(
-                        "[FV-MACRO] %s/%s: soft macro conflict %d/8 vs FV %s — edge bar %.2f",
-                        self.asset, self.timeframe,
-                        _fv_m_up if not _fv_is_up else _fv_m_dn,
-                        _fv["direction"], _min_edge,
-                    )
+                    self._choppy_candles = max(self._choppy_candles, 2)
+                    return None
 
-            if _fv["edge"] < _min_edge:
-                log.info(
-                    "[FV-EDGE-GATE] %s/%s: edge %.3f < required %.3f (price=%.2f) — skip",
-                    self.asset, self.timeframe, _fv["edge"], _min_edge, _entry_price_fv,
-                )
-                _fv = {"direction": None, "edge": 0.0, "archetype": None}
+            # Check if there is a strong 4/4 trend agreement for RSI trigger loosening (Sprint 11)
+            trend_up_agreement = False
+            trend_dn_agreement = False
+            try:
+                from core.engine.confluence_engine import ConfluenceEngine
+                from core.engine.edge_orchestrator import edge_orchestrator
+                if edge_orchestrator and getattr(edge_orchestrator, "_confluence", None):
+                    conf_engine = edge_orchestrator._confluence
+                else:
+                    conf_engine = ConfluenceEngine()
+                conf_up = await conf_engine.get_confluence(session, self.asset, "UP")
+                if conf_up.get("score", 0) == 4:
+                    trend_up_agreement = True
+                    log.info("[ENGINE] %s/%s: Strong 4/4 UP trend agreement detected. Activating UP RSI trigger loosening.", self.asset, self.timeframe)
+                else:
+                    conf_dn = await conf_engine.get_confluence(session, self.asset, "DOWN")
+                    if conf_dn.get("score", 0) == 4:
+                        trend_dn_agreement = True
+                        log.info("[ENGINE] %s/%s: Strong 4/4 DOWN trend agreement detected. Activating DOWN RSI trigger loosening.", self.asset, self.timeframe)
+            except Exception as e:
+                log.warning("[ENGINE] Failed to check trend agreement for RSI loosening: %s", e)
 
-        # Multi-asset corroboration (5m FV only): require ≥1 peer asset's last
-        # closed candle to agree with the FV direction before committing.
-        _corroboration_multiplier = 1.0  # default: no corroboration effect
-        if self.timeframe == "5m" and _fv.get("direction") is not None:
-            _PEERS = {
-                "BTC": ["ETH", "SOL"], "ETH": ["BTC", "SOL"],
-                "SOL": ["BTC", "ETH"], "XRP": ["BTC", "ETH"],
-                "DOGE": ["BTC"],
-            }
-            _corroborated = False
-            for _peer in _PEERS.get(self.asset, []):
-                try:
-                    _pk = await _fetch_klines_async(session, _peer, "5m", 5)
-                    if len(_pk) >= 2:
-                        _peer_bull = float(_pk[-2][4]) > float(_pk[-2][1])
-                        if _peer_bull == (_fv["direction"] == "UP"):
-                            _corroborated = True
-                            break
-                except Exception:
-                    pass
-            _corroboration_multiplier = 1.3 if _corroborated else (0.7 if self.asset == "DOGE" else 1.0)
-            log.info(
-                "[CORROBORATE] %s/5m: %s FV %s — size_mult=%.1f",
-                self.asset,
-                "peer agrees" if _corroborated else "no peer",
-                _fv["direction"],
-                _corroboration_multiplier,
+            # Read live volatility percentiles for the 5m volatility veto
+            _atr_pct = _bbw_pct = None
+            try:
+                import json as _json
+                from pathlib import Path as _Path
+                _rs = _Path(__file__).parent.parent.parent / "regime_status.json"
+                if _rs.exists():
+                    _d = _json.loads(_rs.read_text(encoding="utf-8"))
+                    _atr_pct = float(_d.get("atr_percentile", 50.0))
+                    _bbw_pct = float(_d.get("bbw_percentile", 50.0))
+            except Exception:
+                pass
+
+            # Raw direction from the shared signal core
+            from core.engine.signal_core import decide_signal
+            _dec = decide_signal(
+                rsi,
+                mom,
+                ofi,
+                self.timeframe,
+                regime=regime,
+                trend_up_agreement=trend_up_agreement,
+                trend_dn_agreement=trend_dn_agreement,
+                use_session_scaling=True,
+                atr_percentile=_atr_pct,
+                bbw_percentile=_bbw_pct,
             )
-        # ─────────────────────────────────────────────────────────────────────
+            if _dec["blocked"]:
+                log.info("[ENGINE] %s/%s: Spot OFI divergence — blocking entry.", self.asset, self.timeframe)
+                return None
+            raw_dir = _dec["direction"]
+            score_base = _dec["score"]
+            if _dec["is_reversal"]:
+                log.warning("[REVERSAL] %s/%s RSI=%.2f reversal-snipe %s.", self.asset, self.timeframe, rsi, raw_dir)
+            elif raw_dir is None:
+                log.info("[ENGINE] %s/%s: RSI=%.2f Mom=%.4f -> NEUTRAL (dual-only path).", self.asset, self.timeframe, rsi, mom)
 
-        # Track whether this entry is driven by fair-value or pure RSI/OFI signal
-        entry_source = "FAIR_VAL" if (FAIR_VALUE_MODE and not _dec["is_reversal"] and _fv.get("direction") is not None) else "SIG"
-
-        if raw_dir is None:
-            if is_dual_eligible and abs(ofi) >= 0.12:
-                raw_dir = "UP" if ofi >= 0 else "DOWN"
-                score_base = 0.62
-                log.info(
-                    "[ENGINE] %s/%s: Dual-eligible (sum=%.2fc) neutral RSI — OFI → %s",
-                    self.asset, self.timeframe, (up_price + dn_price) * 100, raw_dir,
-                )
+            if _dec["is_reversal"]:
+                # Reversal-snipe gets priority in non-FV
+                entry_source = "SIG"
+                _corroboration_multiplier = 1.0
+                direction = apply_regime(raw_dir, regime)
+                if self.invert_signal:
+                    direction = "DOWN" if direction == "UP" else "UP"
             else:
-                return None
+                entry_source = "SIG"
+                _corroboration_multiplier = 1.0
 
-        # Apply regime
-        direction = apply_regime(raw_dir, regime)
-        if self.invert_signal:
-            direction = "DOWN" if direction == "UP" else "UP"
-            # Bug fix: re-validate FV floor for inverted direction.
-            # _entry_price_fv was assigned from _fv["direction"] (pre-inversion).
-            # After flip, the actual entry side may be sub-35c — must re-check.
-            if _fv.get("direction") is not None:
-                _inv_price = up_price if direction == "UP" else dn_price
-                if _inv_price < 0.35:
-                    log.warning("[PRICE-FLOOR-INV] %s/%s: inverted FV entry %.0fc < 35c — skip",
-                                self.asset, self.timeframe, _inv_price * 100)
-                    _fv = {"direction": None, "edge": 0.0, "archetype": None}
-                    return None
-
-        # P5 & P6: SIGNAL Price Gates — disabled to match peak session
-        pass
-
-        # DIR-COOLDOWN removed: Bone Reaper Mode fires every candle regardless of prior direction
-
-        # ── Real-time trend gate + per-asset choppy detection ────────────────
-        # Slope of closes[-5:] measures current 5-candle drift.
-        # Trend gate: blocks entries that contradict a clear trend direction.
-        # Choppy detection: if slope flipped sign 2+ times in last 4 candles
-        # while still ranging, enter a 2-candle cooldown (Option C).
-        if len(closes) >= 10:
-            _c0 = closes[-5] if closes[-5] > 0 else 1.0
-            _slope = (closes[-1] - closes[-5]) / _c0
-            _TREND_GATE = 0.004  # 0.4% drift = clear trend (raised from 0.25%)
-            _ranging = abs(_slope) < _TREND_GATE
-            if not _ranging:
-                _trend_dn = _slope < 0
-                _signal_dn = direction == "DOWN"
-                if _trend_dn != _signal_dn:
-                    log.info(
-                        "[TREND-GATE] %s/%s: %s signal contradicts trend (slope=%.3f%%) — skip",
-                        self.asset, self.timeframe, direction, _slope * 100,
-                    )
-                    return None
-
-            # Serve active choppy cooldown before updating history
-            if self.asset == "DOGE" and self._choppy_candles > 0:
-                self._choppy_candles -= 1
-                log.info(
-                    "[CHOPPY] %s/%s: cooling down (%d candle(s) remaining)",
-                    self.asset, self.timeframe, self._choppy_candles,
-                )
-                return None
-
-            # Accumulate slope into rolling 4-reading history
-            self._slope_history.append(_slope)
-            if len(self._slope_history) > 4:
-                self._slope_history = self._slope_history[-4:]
-
-            # Detect choppy: 2+ sign flips while slope is still unclear
-            if len(self._slope_history) >= 4 and _ranging:
-                _flips = sum(
-                    1 for i in range(1, len(self._slope_history))
-                    if (self._slope_history[i] >= 0) != (self._slope_history[i - 1] >= 0)
-                )
-                if _flips >= 2:
-                    self._choppy_candles = 2
-                    log.info(
-                        "[CHOPPY] %s/%s: %d slope flips, slope=%.3f%% — 2-candle pause",
-                        self.asset, self.timeframe, _flips, _slope * 100,
-                    )
-                    if self.asset == "DOGE":
+                if raw_dir is None:
+                    if is_dual_eligible and abs(ofi) >= 0.12:
+                        raw_dir = "UP" if ofi >= 0 else "DOWN"
+                        score_base = 0.62
+                        log.info(
+                            "[ENGINE] %s/%s: Dual-eligible (sum=%.2fc) neutral RSI — OFI → %s",
+                            self.asset, self.timeframe, (up_price + dn_price) * 100, raw_dir,
+                        )
+                    else:
                         return None
-        # ─────────────────────────────────────────────────────────────────────
 
-        # Macro trend gate (8-candle): if 6+/8 last closed candles all point in
-        # one direction, only signals that agree are allowed through.
-        # Applies to BOTH FV and SIG — prevents the recurring loss cluster pattern
-        # where FV keeps firing DN while the market is bouncing UP for 45+ minutes.
-        # Macro gate: extended to ALL assets — if 6+/8 last closed candles unanimously
-        # point in one direction, countertrend entries are blocked for both FV and SIG.
-        # In choppy sessions (alternating candles), 6/8 consensus is rarely reached →
-        # gate is invisible at night. In trending sessions, it fires on nearly every
-        # countertrend attempt. 3/3 unanimity already handled by FV-TREND-SOFT above.
-        if self.asset == "DOGE" and len(klines) >= 10:
-            _macro_candles = klines[-9:-1]  # last 8 closed candles
-            _macro_up = sum(1 for k in _macro_candles if float(k[4]) > float(k[1]))
-            _macro_dn = 8 - _macro_up
-            _signal_is_up = direction == "UP"
-            if _macro_up >= 6 and not _signal_is_up:
-                log.info(
-                    "[MACRO-GATE] %s/%s: blocked DN — %d/8 candles bullish",
-                    self.asset, self.timeframe, _macro_up,
-                )
-                _write_gate_event(self.asset, self.timeframe, "MACRO-GATE", direction, f"{_macro_up}/8 candles bullish")
-                return None
-            if _macro_dn >= 6 and _signal_is_up:
-                log.info(
-                    "[MACRO-GATE] %s/%s: blocked UP — %d/8 candles bearish",
-                    self.asset, self.timeframe, _macro_dn,
-                )
-                _write_gate_event(self.asset, self.timeframe, "MACRO-GATE", direction, f"{_macro_dn}/8 candles bearish")
-                return None
+                # Apply regime
+                direction = apply_regime(raw_dir, regime)
+                if self.invert_signal:
+                    direction = "DOWN" if direction == "UP" else "UP"
 
-        # SIG trend confirmation: both last 2 closed candles must resolve in the
-        # signal direction. Skipping this for FAIR-VAL entries — they enter on
-        # divergence which may precede the candle trend shift.
-        if entry_source == "SIG" and self.asset == "DOGE" and len(klines) >= 4:
-            c_last_bull = float(klines[-2][4]) > float(klines[-2][1])
-            c_prev_bull = float(klines[-3][4]) > float(klines[-3][1])
-            signal_bull = direction == "UP"
-            if not (c_last_bull == c_prev_bull == signal_bull):
-                _c_desc = f"{('UP' if c_prev_bull else 'DN')}/{('UP' if c_last_bull else 'DN')}"
-                log.info(
-                    "[TREND-CONFIRM] %s/%s: SIG %s blocked — last 2 closed candles: %s",
-                    self.asset, self.timeframe, direction, _c_desc,
-                )
-                _write_gate_event(self.asset, self.timeframe, "TREND-CONFIRM", direction, f"candles: {_c_desc}")
-                return None
+                # Trend gate + choppy detection
+                if len(closes) >= 10:
+                    _c0 = closes[-5] if closes[-5] > 0 else 1.0
+                    _slope = (closes[-1] - closes[-5]) / _c0
+                    _TREND_GATE = 0.004
+                    _ranging = abs(_slope) < _TREND_GATE
+                    if not _ranging:
+                        _trend_dn = _slope < 0
+                        _signal_dn = direction == "DOWN"
+                        if _trend_dn != _signal_dn:
+                            log.info(
+                                "[TREND-GATE] %s/%s: %s signal contradicts trend (slope=%.3f%%) — skip",
+                                self.asset, self.timeframe, direction, _slope * 100,
+                            )
+                            return None
+
+                    # Serve choppy cooldown
+                    if self.asset == "DOGE" and self._choppy_candles > 0:
+                        self._choppy_candles -= 1
+                        log.info(
+                            "[CHOPPY] %s/%s: cooling down (%d candle(s) remaining)",
+                            self.asset, self.timeframe, self._choppy_candles,
+                        )
+                        return None
+
+                    # Accumulate slope
+                    self._slope_history.append(_slope)
+                    if len(self._slope_history) > 4:
+                        self._slope_history = self._slope_history[-4:]
+
+                    # Detect choppy
+                    if len(self._slope_history) >= 4 and _ranging:
+                        _flips = sum(
+                            1 for i in range(1, len(self._slope_history))
+                            if (self._slope_history[i] >= 0) != (self._slope_history[i - 1] >= 0)
+                        )
+                        if _flips >= 2:
+                            self._choppy_candles = 2
+                            log.info(
+                                "[CHOPPY] %s/%s: %d slope flips, slope=%.3f%% — 2-candle pause",
+                                self.asset, self.timeframe, _flips, _slope * 100,
+                            )
+                            if self.asset == "DOGE":
+                                return None
+
+                # Macro trend gate (8-candle)
+                if self.asset == "DOGE" and len(klines) >= 10:
+                    _macro_candles = klines[-9:-1]
+                    _macro_up = sum(1 for k in _macro_candles if float(k[4]) > float(k[1]))
+                    _macro_dn = 8 - _macro_up
+                    _signal_is_up = direction == "UP"
+                    if _macro_up >= 6 and not _signal_is_up:
+                        log.info(
+                            "[MACRO-GATE] %s/%s: blocked DN — %d/8 candles bullish",
+                            self.asset, self.timeframe, _macro_up,
+                        )
+                        _write_gate_event(self.asset, self.timeframe, "MACRO-GATE", direction, f"{_macro_up}/8 candles bullish")
+                        return None
+                    if _macro_dn >= 6 and _signal_is_up:
+                        log.info(
+                            "[MACRO-GATE] %s/%s: blocked UP — %d/8 candles bearish",
+                            self.asset, self.timeframe, _macro_dn,
+                        )
+                        _write_gate_event(self.asset, self.timeframe, "MACRO-GATE", direction, f"{_macro_dn}/8 candles bearish")
+                        return None
+
+                # SIG trend confirmation
+                if self.asset == "DOGE" and len(klines) >= 4:
+                    c_last_bull = float(klines[-2][4]) > float(klines[-2][1])
+                    c_prev_bull = float(klines[-3][4]) > float(klines[-3][1])
+                    signal_bull = direction == "UP"
+                    if not (c_last_bull == c_prev_bull == signal_bull):
+                        _c_desc = f"{('UP' if c_prev_bull else 'DN')}/{('UP' if c_last_bull else 'DN')}"
+                        log.info(
+                            "[TREND-CONFIRM] %s/%s: SIG %s blocked — last 2 closed candles: %s",
+                            self.asset, self.timeframe, direction, _c_desc,
+                        )
+                        _write_gate_event(self.asset, self.timeframe, "TREND-CONFIRM", direction, f"candles: {_c_desc}")
+                        return None
 
         # Composite score
         abs_mom = abs(mom)

@@ -935,7 +935,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
 
         target_price = pos.get("target_price")
         if _is_short_tf:
-            target_price = 0.88
+            target_price = 0.99
         elif not target_price or target_price <= 0:
             target_price = round(entry_price * cfg.get("POSITION_TARGET_MULTIPLIER", 1.50), 4)
 
@@ -1047,22 +1047,13 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         # Uses expiry_ts (actual Polymarket close) NOT age-from-entry, eliminating the
         # ~90s blind spot that was causing full losses on the reconciliation path.
         is_salvage_exit = False
-        if _is_short_tf and not is_expired and not is_target_hit:
-            _expiry_ts = pos.get("expiry_ts")
-            if _expiry_ts:
-                _time_left_s = float(_expiry_ts) - datetime.now(timezone.utc).timestamp()
-                if 0 < _time_left_s <= 90.0 and exit_price is not None and exit_price < 0.20:
-                    is_salvage_exit = True
-                    log.warning(
-                        "[SALVAGE-EXIT] %s: %.0fc < 20¢ with %.0fs left — salvaging to avoid full wipeout",
-                        order_id, exit_price * 100, _time_left_s,
-                    )
+        # Salvage exits disabled for short-TF to hold to resolution
 
         # 80% drawdown stop-loss: if price dropped to ≤20% of entry, position is
         # almost certainly wrong direction. Exit now to save 80% of stake.
         # Applies to ALL timeframes including short-TF (which normally has stop_loss=-1).
         _drawdown_floor = entry_price * 0.20
-        if not is_expired and exit_price is not None and 0.005 < exit_price <= _drawdown_floor:
+        if not _is_short_tf and not is_expired and exit_price is not None and 0.005 < exit_price <= _drawdown_floor:
             log.info(
                 "[STOP-LOSS] %s: %.0fc ≤ 20%% of entry %.0fc — early exit saving %.0f%% of stake",
                 order_id, exit_price * 100, entry_price * 100,
@@ -1220,7 +1211,7 @@ def check_exit_condition(
     _ev_title = (pos.get("event_title") or "").upper()
     _is_short_tf = "5M" in _ev_title or "15M" in _ev_title or "UPDOWN" in _ev_title
     effective_stop_loss = -1.0 if _is_short_tf else stop_loss
-    effective_target_price = 0.88 if _is_short_tf else target_price
+    effective_target_price = 0.99 if _is_short_tf else target_price
 
     # Calculate expiry_time for short timeframes to check salvage exit
     expiry_time = None
@@ -1249,13 +1240,7 @@ def check_exit_condition(
     elif hours_held >= max_hold_hours:
         should_exit = True
         reason = "TIME_EXPIRED"
-    elif _is_short_tf and expiry_time:
-        # Dynamic Contract Price Salvage (T-30s): Exit if contract price falls below 15c in the final 30s
-        time_left = (expiry_time - datetime.now(timezone.utc)).total_seconds()
-        if 0 < time_left <= 30.0:
-            if current_price < 0.15:
-                should_exit = True
-                reason = "SALVAGE_EXIT"
+    # Dynamic Contract Price Salvage (T-30s): Disabled for short-TF to hold to resolution
 
     if should_exit:
         log.info(

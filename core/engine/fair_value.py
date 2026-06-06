@@ -71,8 +71,7 @@ def decide_value_entry(fp_up: float, up_price: float, dn_price: float,
             return {"direction": None, "edge": 0.0, "archetype": None}
         direction, edge, fp, price = "DOWN", edge_dn, (1.0 - fp_up), dn_price
 
-    if price < 0.35:
-        return {"direction": None, "edge": 0.0, "archetype": None}
+    # Safety price floor removed to allow high-edge cheap entries
 
     t_frac = (t_min / total_min) if total_min > 0 else 0.0
     archetype = ("near_certainty"
