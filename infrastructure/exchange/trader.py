@@ -1035,6 +1035,23 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         is_stop_hit = exit_price <= stop_loss if not _is_short_tf else False
         is_time_decay_hit = is_updown and not _is_short_tf and not is_expired and age_minutes >= 0.7 * effective_max_minutes
 
+        # SALVAGE_EXIT (short-TF only): if within 90s of the real market expiry_ts
+        # AND the contract price has collapsed below 20¢, exit immediately to recover
+        # whatever value remains instead of riding it to 1¢.
+        # Uses expiry_ts (actual Polymarket close) NOT age-from-entry, eliminating the
+        # ~90s blind spot that was causing full losses on the reconciliation path.
+        is_salvage_exit = False
+        if _is_short_tf and not is_expired and not is_target_hit:
+            _expiry_ts = pos.get("expiry_ts")
+            if _expiry_ts:
+                _time_left_s = float(_expiry_ts) - datetime.now(timezone.utc).timestamp()
+                if 0 < _time_left_s <= 90.0 and exit_price is not None and exit_price < 0.20:
+                    is_salvage_exit = True
+                    log.warning(
+                        "[SALVAGE-EXIT] %s: %.0fc < 20¢ with %.0fs left — salvaging to avoid full wipeout",
+                        order_id, exit_price * 100, _time_left_s,
+                    )
+
         # 80% drawdown stop-loss: if price dropped to ≤20% of entry, position is
         # almost certainly wrong direction. Exit now to save 80% of stake.
         # Applies to longer timeframes; disabled for short-TF (5m/15m/UPDOWN) to avoid panic-selling
@@ -1049,7 +1066,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
                 )
                 is_stop_hit = True
 
-        if not (is_expired or is_target_hit or is_stop_hit or is_time_decay_hit):
+        if not (is_expired or is_target_hit or is_stop_hit or is_time_decay_hit or is_salvage_exit):
             # Update local current_price in memory and continue
             pos["current_price"] = exit_price
             continue
@@ -1086,6 +1103,8 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
                 "[NETTING-EXIT] %s TIME DECAY HIT! Utilized >70%% of window (%.1fm/%.1fm). Exiting early to recover capital.",
                 order_id, age_minutes, effective_max_minutes
             )
+        elif is_salvage_exit:
+            exit_reason = "SALVAGE_EXIT"
         else:
             exit_reason = "MARKET_EXPIRED"
 
