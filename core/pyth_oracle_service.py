@@ -68,11 +68,14 @@ class PythOracleService:
          """Periodically dump the global price cache to a JSON file for the Node backend to ingest."""
          while self.is_running:
              try:
-                 # Write to a temp file and replace atomically to prevent race conditions during Node reads
-                 temp_filename = "pyth_prices.json.tmp"
+                 # Resolve absolute path relative to project root (two levels up from core/pyth_oracle_service.py)
+                 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                 temp_filename = os.path.join(base_dir, "pyth_prices.json.tmp")
+                 target_filename = os.path.join(base_dir, "pyth_prices.json")
+                 
                  with open(temp_filename, "w") as f:
                      json.dump(GLOBAL_ORACLE_CACHE, f, indent=2)
-                 os.replace(temp_filename, "pyth_prices.json")
+                 os.replace(temp_filename, target_filename)
              except Exception as e:
                  log.debug("[PYTH] Failed to dump prices to disk: %s", e)
              await asyncio.sleep(0.5)  # Update every 500ms for low latency!
