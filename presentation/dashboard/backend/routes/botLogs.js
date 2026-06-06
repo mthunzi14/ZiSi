@@ -70,4 +70,21 @@ router.get('/', (req, res) => {
   res.json({ lines: [], error: 'No log file found' });
 });
 
+// POST /api/bot-logs/clear - Truncates bot and PM2 log files to free up VPS space
+router.post('/clear', (req, res) => {
+  try {
+    let clearedPaths = [];
+    for (const logPath of LOG_CANDIDATES) {
+      if (fs.existsSync(logPath)) {
+        fs.writeFileSync(logPath, ''); // Truncate to 0 bytes
+        clearedPaths.push(logPath);
+      }
+    }
+    console.log('[LOGS] Truncated log files:', clearedPaths);
+    res.json({ status: 'success', message: 'Logs cleared successfully', cleared: clearedPaths });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;
