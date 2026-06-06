@@ -405,8 +405,15 @@ def cleanup_expired_positions() -> int:
         summary["active_count"] = len(survivors)
         data["summary"] = summary
 
-        _POSITIONS_FILE.write_text(
-            json.dumps(data, indent=2, default=str),
-            encoding="utf-8",
-        )
+        try:
+            tmp_path = _POSITIONS_FILE.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+            import os as _os
+            _os.replace(tmp_path, _POSITIONS_FILE)
+        except Exception as exc:
+            log.warning("[STATE] Failed to save cleanup state atomically: %s", exc)
+            _POSITIONS_FILE.write_text(
+                json.dumps(data, indent=2, default=str),
+                encoding="utf-8",
+            )
         return len(zombies)

@@ -124,7 +124,7 @@ class PythOracleService:
                                         # Update global in-memory cache instantly
                                         GLOBAL_ORACLE_CACHE[symbol] = {
                                             "price": round(float_price, 6),
-                                            "timestamp": int(time.time()),
+                                            "timestamp": time.time(),
                                             "conf": round(conf, 6)
                                         }
                                 except Exception as e:

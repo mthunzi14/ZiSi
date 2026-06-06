@@ -72,6 +72,7 @@ const ENTRY_TYPE_CONFIG = {
   'FAIR-VAL':       { label: 'FV',   color: '#00d4a3' },
   'REVERSAL-SNIPE': { label: 'REV',  color: '#ff007a' },
   'SIGNAL':         { label: 'SIG',  color: 'var(--color-text-muted)' },
+  'SWEEP':          { label: 'SWEEP', color: '#eab308' },
 };
 function entryTypeCfg(t) { return ENTRY_TYPE_CONFIG[t] || ENTRY_TYPE_CONFIG['SIGNAL']; }
 
@@ -364,8 +365,8 @@ function SessionAnalytics({ closed }) {
   // Build running P&L from chronological order
   const chrono = [...closed].reverse();
   let runBal = 0, peak = 0, maxDD = 0;
-  const latSeries = [], fvSeries = [], sigSeries = [];
-  let latBal = 0, fvBal = 0, sigBal = 0;
+  const latSeries = [], fvSeries = [], sigSeries = [], sweepSeries = [];
+  let latBal = 0, fvBal = 0, sigBal = 0, sweepBal = 0;
 
   chrono.forEach(t => {
     const pnl = parseFloat(t.realized_pnl || 0);
@@ -377,6 +378,7 @@ function SessionAnalytics({ closed }) {
     if (et === 'LAT-ARB')  { latBal += pnl; latSeries.push(latBal); }
     if (et === 'FAIR-VAL') { fvBal  += pnl; fvSeries.push(fvBal); }
     if (et === 'SIGNAL')   { sigBal += pnl; sigSeries.push(sigBal); }
+    if (et === 'SWEEP')    { sweepBal += pnl; sweepSeries.push(sweepBal); }
   });
 
   const currentDD = Math.max(0, peak - runBal);
@@ -405,6 +407,7 @@ function SessionAnalytics({ closed }) {
           {latSeries.length > 0 && <MiniSparkline values={latSeries} color="#2b7fff" label="LAT" />}
           {fvSeries.length  > 0 && <MiniSparkline values={fvSeries}  color="#00d4a3" label="FV"  />}
           {sigSeries.length > 0 && <MiniSparkline values={sigSeries} color="#a1a1aa" label="SIG" />}
+          {sweepSeries.length > 0 && <MiniSparkline values={sweepSeries} color="#eab308" label="SWEEP" />}
         </div>
       </div>
     </CollapsiblePanel>
@@ -451,6 +454,142 @@ function AssetHeatmap({ closed }) {
             {stats.map(({ asset, count, wr, net, avgH }) => (
               <tr key={asset} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
                 <td style={{ padding: '4px 8px', fontWeight: 700, fontSize: 11, color: 'var(--color-text-primary)' }}>{asset}</td>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#a1a1aa' }}>{count}</td>
+                <td style={{ padding: '4px 8px' }}>
+                  <span style={{
+                    background: `${wrColor(wr)}18`,
+                    color: wrColor(wr),
+                    borderRadius: 4, padding: '1px 6px',
+                    fontWeight: 700, fontFamily: 'monospace', fontSize: 10,
+                  }}>{wr.toFixed(0)}%</span>
+                </td>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 700, color: netColor(net) }}>
+                  {net >= 0 ? '+' : ''}${net.toFixed(2)}
+                </td>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#71717a' }}>
+                  {avgH < 60 ? `${avgH.toFixed(0)}m` : `${(avgH/60).toFixed(1)}h`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </CollapsiblePanel>
+  );
+}
+
+// ── Source Heatmap ────────────────────────────────────────────────────────────
+
+function SourceHeatmap({ closed }) {
+  if (closed.length === 0) return null;
+
+  const SOURCES = ['LAT-ARB', 'FAIR-VAL', 'REVERSAL-SNIPE', 'SIGNAL', 'SWEEP'];
+
+  const stats = SOURCES.map(src => {
+    const trades = closed.filter(t => {
+      const et = t.entry_type || 'SIGNAL';
+      return et === src;
+    });
+    if (trades.length === 0) return null;
+    const wins = trades.filter(t => parseFloat(t.realized_pnl || 0) > 0).length;
+    const wr   = trades.length > 0 ? wins / trades.length * 100 : 0;
+    const net  = trades.reduce((s, t) => s + parseFloat(t.realized_pnl || 0), 0);
+    const avgH = trades.reduce((s, t) => s + parseFloat(t.hold_hours || 0) * 60, 0) / trades.length;
+    return { src, count: trades.length, wr, net, avgH };
+  }).filter(Boolean);
+
+  if (stats.length === 0) return null;
+
+  const wrColor  = wr  => wr  >= 65 ? '#10b981' : wr  >= 50 ? '#f97316' : '#ef4444';
+  const netColor = net => net >= 0  ? '#10b981' : '#ef4444';
+
+  const SRC_LABELS = {
+    'LAT-ARB': 'Latency Arb',
+    'FAIR-VAL': 'Fair Value',
+    'REVERSAL-SNIPE': 'Reversal Snipe',
+    'SIGNAL': 'Signal',
+    'SWEEP': 'Sweeper'
+  };
+
+  return (
+    <CollapsiblePanel title="Source Heatmap" defaultOpen={false} badge={`${stats.length} sources`} accentColor="#2b7fff">
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 10 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+              {['Source', 'Trades', 'WR%', 'Net P&L', 'Avg Hold'].map(h => (
+                <th key={h} style={{ padding: '3px 8px', textAlign: 'left', color: '#52525b', fontWeight: 600, fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {stats.map(({ src, count, wr, net, avgH }) => (
+              <tr key={src} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                <td style={{ padding: '4px 8px', fontWeight: 700, fontSize: 11, color: 'var(--color-text-primary)' }}>{SRC_LABELS[src] || src}</td>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#a1a1aa' }}>{count}</td>
+                <td style={{ padding: '4px 8px' }}>
+                  <span style={{
+                    background: `${wrColor(wr)}18`,
+                    color: wrColor(wr),
+                    borderRadius: 4, padding: '1px 6px',
+                    fontWeight: 700, fontFamily: 'monospace', fontSize: 10,
+                  }}>{wr.toFixed(0)}%</span>
+                </td>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 700, color: netColor(net) }}>
+                  {net >= 0 ? '+' : ''}${net.toFixed(2)}
+                </td>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#71717a' }}>
+                  {avgH < 60 ? `${avgH.toFixed(0)}m` : `${(avgH/60).toFixed(1)}h`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </CollapsiblePanel>
+  );
+}
+
+// ── Timeframe Heatmap ─────────────────────────────────────────────────────────
+
+function TimeframeHeatmap({ closed }) {
+  if (closed.length === 0) return null;
+
+  const TIMEFRAMES = ['5m', '15m', '1h'];
+
+  const stats = TIMEFRAMES.map(tf => {
+    const trades = closed.filter(t => {
+      const parsed = parseMeta(t);
+      return parsed.timeframe === tf;
+    });
+    if (trades.length === 0) return null;
+    const wins = trades.filter(t => parseFloat(t.realized_pnl || 0) > 0).length;
+    const wr   = trades.length > 0 ? wins / trades.length * 100 : 0;
+    const net  = trades.reduce((s, t) => s + parseFloat(t.realized_pnl || 0), 0);
+    const avgH = trades.reduce((s, t) => s + parseFloat(t.hold_hours || 0) * 60, 0) / trades.length;
+    return { tf, count: trades.length, wr, net, avgH };
+  }).filter(Boolean);
+
+  if (stats.length === 0) return null;
+
+  const wrColor  = wr  => wr  >= 65 ? '#10b981' : wr  >= 50 ? '#f97316' : '#ef4444';
+  const netColor = net => net >= 0  ? '#10b981' : '#ef4444';
+
+  return (
+    <CollapsiblePanel title="Timeframe Heatmap" defaultOpen={false} badge={`${stats.length} intervals`} accentColor="#f59e0b">
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 10 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+              {['Timeframe', 'Trades', 'WR%', 'Net P&L', 'Avg Hold'].map(h => (
+                <th key={h} style={{ padding: '3px 8px', textAlign: 'left', color: '#52525b', fontWeight: 600, fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {stats.map(({ tf, count, wr, net, avgH }) => (
+              <tr key={tf} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                <td style={{ padding: '4px 8px', fontWeight: 700, fontSize: 11, color: 'var(--color-text-primary)' }}>{tf}</td>
                 <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#a1a1aa' }}>{count}</td>
                 <td style={{ padding: '4px 8px' }}>
                   <span style={{
@@ -1078,12 +1217,13 @@ function EngineStatusPill({ status, detail, lastTradeAgo }) {
 
 // ── Source filter pills ───────────────────────────────────────────────────────
 
-const SRC_FILTERS = ['ALL', 'LAT', 'FV', 'REV', 'SIG'];
+const SRC_FILTERS = ['ALL', 'LAT', 'FV', 'REV', 'SIG', 'SWEEP'];
 const SRC_TO_ENTRY_TYPE = {
   LAT: 'LAT-ARB',
   FV:  'FAIR-VAL',
   REV: 'REVERSAL-SNIPE',
   SIG: 'SIGNAL',
+  SWEEP: 'SWEEP',
 };
 
 function filterBySrc(trades, src) {
@@ -1141,12 +1281,12 @@ function SrcPill({ src, active, count, pnl, onClick }) {
 export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {} }) {
   const [tab, setTab] = useState('open');
   const [srcFilter, setSrcFilter] = useState('ALL');
-  const [limit, setLimit] = useState(25);
+  const [limit, setLimit] = useState(10);
   const [engineStatus, setEngineStatus] = useState({ status: 'SCANNING', detail: '' });
 
-  // Reset limit to 25 when the filter source or tab changes
+  // Reset limit to 10 when the filter source or tab changes
   useEffect(() => {
-    setLimit(25);
+    setLimit(10);
   }, [srcFilter, tab]);
 
   useEffect(() => {
@@ -1262,6 +1402,12 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
 
                 {/* Asset Heatmap */}
                 <AssetHeatmap closed={closed} />
+
+                {/* Source Heatmap */}
+                <SourceHeatmap closed={closed} />
+
+                {/* Timeframe Heatmap */}
+                <TimeframeHeatmap closed={closed} />
               </>
             )}
 
@@ -1284,23 +1430,22 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
                     {visibleClosed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} />)}
                     {filteredClosed.length > limit && (
                       <button 
-                        onClick={() => setLimit(prev => prev + 50)}
+                        onClick={() => setLimit(prev => prev + 10)}
                         style={{
                           width: 'calc(100% - 16px)',
-                          margin: '8px 8px 16px 8px',
-                          padding: '10px',
-                          background: 'rgba(0, 203, 214, 0.05)',
-                          border: '1px dashed rgba(0, 203, 214, 0.25)',
-                          color: 'var(--color-accent)',
-                          borderRadius: '6px',
-                          cursor: 'pointer',
-                          fontWeight: '600',
-                          fontSize: '11px',
+                          margin: '12px 8px',
+                          padding: '8px 12px',
+                          borderRadius: '4px',
+                          fontWeight: '700',
+                          fontSize: '10px',
+                          fontFamily: 'var(--font-mono)',
                           textAlign: 'center',
                           display: 'block',
-                          transition: 'all 200ms ease'
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.08em',
+                          color: 'var(--color-accent)',
                         }}
-                        className="load-more-btn"
+                        className="load-more-btn metal-fx"
                       >
                         Load More Trades ({filteredClosed.length - limit} remaining...)
                       </button>

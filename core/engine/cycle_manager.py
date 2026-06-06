@@ -202,8 +202,8 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             elif t_minus == 2:
                 pyth_ts = GLOBAL_ORACLE_CACHE.get(asset, {}).get("timestamp", 0.0)
                 pyth_age = time.time() - pyth_ts
-                if pyth_age > 1.0:
-                    log.info("[T2-SWEEPER] %s/%s: Pyth stale (%.1fs > 1s) — skip",
+                if pyth_age > 2.0:
+                    log.info("[T2-SWEEPER] %s/%s: Pyth stale (%.1fs > 2s) — skip",
                              asset, timeframe, pyth_age)
                     return
 

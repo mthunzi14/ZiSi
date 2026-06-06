@@ -83,6 +83,7 @@ export default function App() {
 
       try {
         const r = await fetch('/api/positions');
+        if (!r.ok) throw new Error("HTTP error " + r.status);
         const d = await r.json();
         setPositions(d);
       } catch { /* offline */ }

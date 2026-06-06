@@ -119,7 +119,7 @@ function buildTypeStats(closed) {
     byType[type].pnl += parseFloat(t.realized_pnl || 0);
     if (parseFloat(t.realized_pnl || 0) > 0) byType[type].wins += 1;
   }
-  const ORDER = ['LAT-ARB', 'FAIR-VAL', 'REVERSAL-SNIPE', 'SIGNAL'];
+  const ORDER = ['LAT-ARB', 'FAIR-VAL', 'REVERSAL-SNIPE', 'SIGNAL', 'SWEEP'];
   return Object.entries(byType)
     .sort((a, b) => (ORDER.indexOf(a[0]) - ORDER.indexOf(b[0])))
     .map(([type, d]) => ({
@@ -135,6 +135,7 @@ const TYPE_COLOR = {
   'FAIR-VAL':       '#00d4a3',
   'REVERSAL-SNIPE': '#ff007a',
   'SIGNAL':         'var(--color-iron)',
+  'SWEEP':          '#eab308',
 };
 
 // ── shared style constants ────────────────────────────────────────────────────

@@ -56,7 +56,7 @@ def _derive_entry_type(title: str) -> str:
     t = (title or "").upper()
     if "T2_SWEEPER" in t or "SWEEP" in t:
         return "SWEEP"
-    if "LATENCY_ARB" in t or "LAT_ARB" in t:
+    if "LATENCY_ARB" in t or "LAT_ARB" in t or "ARB" in t:
         return "LAT-ARB"
     if "FAIR_VAL" in t or "FAIR-VAL" in t:
         return "FAIR-VAL"
@@ -1622,8 +1622,6 @@ def persist_positions() -> None:
 
         with GLOBAL_POSITIONS_LOCK:
             try:
-                # Cap closed list to 300 most recent
-                data["closed"] = data["closed"][:300]
                 tmp_path = out_path.with_suffix(".tmp")
                 tmp_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
                 import os as _os

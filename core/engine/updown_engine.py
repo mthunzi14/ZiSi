@@ -636,7 +636,7 @@ class UpDownEngine:
             # Macro-aware FV edge penalty: raises the edge bar when the 8-candle macro
             # trend conflicts with FV direction, preventing macro-opposing FV entries.
             # 5+/8 conflict (soft) → +0.08 penalty; 6+/8 conflict (hard) → +0.15 penalty.
-            if self.asset == "DOGE" and len(klines) >= 10:
+            if len(klines) >= 10:
                 _fv_m8 = klines[-9:-1]
                 _fv_m_up = sum(1 for k in _fv_m8 if float(k[4]) > float(k[1]))
                 _fv_m_dn = 8 - _fv_m_up
@@ -685,7 +685,7 @@ class UpDownEngine:
                             break
                 except Exception:
                     pass
-            _corroboration_multiplier = 1.3 if _corroborated else (0.7 if self.asset == "DOGE" else 1.0)
+            _corroboration_multiplier = 1.3 if _corroborated else (0.7 if self.asset in ("DOGE", "SOL", "XRP") else 1.0)
             log.info(
                 "[CORROBORATE] %s/5m: %s FV %s — size_mult=%.1f",
                 self.asset,
@@ -761,7 +761,7 @@ class UpDownEngine:
                     return None
 
             # Serve active choppy cooldown before updating history
-            if self.asset == "DOGE" and self._choppy_candles > 0:
+            if self._choppy_candles > 0:
                 self._choppy_candles -= 1
                 log.info(
                     "[CHOPPY] %s/%s: cooling down (%d candle(s) remaining)",
@@ -786,8 +786,7 @@ class UpDownEngine:
                         "[CHOPPY] %s/%s: %d slope flips, slope=%.3f%% — 2-candle pause",
                         self.asset, self.timeframe, _flips, _slope * 100,
                     )
-                    if self.asset == "DOGE":
-                        return None
+                    return None
         # ─────────────────────────────────────────────────────────────────────
 
         # Macro trend gate (8-candle): if 6+/8 last closed candles all point in

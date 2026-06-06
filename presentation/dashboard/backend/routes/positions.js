@@ -45,7 +45,13 @@ function readPositionsFile() {
   }
   try {
     const raw  = fs.readFileSync(POSITIONS_FILE, 'utf-8');
+    if (!raw.trim()) {
+      throw new Error('Positions file is empty');
+    }
     const data = JSON.parse(raw);
+    if (!data.active && !data.closed) {
+      throw new Error('Positions file JSON is invalid or incomplete');
+    }
 
     const active = deduplicateById(data.active || []);
     const closed = deduplicateById(data.closed || []);
@@ -62,7 +68,7 @@ function readPositionsFile() {
     return { active, closed, summary, last_updated: data.last_updated || null };
   } catch (err) {
     console.warn('[POSITIONS] Parse error:', err.message);
-    return { active: [], closed: [], summary: DEFAULT_SUMMARY, last_updated: null };
+    throw err;
   }
 }
 
