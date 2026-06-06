@@ -81,7 +81,7 @@ class ArbitrageScanner:
                 pass
 
     async def fetch_polymarket(self, session: aiohttp.ClientSession) -> List[Dict[str, Any]]:
-        url = f"{POLY_GAMMA_API}/markets?active=true&closed=false&limit=100"
+        url = f"{POLY_GAMMA_API}/markets?active=true&closed=false&limit=1000"
         headers = {"User-Agent": "Mozilla/5.0"}
         try:
             async with session.get(url, headers=headers, ssl=False, timeout=15) as resp:
@@ -94,8 +94,8 @@ class ArbitrageScanner:
         return []
 
     async def fetch_kalshi(self, session: aiohttp.ClientSession) -> List[Dict[str, Any]]:
-        # V2 events API with nested markets - increased limit from 25 to 100
-        url = f"{KALSHI_API}/events?status=open&limit=100&with_nested_markets=true"
+        # V2 events API with nested markets - increased limit to 200 to find pairings
+        url = f"{KALSHI_API}/events?status=open&limit=200&with_nested_markets=true"
         headers = {"User-Agent": "Mozilla/5.0"}
         try:
             async with session.get(url, headers=headers, ssl=False, timeout=15) as resp:

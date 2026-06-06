@@ -686,6 +686,13 @@ async def main() -> None:
             except Exception as e:
                 log.error("[MAIN] Failed to import start_reversal_sniper: %s", e)
 
+            try:
+                from core.engine.cycle_manager import start_resolution_sweeper
+                tasks.append(start_resolution_sweeper(session, context.engines))
+                log.info("[MAIN] Resolution sweeper background task registered.")
+            except Exception as e:
+                log.error("[MAIN] Failed to import start_resolution_sweeper: %s", e)
+
             log.info("[MAIN] Launching %d asyncio tasks (Dynamic asset loops + reconciliation + arbitrage scanner)", len(tasks))
             await asyncio.gather(*tasks)
     finally:
