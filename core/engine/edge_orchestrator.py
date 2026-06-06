@@ -178,7 +178,7 @@ class EdgeOrchestrator:
         # ── A: Regime Detection ──────────────────────────────────────────────
         try:
             if self._regime_detector:
-                if current_price > 0:
+                if current_price > 0 and asset == "BTC":
                     self._regime_detector.update_price(current_price, symbol=asset)
                 status = self._regime_detector.get_status()
                 ctx["regime_name"] = status.get("regime", "NORMAL")

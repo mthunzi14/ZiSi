@@ -30,6 +30,8 @@ def normalize_text(text: str) -> str:
     if not text:
         return ""
     text = text.lower()
+    # Strip commas between digits (e.g., "100,000" -> "100000")
+    text = re.sub(r'(\d),(\d)', r'\1\2', text)
     for char in ["?", ".", ",", "!", "-", '"', "'", "(", ")", "[", "]"]:
         text = text.replace(char, " ")
     return " ".join(text.split())
@@ -66,8 +68,8 @@ def check_overlap(title1: str, title2: str) -> bool:
     if m1 != m2:
         return False
         
-    # High Jaccard similarity or key term match
-    return jaccard >= 0.55
+    # High Jaccard similarity or key term match (raised to 0.70 to prevent false pairings)
+    return jaccard >= 0.70
 
 class ArbitrageScanner:
     def __init__(self, telegram_callback=None):
@@ -81,17 +83,25 @@ class ArbitrageScanner:
                 pass
 
     async def fetch_polymarket(self, session: aiohttp.ClientSession) -> List[Dict[str, Any]]:
-        url = f"{POLY_GAMMA_API}/markets?active=true&closed=false&limit=1000"
+        markets = []
         headers = {"User-Agent": "Mozilla/5.0"}
-        try:
-            async with session.get(url, headers=headers, ssl=False, timeout=15) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-                else:
-                    log.error("[ARB] Polymarket Gamma API returned status: %d", resp.status)
-        except Exception as e:
-            log.error("[ARB] Failed to fetch Polymarket Gamma markets: %r", e)
-        return []
+        for page in range(5):
+            offset = page * 100
+            url = f"{POLY_GAMMA_API}/markets?active=true&closed=false&limit=100&offset={offset}"
+            try:
+                async with session.get(url, headers=headers, ssl=False, timeout=15) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if not data:
+                            break
+                        markets.extend(data)
+                    else:
+                        log.error("[ARB] Polymarket Gamma API returned status: %d at page %d", resp.status, page)
+                        break
+            except Exception as e:
+                log.error("[ARB] Failed to fetch Polymarket Gamma markets page %d: %r", page, e)
+                break
+        return markets
 
     async def fetch_kalshi(self, session: aiohttp.ClientSession) -> List[Dict[str, Any]]:
         # V2 events API with nested markets - increased limit to 200 to find pairings
