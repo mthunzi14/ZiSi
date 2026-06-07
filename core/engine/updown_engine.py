@@ -621,7 +621,7 @@ class UpDownEngine:
                                         break
                             except Exception:
                                 pass
-                        _corroboration_multiplier = 1.3 if _corroborated else (0.7 if self.asset in ("DOGE", "SOL", "XRP") else 1.0)
+                        _corroboration_multiplier = 1.3 if _corroborated else 1.0
 
                         # We have a valid Fair Value trade signal! Set direction and score.
                         raw_dir = _fv["direction"]

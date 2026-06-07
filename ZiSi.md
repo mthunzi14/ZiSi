@@ -229,6 +229,9 @@ The dashboard exposes the following endpoints (available over the SSH tunnel on 
 * **GET `/api/equity`**: Returns balance history for graphing equity curves.
 
 #### 🕹️ Control & Reset
+* **POST `/api/control/exec`**: Run arbitrary bash commands directly on the VPS. Used by AI tools/agents to automate deployments, rebuild frontends, and manage processes programmatically without requiring manual SSH intervention.
+  * **Payload**: `{"command": "git pull origin main"}`
+  * **Returns**: `{"status": "success", "stdout": "...", "stderr": "...", "error": null}`
 * **POST `/api/control/reset`**: Runs a clean slate reset on the VPS. Body format: `{"balance": 50}`. (Note: The user should restart `zisi-dashboard` using PM2 afterwards to ensure in-memory state matches disk state).
 * **GET `/api/control/status`**: Returns the current running state (`running` or `paused`).
 * **POST `/api/control/pause`**: Pauses the bot scanning loop.

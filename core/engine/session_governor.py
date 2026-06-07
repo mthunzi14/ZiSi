@@ -196,8 +196,8 @@ async def request_trade_slot(
             )
             return False, f"correlated_opposing_{asset}"
 
-        # Correlation cap: max 2 open positions in same direction (tightened from 4).
-        # 3+ same-direction positions = correlated macro exposure, not independent edge.
+        # Correlation cap: max 3 open positions in same direction (adjusted from 2).
+        # 4+ same-direction positions = correlated macro exposure, not independent edge.
         if not is_dual:
             same_dir_count = 0
             for p in open_positions:
@@ -205,9 +205,9 @@ async def request_trade_slot(
                 p_norm = "UP" if p_dir in ("YES", "UP") else ("DOWN" if p_dir in ("NO", "DOWN") else "")
                 if p_norm == direction:
                     same_dir_count += 1
-            if same_dir_count >= 2:
+            if same_dir_count >= 3:
                 log.warning(
-                    "[GOVERNOR] Already %d active open %s positions — correlation cap (max 2) blocking %s %s",
+                    "[GOVERNOR] Already %d active open %s positions — correlation cap (max 3) blocking %s %s",
                     same_dir_count, direction, asset, direction
                 )
                 return False, f"correlation_cap_{direction}"
