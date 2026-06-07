@@ -226,5 +226,44 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
             sig_blocked_floor = await engine_5m.generate_signal(session)
             self.assertIsNone(sig_blocked_floor)
 
+    async def test_session_governor_opposing_exposure_block(self):
+        import core.engine.session_governor as governor
+        from core.engine.session_governor import request_trade_slot
+        
+        # Clean state
+        governor._lat_arb_in_flight.clear()
+        governor._lat_arb_cooldowns.clear()
+
+        # Mock open positions with a BTC UP trade
+        open_positions = [
+            {
+                "order_id": "zisi_1",
+                "event_title": "[UPDOWN][BTC][5m][SINGLE] Bitcoin Up or Down",
+                "direction": "YES",
+                "asset": "BTC",
+            }
+        ]
+
+        # 1. Opposing request: BTC DOWN (is_dual=False) -> should be BLOCKED
+        allowed, reason = await request_trade_slot(
+            "BTC", "15m", 0.85, 15, open_positions, is_dual=False, direction="DOWN"
+        )
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "opposing_exposure_BTC")
+
+        # 2. Same direction request: BTC UP (is_dual=False) -> should be ALLOWED (subject to other caps)
+        allowed_same, reason_same = await request_trade_slot(
+            "BTC", "15m", 0.85, 15, open_positions, is_dual=False, direction="UP"
+        )
+        self.assertTrue(allowed_same)
+        self.assertEqual(reason_same, "ok")
+
+        # 3. Opposing request but is_dual=True (latency arb) -> should be ALLOWED
+        allowed_dual, reason_dual = await request_trade_slot(
+            "BTC", "15m", 0.85, 15, open_positions, is_dual=True, direction="DOWN"
+        )
+        self.assertTrue(allowed_dual)
+        self.assertEqual(reason_dual, "dual_ok")
+
 if __name__ == "__main__":
     unittest.main()

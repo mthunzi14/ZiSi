@@ -37,8 +37,8 @@ def candle_bucket_key(interval_minutes: int, now_ts: Optional[float] = None) -> 
 
 
 def _parse_asset_from_title(title: str) -> Optional[str]:
-    m = re.search(r"\[(BTC|ETH|SOL|XRP)\]", title or "")
-    return m.group(1) if m else None
+    m = re.search(r"\[(BTC|ETH|SOL|XRP|DOGE|ADA|AVAX|SUI)\]", title or "", re.IGNORECASE)
+    return m.group(1).upper() if m else None
 
 
 def has_open_asset_exposure(open_positions: list, asset: str) -> bool:
@@ -134,6 +134,22 @@ async def request_trade_slot(
 
         if has_open_asset_tf_exposure(open_positions, asset, timeframe):
             return False, f"open_position_{asset}_{timeframe}"
+
+        # Block opposing direction on the same asset across any timeframe (unless dual arb)
+        if not is_dual:
+            for p in open_positions:
+                t = p.get("event_title") or ""
+                p_asset = (p.get("asset") or _parse_asset_from_title(t) or "").upper()
+                if p_asset == asset:
+                    p_dir = p.get("direction") or ""
+                    p_is_up = p_dir in ("YES", "UP")
+                    sig_is_up = direction == "UP"
+                    if p_is_up != sig_is_up:
+                        log.warning(
+                            "[GOVERNOR] Opposing position check blocked: %s/%s %s is blocked by open %s %s position %s",
+                            asset, timeframe, direction, p_asset, p_dir, p.get("order_id")
+                        )
+                        return False, f"opposing_exposure_{asset}"
 
         # Correlation cap: max 2 open positions in same direction (tightened from 4).
         # 3+ same-direction positions = correlated macro exposure, not independent edge.
