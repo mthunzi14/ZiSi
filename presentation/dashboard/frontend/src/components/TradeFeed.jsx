@@ -391,8 +391,10 @@ function SessionAnalytics({ closed }) {
   // Build running P&L from chronological order
   const chrono = [...closed].reverse();
   let runBal = 0, peak = 0, maxDD = 0;
-  const latSeries = [], fvSeries = [], sigSeries = [], sweepSeries = [];
+  const latSeries = [0], fvSeries = [0], sigSeries = [0], sweepSeries = [0];
+  const ncsSeries = [0], revSnipeSeries = [0], revStreakSeries = [0], dualSeries = [0];
   let latBal = 0, fvBal = 0, sigBal = 0, sweepBal = 0;
+  let ncsBal = 0, revSnipeBal = 0, revStreakBal = 0, dualBal = 0;
 
   chrono.forEach(t => {
     const pnl = parseFloat(t.realized_pnl || 0);
@@ -400,11 +402,33 @@ function SessionAnalytics({ closed }) {
     if (runBal > peak) peak = runBal;
     const dd = peak - runBal;
     if (dd > maxDD) maxDD = dd;
-    const et = t.entry_type || 'SIGNAL';
-    if (et === 'LAT-ARB')  { latBal += pnl; latSeries.push(latBal); }
-    if (et === 'FAIR-VAL') { fvBal  += pnl; fvSeries.push(fvBal); }
-    if (et === 'SIGNAL')   { sigBal += pnl; sigSeries.push(sigBal); }
-    if (et === 'SWEEP')    { sweepBal += pnl; sweepSeries.push(sweepBal); }
+    
+    const et = (t.entry_type || 'SIGNAL').toUpperCase();
+    if (et === 'LAT-ARB' || et === 'LATENCY-ARB' || et === 'LAT') {
+      latBal += pnl;
+      latSeries.push(latBal);
+    } else if (et === 'FAIR-VAL' || et === 'FAIR_VAL' || et === 'FV') {
+      fvBal += pnl;
+      fvSeries.push(fvBal);
+    } else if (et === 'CLOSE-SNIPE' || et === 'CLOSE_SNIPE' || et === 'NCS') {
+      ncsBal += pnl;
+      ncsSeries.push(ncsBal);
+    } else if (et === 'REVERSAL-SNIPE' || et === 'REVERSAL_SNIPE' || et === 'REV-SNIPE' || et === 'REV_SNIPE' || et === 'REV') {
+      revSnipeBal += pnl;
+      revSnipeSeries.push(revSnipeBal);
+    } else if (et === 'REVERSAL-STREAK' || et === 'REVERSAL_STREAK' || et === 'REV-STREAK' || et === 'REV_STREAK') {
+      revStreakBal += pnl;
+      revStreakSeries.push(revStreakBal);
+    } else if (et === 'SIGNAL' || et === 'SINGLE' || et === 'SIG') {
+      sigBal += pnl;
+      sigSeries.push(sigBal);
+    } else if (et === 'SWEEP' || et === 'T2_SWEEPER') {
+      sweepBal += pnl;
+      sweepSeries.push(sweepBal);
+    } else if (et === 'DUAL' || et === 'DUAL_MAIN' || et === 'DUAL_HEDGE') {
+      dualBal += pnl;
+      dualSeries.push(dualBal);
+    }
   });
 
   const currentDD = Math.max(0, peak - runBal);
@@ -429,11 +453,15 @@ function SessionAnalytics({ closed }) {
         </div>
 
         {/* Per-type sparklines */}
-        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end' }}>
-          {latSeries.length > 0 && <MiniSparkline values={latSeries} color="#2b7fff" label="LAT" />}
-          {fvSeries.length  > 0 && <MiniSparkline values={fvSeries}  color="#00d4a3" label="FV"  />}
-          {sigSeries.length > 0 && <MiniSparkline values={sigSeries} color="#a1a1aa" label="SIG" />}
-          {sweepSeries.length > 0 && <MiniSparkline values={sweepSeries} color="#eab308" label="SWEEP" />}
+        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          {latSeries.length > 1 && <MiniSparkline values={latSeries} color="#2b7fff" label="LAT ARB" />}
+          {fvSeries.length  > 1 && <MiniSparkline values={fvSeries}  color="#00d4a3" label="FV"  />}
+          {ncsSeries.length > 1 && <MiniSparkline values={ncsSeries} color="#e27622" label="NCS" />}
+          {revSnipeSeries.length > 1 && <MiniSparkline values={revSnipeSeries} color="#ff007a" label="REV SNIPE" />}
+          {revStreakSeries.length > 1 && <MiniSparkline values={revStreakSeries} color="#e076ff" label="REV STREAK" />}
+          {sigSeries.length > 1 && <MiniSparkline values={sigSeries} color="#a1a1aa" label="SIG" />}
+          {sweepSeries.length > 1 && <MiniSparkline values={sweepSeries} color="#eab308" label="SWEEP" />}
+          {dualSeries.length > 1 && <MiniSparkline values={dualSeries} color="#9945ff" label="DUAL" />}
         </div>
       </div>
     </CollapsiblePanel>
@@ -509,11 +537,12 @@ function AssetHeatmap({ closed }) {
 function SourceHeatmap({ closed }) {
   if (closed.length === 0) return null;
 
-  const SOURCES = ['LAT-ARB', 'FAIR-VAL', 'REVERSAL-SNIPE', 'SIGNAL', 'SWEEP'];
+  const SOURCES = ['LAT-ARB', 'FAIR-VAL', 'CLOSE-SNIPE', 'REVERSAL-SNIPE', 'REVERSAL-STREAK', 'SIGNAL', 'SWEEP', 'DUAL'];
 
   const stats = SOURCES.map(src => {
     const trades = closed.filter(t => {
-      const et = t.entry_type || 'SIGNAL';
+      let et = t.entry_type || 'SIGNAL';
+      if (et === 'DUAL_MAIN' || et === 'DUAL_HEDGE') et = 'DUAL';
       return et === src;
     });
     if (trades.length === 0) return null;
@@ -532,9 +561,12 @@ function SourceHeatmap({ closed }) {
   const SRC_LABELS = {
     'LAT-ARB': 'Latency Arb',
     'FAIR-VAL': 'Fair Value',
+    'CLOSE-SNIPE': 'Near Close Sniper (NCS)',
     'REVERSAL-SNIPE': 'Reversal Snipe',
+    'REVERSAL-STREAK': 'Streak Reversal',
     'SIGNAL': 'Signal',
-    'SWEEP': 'Sweeper'
+    'SWEEP': 'Sweeper',
+    'DUAL': 'Dual Arb'
   };
 
   return (
@@ -954,6 +986,132 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
   );
 }
 
+function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) {
+  const containerRef = useRef(null);
+  const [pillStyle, setPillStyle] = useState({ transform: 'translateX(0px)', width: '0px', background: 'transparent', border: '1px solid transparent' });
+
+  const activeColor = useMemo(() => {
+    if (activeFilter === 'ALL') return 'rgba(255, 255, 255, 0.08)';
+    const cfg = entryTypeCfg(SRC_TO_ENTRY_TYPE[activeFilter]);
+    return `${cfg.color}1c`; // active transparent color
+  }, [activeFilter]);
+
+  const activeBorder = useMemo(() => {
+    if (activeFilter === 'ALL') return 'rgba(255, 255, 255, 0.2)';
+    const cfg = entryTypeCfg(SRC_TO_ENTRY_TYPE[activeFilter]);
+    return cfg.color;
+  }, [activeFilter]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const activeBtn = container.querySelector('[aria-selected="true"]');
+    if (activeBtn) {
+      setPillStyle({
+        transform: `translateX(${activeBtn.offsetLeft}px)`,
+        width: `${activeBtn.offsetWidth}px`,
+        background: activeColor,
+        border: `1px solid ${activeBorder}`,
+      });
+    }
+  }, [activeFilter, srcStats, closedCount, activeColor, activeBorder]);
+
+  return (
+    <div className="t-tabs" ref={containerRef} role="tablist" style={{ position: 'relative', display: 'flex', gap: 4, padding: 3, background: 'rgba(255,255,255,0.01)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.04)', overflowX: 'auto', width: 'fit-content' }}>
+      <span className="t-tabs-pill" style={{
+        ...pillStyle,
+        position: 'absolute',
+        top: '3px',
+        bottom: '3px',
+        borderRadius: '6px',
+        transition: 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1), width 200ms cubic-bezier(0.22, 1, 0.36, 1), background 200ms, border 200ms',
+        zIndex: 0,
+        pointerEvents: 'none'
+      }} />
+      <button
+        role="tab"
+        aria-selected={activeFilter === 'ALL'}
+        onClick={() => setActiveFilter('ALL')}
+        className="metal-fx"
+        style={{
+          position: 'relative',
+          background: 'transparent',
+          border: '1px solid transparent',
+          borderRadius: 6,
+          padding: '2px 8px',
+          fontSize: 10, fontWeight: 700, letterSpacing: '0.05em',
+          color: activeFilter === 'ALL' ? '#fff' : 'var(--color-text-muted)',
+          cursor: 'pointer',
+          display: 'flex', alignItems: 'center', gap: 4,
+          transition: 'color 0.15s',
+          whiteSpace: 'nowrap',
+          zIndex: 1,
+        }}
+      >
+        ALL
+        {closedCount > 0 && (
+          <span style={{
+            background: activeFilter === 'ALL' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.07)',
+            borderRadius: 4,
+            padding: '0 4px',
+            fontSize: 9,
+            color: activeFilter === 'ALL' ? '#fff' : 'var(--color-text-muted)',
+          }}>
+            {closedCount}
+          </span>
+        )}
+      </button>
+      {srcStats.map(({ src, count, pnl }) => {
+        const cfg = entryTypeCfg(SRC_TO_ENTRY_TYPE[src]);
+        const color = cfg.color;
+        const isActive = activeFilter === src;
+        return (
+          <button
+            key={src}
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => setActiveFilter(src)}
+            className="metal-fx"
+            style={{
+              position: 'relative',
+              background: 'transparent',
+              border: '1px solid transparent',
+              borderRadius: 6,
+              padding: '2px 8px',
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.05em',
+              color: isActive ? color : 'var(--color-text-muted)',
+              cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 4,
+              transition: 'color 0.15s',
+              whiteSpace: 'nowrap',
+              zIndex: 1,
+            }}
+          >
+            {src}
+            {count > 0 && (
+              <span style={{
+                background: isActive ? `${color}33` : 'rgba(255,255,255,0.07)',
+                borderRadius: 4,
+                padding: '0 4px',
+                fontSize: 9,
+                color: isActive ? color : 'var(--color-text-muted)',
+              }}>
+                {count}
+                {pnl !== null && (
+                  <span style={{ marginLeft: 3, color: pnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)' }}>
+                    {pnl >= 0 ? '+' : ''}${Math.abs(pnl).toFixed(1)}
+                  </span>
+                )}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Column header row ─────────────────────────────────────────────────────────
 
 function ColHeaders({ cols, grid }) {
@@ -1311,6 +1469,8 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
   const [srcFilter, setSrcFilter] = useState('ALL');
   const [limit, setLimit] = useState(10);
   const [engineStatus, setEngineStatus] = useState({ status: 'SCANNING', detail: '' });
+  const [isLedgerCollapsed, setIsLedgerCollapsed] = useState(false);
+  const [btnHovered, setBtnHovered] = useState(false);
 
   // Reset limit to 10 when the filter source or tab changes
   useEffect(() => {
@@ -1360,11 +1520,13 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
         className="glass-panel border-beam-card"
         style={{ padding: 'var(--spacing-20)', display: 'flex', flexDirection: 'column' }}
       >
-        {/* Candle countdown + per-asset macro bar */}
-        <CandleCountdownBar assetMacro={assetMacro} />
+        {!isLedgerCollapsed && (
+          <>
+            {/* Candle countdown + per-asset macro bar */}
+            <CandleCountdownBar assetMacro={assetMacro} />
 
         {/* Header: title + pills + tabs */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isLedgerCollapsed ? 0 : 10, flexWrap: 'wrap', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, letterSpacing: '-0.01em' }}>
               Trade Ledger
@@ -1372,8 +1534,29 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
             <MarketSessionPill />
             <RegimePill />
             <MacroTrendArrow />
+            <button
+              onClick={() => setIsLedgerCollapsed(c => !c)}
+              onMouseEnter={() => setBtnHovered(true)}
+              onMouseLeave={() => setBtnHovered(false)}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                background: btnHovered ? 'rgba(192,192,215,0.08)' : 'rgba(255,255,255,0.04)',
+                border: `1px solid ${btnHovered ? 'rgba(192,192,215,0.35)' : 'rgba(255,255,255,0.08)'}`,
+                boxShadow: btnHovered ? '0 0 10px rgba(192,192,215,0.15), inset 0 1px 0 rgba(255,255,255,0.08)' : 'none',
+                borderRadius: 6, padding: '2px 8px', cursor: 'pointer',
+                fontSize: 9, fontWeight: 700,
+                color: btnHovered ? '#d4d4e8' : '#a1a1aa',
+                transition: 'all 0.2s',
+                marginLeft: 4
+              }}
+            >
+              <span style={{ display: 'inline-block', transform: isLedgerCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.25s' }}>▾</span>
+              {isLedgerCollapsed ? 'Expand' : 'Collapse'}
+            </button>
           </div>
-          <SlidingTabs activeTab={tab} setActiveTab={setTab} activeCount={active.length} historyCount={closed.length} />
+          {!isLedgerCollapsed && (
+            <SlidingTabs activeTab={tab} setActiveTab={setTab} activeCount={active.length} historyCount={closed.length} />
+          )}
         </div>
 
         {/* Gate Event Log lives in Analytics tab (not here) */}
@@ -1417,11 +1600,13 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
             {/* Source filter + summary stats */}
             {closed.length > 0 && (
               <>
-                <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
-                  <SrcPill src="ALL" active={srcFilter === 'ALL'} count={closed.length} pnl={null} onClick={() => setSrcFilter('ALL')} />
-                  {srcStats.map(({ src, count, pnl }) => (
-                    <SrcPill key={src} src={src} active={srcFilter === src} count={count} pnl={pnl} onClick={() => setSrcFilter(src)} />
-                  ))}
+                <div style={{ marginBottom: 12 }}>
+                  <SlidingPills
+                    activeFilter={srcFilter}
+                    setActiveFilter={setSrcFilter}
+                    srcStats={srcStats}
+                    closedCount={closed.length}
+                  />
                 </div>
                 <ClosedSummary closed={visibleClosed} />
 
@@ -1456,27 +1641,68 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
                 : (
                   <>
                     {visibleClosed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} />)}
-                    {filteredClosed.length > limit && (
-                      <button 
-                        onClick={() => setLimit(prev => prev + 10)}
-                        style={{
-                          width: 'calc(100% - 16px)',
-                          margin: '12px 8px',
-                          padding: '8px 12px',
-                          borderRadius: '4px',
-                          fontWeight: '700',
-                          fontSize: '10px',
-                          fontFamily: 'var(--font-mono)',
-                          textAlign: 'center',
-                          display: 'block',
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.08em',
-                          color: 'var(--color-accent)',
-                        }}
-                        className="load-more-btn metal-fx"
-                      >
-                        Load More Trades ({filteredClosed.length - limit} remaining...)
-                      </button>
+                    {filteredClosed.length > limit ? (
+                      <div style={{ display: 'flex', gap: 8, margin: '12px 8px' }}>
+                        <button
+                          onClick={() => setLimit(prev => prev + 10)}
+                          style={{
+                            flex: 1,
+                            padding: '8px 12px',
+                            borderRadius: '4px',
+                            fontWeight: '700',
+                            fontSize: '10px',
+                            fontFamily: 'var(--font-mono)',
+                            textAlign: 'center',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.08em',
+                            color: 'var(--color-accent)',
+                          }}
+                          className="load-more-btn metal-fx"
+                        >
+                          Load More (+10)
+                        </button>
+                        <button
+                          onClick={() => setLimit(filteredClosed.length)}
+                          style={{
+                            flex: 1,
+                            padding: '8px 12px',
+                            borderRadius: '4px',
+                            fontWeight: '700',
+                            fontSize: '10px',
+                            fontFamily: 'var(--font-mono)',
+                            textAlign: 'center',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.08em',
+                            color: 'var(--color-accent)',
+                          }}
+                          className="load-more-btn metal-fx"
+                        >
+                          Expand All ({filteredClosed.length})
+                        </button>
+                      </div>
+                    ) : (
+                      limit > 10 && (
+                        <button
+                          onClick={() => setLimit(10)}
+                          style={{
+                            width: 'calc(100% - 16px)',
+                            margin: '12px 8px',
+                            padding: '8px 12px',
+                            borderRadius: '4px',
+                            fontWeight: '700',
+                            fontSize: '10px',
+                            fontFamily: 'var(--font-mono)',
+                            textAlign: 'center',
+                            display: 'block',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.08em',
+                            color: 'var(--color-accent)',
+                          }}
+                          className="load-more-btn metal-fx"
+                        >
+                          Collapse List (Show 10)
+                        </button>
+                      )
                     )}
                   </>
                 )
@@ -1484,6 +1710,8 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
             </div>
           </>
         )}
+      </>
+    )}
       </div>
     </SpotlightMask>
   );

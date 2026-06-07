@@ -155,12 +155,14 @@ function buildTypeStats(closed) {
 }
 
 const TYPE_COLOR = {
-  'ARB':    '#2b7fff',
-  'FV':     '#00d4a3',
-  'NCS':    '#ff007a',
-  'SIG':    'var(--color-iron)',
-  'SWEEP':  '#eab308',
-  'DUAL':   '#8b5cf6',
+  'LAT ARB':    '#2b7fff',
+  'FV':         '#00d4a3',
+  'NCS':        '#e27622',
+  'REV SNIPE':  '#ff007a',
+  'REV STREAK': '#e076ff',
+  'SIG':        'var(--color-iron)',
+  'SWEEP':      '#eab308',
+  'DUAL':       '#8b5cf6',
 };
 
 // ── shared style constants ────────────────────────────────────────────────────
