@@ -1520,11 +1520,6 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
         className="glass-panel border-beam-card"
         style={{ padding: 'var(--spacing-20)', display: 'flex', flexDirection: 'column' }}
       >
-        {!isLedgerCollapsed && (
-          <>
-            {/* Candle countdown + per-asset macro bar */}
-            <CandleCountdownBar assetMacro={assetMacro} />
-
         {/* Header: title + pills + tabs */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isLedgerCollapsed ? 0 : 10, flexWrap: 'wrap', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1558,6 +1553,11 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
             <SlidingTabs activeTab={tab} setActiveTab={setTab} activeCount={active.length} historyCount={closed.length} />
           )}
         </div>
+
+        {!isLedgerCollapsed && (
+          <>
+            {/* Candle countdown + per-asset macro bar */}
+            <CandleCountdownBar assetMacro={assetMacro} />
 
         {/* Gate Event Log lives in Analytics tab (not here) */}
 
