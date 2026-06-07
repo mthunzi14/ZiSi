@@ -150,7 +150,7 @@ class TestUpDownEngineVolatility(unittest.IsolatedAsyncioTestCase):
             # Fading red streak -> signal direction should be UP
             self.assertEqual(signal["direction"], "UP")
             self.assertEqual(signal["score"], 0.75)
-            self.assertEqual(signal["entry_source"], "SIG")
+            self.assertEqual(signal["entry_source"], "REVERSAL_STREAK")
 
     @patch("core.engine.updown_engine._fetch_klines_async")
     @patch("core.engine.updown_engine.UpDownEngine._fetch_market")
@@ -189,5 +189,5 @@ class TestUpDownEngineVolatility(unittest.IsolatedAsyncioTestCase):
             # Fading green streak -> signal direction should be DOWN
             self.assertEqual(signal["direction"], "DOWN")
             self.assertEqual(signal["score"], 0.75)
-            self.assertEqual(signal["entry_source"], "SIG")
+            self.assertEqual(signal["entry_source"], "REVERSAL_STREAK")
 

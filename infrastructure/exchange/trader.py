@@ -64,6 +64,8 @@ def _derive_entry_type(title: str) -> str:
         return "FAIR-VAL"
     if "REVERSAL_SNIPE" in t or "REVERSAL-SNIPE" in t:
         return "REVERSAL-SNIPE"
+    if "REVERSAL_STREAK" in t or "REVERSAL-STREAK" in t:
+        return "REVERSAL-STREAK"
     return "SIGNAL"
 
 

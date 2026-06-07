@@ -429,7 +429,7 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         mock_place_order.assert_called_once_with(
             event_id="test_event_yes",
             market_id="up_token_123",
-            amount_dollars=3.0, # (0.98 - 0.97)/0.02 = 0.5 -> 1 + 0.5 * 4 = 3
+            amount_dollars=6.0, # (0.98 - 0.97)/0.02 = 0.5 -> 2 + 0.5 * 8 = 6
             direction="YES",
             entry_price=0.98,
             event_title="[UPDOWN][BTC][5m][CLOSE_SNIPE] Bitcoin Up or Down Test",

@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 
-// AssetCards.jsx — Bloomberg-style per-asset scanning grid
 const ASSETS = [
   { asset: 'BTC',  tf: '5m',  color: '#f7931a', tier: '100%' },
   { asset: 'BTC',  tf: '15m', color: '#ffb042', tier: '100%' },
+  { asset: 'BTC',  tf: '1h',  color: '#e27622', tier: '100%' },
   { asset: 'ETH',  tf: '5m',  color: '#627eea', tier: '100%' },
   { asset: 'ETH',  tf: '15m', color: '#8a9eed', tier: '100%' },
+  { asset: 'ETH',  tf: '1h',  color: '#a08eed', tier: '100%' },
   { asset: 'SOL',  tf: '5m',  color: '#14f195', tier: '60%' },
   { asset: 'SOL',  tf: '15m', color: '#9945ff', tier: '60%' },
   { asset: 'XRP',  tf: '5m',  color: '#00aae4', tier: '60%' },
@@ -13,6 +14,7 @@ const ASSETS = [
   { asset: 'DOGE', tf: '5m',  color: '#e1b303', tier: '35%' },
   { asset: 'DOGE', tf: '15m', color: '#cc9e02', tier: '35%' },
 ];
+
 
 function getAssetStats(key, positions) {
   const [asset, tf] = key.split('/');
@@ -63,11 +65,11 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
     <div
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      className="border-beam-card"
       style={{
         background: `linear-gradient(135deg, rgba(22,22,25,0.85) 0%, rgba(12,12,14,0.92) 100%)`,
         borderRadius: 12,
         border: `1px solid ${hovered ? '#00cbd6' : hasOpen ? color + '55' : 'rgba(255,255,255,0.06)'}`,
-        borderLeft: `3px solid ${color}`,
         padding: '12px 14px',
         minWidth: 160, flex: '1 1 calc(16% - 8px)',
         display: 'flex', flexDirection: 'column', gap: 8,
@@ -155,7 +157,7 @@ export default function AssetCards({ positions, candles, state }) {
             color: '#00cbd6', background: 'rgba(0,203,214,0.1)',
             border: '1px solid rgba(0,203,214,0.25)', borderRadius: 6, padding: '2px 8px',
           }}>
-            {expanded ? '10 assets' : `${display.length} active`}
+            {expanded ? `${ASSETS.length} assets` : `${display.length} active`}
           </span>
         </div>
         <button

@@ -512,7 +512,7 @@ class UpDownEngine:
                     "market":       market,
                     "is_dual_eligible": is_dual_eligible,
                     "edge_context": edge_ctx,
-                    "entry_source": "SIG",
+                    "entry_source": "REVERSAL_STREAK",
                     "corroboration_multiplier": 1.0,
                     "whale_aligned": True,   # default allow for streak-reversal path
                     "confluence_score": 2,   # default allow for streak-reversal path

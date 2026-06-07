@@ -41,14 +41,18 @@ function parseType(title, entryType) {
   if (typeUpper === 'FAIR_VAL' || typeUpper === 'FAIR-VAL' || typeUpper === 'FV') return 'FV';
   if (typeUpper === 'SIGNAL' || typeUpper === 'SINGLE' || typeUpper === 'SIG') return 'SIG';
   if (typeUpper === 'SWEEP' || typeUpper === 'T2_SWEEPER') return 'SWEEP';
-  if (typeUpper === 'LATENCY_ARB' || typeUpper === 'LAT-ARB' || typeUpper === 'ARB') return 'ARB';
+  if (typeUpper === 'LATENCY_ARB' || typeUpper === 'LAT-ARB' || typeUpper === 'ARB' || typeUpper === 'LAT ARB') return 'LAT ARB';
+  if (typeUpper === 'REVERSAL-SNIPE' || typeUpper === 'REVERSAL_SNIPE' || typeUpper === 'REV SNIPE' || typeUpper === 'REV') return 'REV SNIPE';
+  if (typeUpper === 'REVERSAL-STREAK' || typeUpper === 'REVERSAL_STREAK' || typeUpper === 'REV STREAK') return 'REV STREAK';
   if (typeUpper === 'DUAL' || typeUpper === 'DUAL_MAIN' || typeUpper === 'DUAL_HEDGE') return 'DUAL';
 
   const titleUpper = title.toUpperCase();
   if (titleUpper.includes('[CLOSE_SNIPE]') || titleUpper.includes('[NCS]')) return 'NCS';
   if (titleUpper.includes('[FAIR_VAL]') || titleUpper.includes('[FV]')) return 'FV';
   if (titleUpper.includes('[T2_SWEEPER]') || titleUpper.includes('[SWEEP]')) return 'SWEEP';
-  if (titleUpper.includes('[LATENCY_ARB]') || titleUpper.includes('[ARB]')) return 'ARB';
+  if (titleUpper.includes('[LATENCY_ARB]') || titleUpper.includes('[ARB]')) return 'LAT ARB';
+  if (titleUpper.includes('[REVERSAL_SNIPE]') || titleUpper.includes('[REVERSAL-SNIPE]')) return 'REV SNIPE';
+  if (titleUpper.includes('[REVERSAL_STREAK]') || titleUpper.includes('[REVERSAL-STREAK]')) return 'REV STREAK';
   if (titleUpper.includes('[SINGLE]') || titleUpper.includes('[SIG]')) return 'SIG';
   if (titleUpper.includes('[DUAL_MAIN]') || titleUpper.includes('[DUAL_HEDGE]') || titleUpper.includes('[DUAL]')) return 'DUAL';
 
@@ -87,11 +91,14 @@ function fmtLocalDT(ts) {
 }
 
 const ENTRY_TYPE_CONFIG = {
-  'LAT-ARB':        { label: 'LAT',  color: '#2b7fff' },
-  'FAIR-VAL':       { label: 'FV',   color: '#00d4a3' },
-  'REVERSAL-SNIPE': { label: 'REV',  color: '#ff007a' },
-  'SIGNAL':         { label: 'SIG',  color: 'var(--color-text-muted)' },
-  'SWEEP':          { label: 'SWEEP', color: '#eab308' },
+  'LAT-ARB':         { label: 'LAT ARB',   color: '#2b7fff' },
+  'FAIR-VAL':        { label: 'FV',        color: '#00d4a3' },
+  'REVERSAL-SNIPE':  { label: 'REV SNIPE', color: '#ff007a' },
+  'REVERSAL-STREAK': { label: 'REV STREAK',color: '#e076ff' },
+  'SIGNAL':          { label: 'SIG',       color: 'var(--color-text-muted)' },
+  'SWEEP':           { label: 'SWEEP',      color: '#eab308' },
+  'CLOSE-SNIPE':     { label: 'NCS',        color: '#e27622' },
+  'DUAL':            { label: 'DUAL',       color: '#9945ff' },
 };
 function entryTypeCfg(t) { return ENTRY_TYPE_CONFIG[t] || ENTRY_TYPE_CONFIG['SIGNAL']; }
 
@@ -1236,13 +1243,15 @@ function EngineStatusPill({ status, detail, lastTradeAgo }) {
 
 // ── Source filter pills ───────────────────────────────────────────────────────
 
-const SRC_FILTERS = ['ALL', 'LAT', 'FV', 'REV', 'SIG', 'SWEEP'];
+const SRC_FILTERS = ['ALL', 'LAT ARB', 'FV', 'NCS', 'REV SNIPE', 'REV STREAK', 'SIG', 'SWEEP'];
 const SRC_TO_ENTRY_TYPE = {
-  LAT: 'LAT-ARB',
-  FV:  'FAIR-VAL',
-  REV: 'REVERSAL-SNIPE',
-  SIG: 'SIGNAL',
-  SWEEP: 'SWEEP',
+  'LAT ARB':    'LAT-ARB',
+  'FV':         'FAIR-VAL',
+  'NCS':        'CLOSE-SNIPE',
+  'REV SNIPE':  'REVERSAL-SNIPE',
+  'REV STREAK': 'REVERSAL-STREAK',
+  'SIG':        'SIGNAL',
+  'SWEEP':      'SWEEP',
 };
 
 function filterBySrc(trades, src) {

@@ -418,7 +418,12 @@ async def _execute_order_flow(
         main_usd = max(1.0, main_usd * risk_multiplier)
         hedge_usd = max(1.0, hedge_usd * risk_multiplier)
 
-        dual_main_tag = "FAIR_VAL" if entry_source == "FAIR_VAL" else "DUAL_MAIN"
+        if entry_source == "FAIR_VAL":
+            dual_main_tag = "FAIR_VAL"
+        elif entry_source == "REVERSAL_STREAK":
+            dual_main_tag = "REVERSAL_STREAK"
+        else:
+            dual_main_tag = "DUAL_MAIN"
         main_order = _place_trade(asset, timeframe, direction, market, main_usd, entry_price, score, dual_main_tag)
         hedge_dir = "DOWN" if direction == "UP" else "UP"
         hedge_price = dn_price if direction == "UP" else up_price
@@ -440,7 +445,12 @@ async def _execute_order_flow(
             if hedge_order:
                 execute_exit(hedge_order["order_id"], hedge_price, exit_reason="EMERGENCY_ASYMMETRIC_UNWIND")
     else:
-        single_tag = "FAIR_VAL" if entry_source == "FAIR_VAL" else "SINGLE"
+        if entry_source == "FAIR_VAL":
+            single_tag = "FAIR_VAL"
+        elif entry_source == "REVERSAL_STREAK":
+            single_tag = "REVERSAL_STREAK"
+        else:
+            single_tag = "SINGLE"
         order = _place_trade(asset, timeframe, direction, market, bet_usd, entry_price, score, single_tag)
         if order:
             traded = True
