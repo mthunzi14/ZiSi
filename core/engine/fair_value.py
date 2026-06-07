@@ -85,6 +85,10 @@ def decide_value_entry(fp_up: float, up_price: float, dn_price: float,
 
     # Safety price floor removed to allow high-edge cheap entries
 
+    # Price boundary gate: avoid entering extreme prices (<0.20 or >0.80) to prevent lottery-like risk or bad risk-reward
+    if not (0.20 <= price <= 0.80):
+        return {"direction": None, "edge": 0.0, "archetype": None}
+
     t_frac = (t_min / total_min) if total_min > 0 else 0.0
     archetype = ("near_certainty"
                  if (fp >= p["near_certainty_prob"] and t_frac >= p["near_certainty_t_frac"])

@@ -370,13 +370,15 @@ def force_confirm(position: dict) -> None:
 
 def cleanup_expired_positions() -> int:
     """
-    Delete open positions whose expiry_ts passed more than 90 seconds ago.
-    Does NOT add them to closed history — completely removes them.
-    Returns count of deleted positions.
+    Move open positions whose expiry_ts passed more than 90 seconds ago to the
+    closed list with an estimated outcome (entry ≥ 0.90 → WIN, else LOSS).
+    Returns count of cleaned positions.
     """
     import time as _time
+    from datetime import timezone
     now = _time.time()
     cutoff = now - 90.0
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     with GLOBAL_POSITIONS_LOCK:
         if not _POSITIONS_FILE.exists():
@@ -392,15 +394,51 @@ def cleanup_expired_positions() -> int:
             return 0
 
         survivors = [p for p in active if p not in zombies]
+        closed_list = data.get("closed", [])
+
         for z in zombies:
+            ep = float(z.get("entry_price", 0.5) or 0.5)
+            size = float(z.get("size", z.get("amount_spent", 1.0)) or 1.0)
+            shares = size / ep if ep > 0 else 0.0
+            won = ep >= 0.90
+            exit_p = 0.99 if won else 0.01
+            pnl = round(shares * exit_p - size, 4)
+            age_s = int(now - z.get("expiry_ts", now))
+            entry_time = z.get("entry_time") or z.get("open_time") or now_iso
+            closed_record = {
+                "order_id":          z.get("order_id", "?"),
+                "market":            z.get("market", "POLYMARKET"),
+                "market_id":         z.get("market_id", ""),
+                "event_title":       z.get("event_title", ""),
+                "direction":         z.get("direction", ""),
+                "entry_price":       ep,
+                "exit_price":        exit_p,
+                "size":              size,
+                "realized_pnl":      pnl,
+                "realized_pnl_pct":  round((exit_p - ep) / ep * 100, 1) if ep > 0 else 0.0,
+                "exit_reason":       "MARKET_EXPIRED",
+                "hold_hours":        round((z.get("expiry_ts", now) - _time.mktime(
+                                         _time.strptime(entry_time[:19], "%Y-%m-%dT%H:%M:%S")
+                                     )) / 3600, 3) if "T" in entry_time else 0.0,
+                "entry_time":        entry_time,
+                "exit_time":         now_iso,
+                "expiry_ts":         z.get("expiry_ts"),
+                "entry_type":        z.get("entry_type", ""),
+            }
+            closed_list.insert(0, closed_record)
             log.info(
-                "[ZOMBIE-CLEAN] Deleted expired position %s (%s, expiry %ds ago)",
+                "[ZOMBIE-CLEAN] Moved %s to closed: %s %s @ %.0fc → %s pnl=$%.2f (expiry %ds ago)",
                 z.get("order_id", "?")[:12],
-                z.get("event_title", "")[:40],
-                int(now - z.get("expiry_ts", now)),
+                z.get("direction", ""),
+                "WIN" if won else "LOSS",
+                ep * 100,
+                z.get("event_title", "")[:30],
+                pnl,
+                age_s,
             )
 
         data["active"] = survivors
+        data["closed"] = closed_list[:300]
         summary = data.get("summary", {})
         summary["active_count"] = len(survivors)
         data["summary"] = summary

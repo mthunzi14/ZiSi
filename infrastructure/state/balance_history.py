@@ -18,7 +18,7 @@ _ROOT_HISTORY_FILE = Path(__file__).parent.parent.parent / "balance_history.json
 
 # Minimum time (seconds) between appends — prevents duplicate points
 # when sync_balance_to_state() is called multiple times per cycle.
-_MIN_INTERVAL_SECONDS = 600  # 10 minutes
+_MIN_INTERVAL_SECONDS = 60  # 1 minute
 
 _last_append_ts: float = 0.0
 _last_trades: int = -1

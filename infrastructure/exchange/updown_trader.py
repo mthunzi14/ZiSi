@@ -7,6 +7,7 @@ Confidence-weighted position sizing: stronger confluence → larger position.
 """
 
 import logging
+import os
 import time
 import re
 from datetime import datetime, timezone, timedelta
@@ -73,8 +74,8 @@ BLOWOFF_RSI_THRESHOLD = 60   # RSI ≥ 60 on UP = exhaustion
 BLOWOFF_BB_SIGMA      = 2.0  # Bollinger upper band = SMA + 2σ
 BLOWOFF_MIN_MOVE      = 0.08 # last-minute move > 0.08% = vertical exhaustion
 
-# Min liquidity for Up/Down market to be tradeable
-UPDOWN_MIN_LIQUIDITY = 0.0
+# Min liquidity for Up/Down market to be tradeable (env override: UPDOWN_MIN_LIQUIDITY)
+UPDOWN_MIN_LIQUIDITY = float(os.getenv("UPDOWN_MIN_LIQUIDITY", "200.0"))
 
 # Coins we trade
 UPDOWN_COINS = ["BTC", "ETH", "SOL", "XRP"]
@@ -97,10 +98,12 @@ _coin_cooldown_until: dict = {"BTC": 0, "ETH": 0, "SOL": 0, "XRP": 0}
 # Session-wide win streak for compounding multiplier
 _session_win_streak: int = 0
 
-# Session loss circuit breaker for Up/Down
+# Session loss circuit breaker for Up/Down.
+# Disabled by default — set CIRCUIT_BREAKER_ENABLED=true in .env to re-enable.
 _updown_session_loss: float = 0.0
 _updown_circuit_reset: float = 0.0
-UPDOWN_SESSION_LOSS_LIMIT = 10.0  # pause after $10 updown loss in a session
+_CB_ENABLED = os.getenv("CIRCUIT_BREAKER_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+UPDOWN_SESSION_LOSS_LIMIT = float(os.getenv("CIRCUIT_BREAKER_SESSION_LOSS", "10.0")) if _CB_ENABLED else float("inf")
 _hwm_tracker: dict = {}  # high watermark per order_id for trailing floor stop
 
 # Per-duration win rate tracker (in-memory only, resets on restart)

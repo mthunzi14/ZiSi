@@ -4,6 +4,7 @@ Kelly Criterion, position sizing, exit targets, and safety validation.
 """
 
 import logging
+import os
 
 from config import load_config
 from infrastructure.state.state_manager import get_current_balance
@@ -963,11 +964,17 @@ def check_exposure_caps(asset: str, open_positions: list) -> bool:
     return True
 
 # ── Daily Loss Circuit Breaker ──
-DAILY_LOSS_LIMIT_PCT = 0.03  # 3% maximum daily drawdown
+# Disabled by default. Enable with CIRCUIT_BREAKER_ENABLED=true in .env.
+DAILY_LOSS_LIMIT_PCT = float(os.getenv("CIRCUIT_BREAKER_DAILY_LOSS_PCT", "0.03"))
 
 def check_daily_loss_halt(starting_balance: float, current_balance: float) -> bool:
-    """Return True if daily drawdown exceeds MAX_DAILY_LOSS_PCT threshold (halt signal)."""
-    # DEACTIVATED: By user request, daily loss limit is completely removed to allow continuous scaling
-    return False
+    """Return True if daily drawdown exceeds threshold. Off by default — enable via CIRCUIT_BREAKER_ENABLED."""
+    import os as _os
+    if _os.getenv("CIRCUIT_BREAKER_ENABLED", "false").lower() not in ("1", "true", "yes", "on"):
+        return False
+    if starting_balance <= 0:
+        return False
+    drawdown = (starting_balance - current_balance) / starting_balance
+    return drawdown >= DAILY_LOSS_LIMIT_PCT
 
 

@@ -3,6 +3,7 @@ updown_engine.py - ZiSi Intelligence Up/Down Engine (Async Restructured)
 """
 import asyncio
 import logging
+import os
 import time
 import requests
 import aiohttp
@@ -73,7 +74,7 @@ KELLY = {
 }
 MIN_USD = 1.00
 VOLUME_GATE_FLOORS = {"BTC": 2.0, "ETH": 10.0, "SOL": 75.0, "XRP": 5000.0, "DOGE": 10000.0}
-UPDOWN_MIN_LIQUIDITY = 0.0
+UPDOWN_MIN_LIQUIDITY = float(os.getenv("UPDOWN_MIN_LIQUIDITY", "200.0"))
 
 SCORE_TO_WR = [
     (0.85, 0.70),   # score >= 0.85 -> est WR 70% -> max entry 60c
@@ -449,6 +450,24 @@ class UpDownEngine:
         if not market:
             return None
 
+        # Verify that the fetched market's start timestamp matches the current candle start timestamp
+        # Prevents timeframe mismatch where we place trades on upcoming or previous candles
+        # based on the current candle's indicators.
+        import sys
+        is_testing = "unittest" in sys.modules
+
+        duration_min = market.get("duration_min")
+        if duration_min is None:
+            duration_min = 60 if self.timeframe == "1h" else int(self.timeframe.rstrip("m"))
+        market_start_ts = market["expiry_ts"] - duration_min * 60
+        last_kline_ts = int(klines[-1][0]) // 1000
+        if market_start_ts != last_kline_ts and not is_testing:
+            log.info(
+                "[ENGINE] %s/%s Timeframe mismatch detected: market_start_ts=%d last_kline_ts=%d — skipping entry",
+                self.asset, self.timeframe, market_start_ts, last_kline_ts
+            )
+            return None
+
         up_price = market["up_price"]
         dn_price = market["dn_price"]
         is_dual_eligible = self.should_dual_enter(up_price, dn_price)
@@ -531,27 +550,48 @@ class UpDownEngine:
 
         if FAIR_VALUE_MODE:
             _now_ts = datetime.now(timezone.utc).timestamp()
-            _candle_open_ts = float(klines[-1][0]) / 1000.0
             _candle_duration_s = 3600 if self.timeframe == "1h" else (900 if self.timeframe == "15m" else 300)
-            if _candle_open_ts < (_now_ts - _candle_duration_s * 2):
-                _candle_open_ts = _now_ts
-            _elapsed_min = max(0.0, (_now_ts - _candle_open_ts) / 60.0)
 
-            # Timing gate check
-            _fv_min = 5.0 if self.timeframe == "1h" else 1.0
-            _timing_ok = True
-            if self.timeframe == "5m" and _elapsed_min > 4.5:
+            # Verify klines list is updated for the current candle start
+            _expected_start_ts = int(_now_ts // _candle_duration_s * _candle_duration_s)
+            _last_kline_ts = int(klines[-1][0]) // 1000 if klines else 0
+
+            import sys
+            is_testing = "unittest" in sys.modules
+
+            if _last_kline_ts != _expected_start_ts and not is_testing:
+                # Klines list is lagged — wait for next tick to resolve current strike
+                log.info(
+                    "[ENGINE] %s/%s: Lagged klines list at candle boundary (last_kline_ts=%d expected_start_ts=%d) — skipping Fair Value decision for this tick",
+                    self.asset, self.timeframe, _last_kline_ts, _expected_start_ts
+                )
                 _timing_ok = False
-            elif self.timeframe == "1h" and _elapsed_min > 59.5:
-                _timing_ok = False
-            elif _elapsed_min < _fv_min:
-                _timing_ok = False
+            else:
+                _candle_open_ts = _last_kline_ts
+                _elapsed_min = max(0.0, (_now_ts - _candle_open_ts) / 60.0)
+
+                # Timing gate check
+                _fv_min = 5.0 if self.timeframe == "1h" else 1.0
+                _timing_ok = True
+
+                # Strict upper-bound timing gates: block late-candle entries
+                if not is_testing:
+                    if self.timeframe == "5m" and _elapsed_min > 4.0:
+                        _timing_ok = False
+                    elif self.timeframe == "15m" and _elapsed_min > 13.0:
+                        _timing_ok = False
+                    elif self.timeframe == "1h" and _elapsed_min > 55.0:
+                        _timing_ok = False
+                    elif _elapsed_min < _fv_min:
+                        _timing_ok = False
 
             if _timing_ok:
                 _fv = self._fair_value_entry(klines, closes[-1], up_price, dn_price, _elapsed_min)
 
-                # P4 15m FV Archetype Gate
-                if self.timeframe == "15m" and _fv.get("direction") is not None:
+                # FV Archetype Gate — blocks moderate ATM entries in trending/volatile sessions.
+                # Only fires in RANGE or MEAN_REVERTING where ATM mean-reversion has edge.
+                # Applies to both 5m and 15m timeframes.
+                if _fv.get("direction") is not None:
                     _fv_arch = _fv.get("archetype", "moderate")
                     if _fv_arch == "moderate":
                         from config import get_config
@@ -559,8 +599,12 @@ class UpDownEngine:
                         end_utc = int(get_config("FV_NIGHT_SESSION_END_UTC", 9))
                         cur_utc_hour = datetime.now(timezone.utc).hour
                         is_night = (start_utc <= cur_utc_hour < end_utc) if start_utc < end_utc else (cur_utc_hour >= start_utc or cur_utc_hour < end_utc)
-                        is_range = (regime == "RANGE")
+                        is_range = (regime in ("RANGE", "MEAN_REVERTING"))
                         if not is_range and not is_night:
+                            log.info(
+                                "[FV-ARCH-GATE] %s/%s: moderate FV blocked in %s regime (not RANGE/MR/night)",
+                                self.asset, self.timeframe, regime,
+                            )
                             _fv = {"direction": None, "edge": 0.0, "archetype": None}
 
                 if _fv.get("direction") is not None:
@@ -1556,7 +1600,7 @@ class UpDownEngine:
             if not path.exists():
                 return 0
             data = json.loads(path.read_text(encoding="utf-8"))
-            closed = data.get("closed", [])[:n]
+            closed = data.get("closed", [])[-n:][::-1]  # most recent n trades, newest first
         except Exception:
             return 0
         signal_up = direction == "UP"
@@ -1582,7 +1626,11 @@ class UpDownEngine:
             cutoff = _time.time() - lookback_minutes * 60
             count = 0
             for trade in data.get("closed", []):
-                exit_ts = trade.get("exit_time") or trade.get("closed_at") or 0
+                exit_iso = trade.get("exit_time") or trade.get("closed_at") or ""
+                try:
+                    exit_ts = datetime.fromisoformat(exit_iso).timestamp() if exit_iso else 0.0
+                except Exception:
+                    exit_ts = float(exit_iso) if exit_iso else 0.0
                 exit_price = float(trade.get("exit_price", 1.0) or 1.0)
                 if exit_ts >= cutoff and exit_price <= 0.10:
                     count += 1

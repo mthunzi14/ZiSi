@@ -66,7 +66,8 @@ class TestEdgeIntegration(unittest.IsolatedAsyncioTestCase):
 
         # Mock the global singleton's get_trade_context method and mock Path.exists to bypass live regime_status.json
         with patch("core.engine.edge_orchestrator.edge_orchestrator.get_trade_context", new_callable=AsyncMock) as mock_get_context, \
-             patch("pathlib.Path.exists", return_value=False):
+             patch("pathlib.Path.exists", return_value=False), \
+             patch("config.FAIR_VALUE_MODE", False):
             mock_get_context.return_value = mock_ctx
 
             # Run signal generation

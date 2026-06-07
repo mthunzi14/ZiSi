@@ -40,7 +40,7 @@ class TestFairValue(unittest.TestCase):
         self.assertEqual(r["direction"], "DOWN")
 
     def test_near_certainty_late_window(self):
-        r = decide_value_entry(0.95, up_price=0.88, dn_price=0.12, t_min=14.0, total_min=15.0, params=TEST_PARAMS)
+        r = decide_value_entry(0.95, up_price=0.78, dn_price=0.22, t_min=14.0, total_min=15.0, params=TEST_PARAMS)
         self.assertEqual(r["direction"], "UP")
         self.assertEqual(r["archetype"], "near_certainty")
 

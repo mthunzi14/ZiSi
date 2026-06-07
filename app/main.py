@@ -215,6 +215,7 @@ async def _validate_trade_slot(
     interval_minutes: int,
     signal: dict,
     current_balance: float,
+    session=None,
 ) -> tuple[bool, dict]:
     """
     Enforces risk and entry gates. Returns (allowed, details).
@@ -227,12 +228,23 @@ async def _validate_trade_slot(
     up_price = market["up_price"]
     dn_price = market["dn_price"]
 
-    # SIG 10¢ floor: block only extreme-consensus entries where market is 90%+ against signal
-    if _entry_source != "FAIR_VAL" and entry_price < 0.10:
-        log.info("[SIG-FLOOR] %s/%s: SIG %.0fc < 10c — market too extreme against signal — skip",
+    # SIG 20¢ floor: block extreme-consensus entries where market is 80%+ against signal
+    if _entry_source not in ("FAIR_VAL", "CLOSE-SNIPE") and entry_price < 0.20:
+        log.info("[SIG-FLOOR] %s/%s: SIG %.0fc < 20c — market too extreme against signal — skip",
                  asset, timeframe, entry_price * 100)
-        context.log_skip("sig_floor_10c", asset, timeframe)
+        context.log_skip("sig_floor_20c", asset, timeframe)
         return False, {}
+
+    # P5: SIG price ceiling — block buying the expensive side of an overextended market.
+    # SIG/YES (UP) at >60¢ on 5m or >65¢ on 15m means market already priced it heavily;
+    # edge evaporates and losses at 65¢ have confirmed this repeatedly.
+    if _entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE"):
+        _sig_ceil = 0.60 if timeframe == "5m" else 0.65
+        if entry_price > _sig_ceil:
+            log.info("[SIG-CEIL] %s/%s: SIG %.0fc > %.0fc ceiling — overextended — skip",
+                     asset, timeframe, entry_price * 100, _sig_ceil * 100)
+            context.log_skip("sig_ceiling", asset, timeframe)
+            return False, {}
 
     # FV global rate limiter — max 3 FV entries per 60s.
     # Prevents the correlated macro wipeout pattern: 5 assets firing simultaneously
@@ -275,14 +287,66 @@ async def _validate_trade_slot(
                              {"price": entry_price, "conf": conf_score, "whale": whale_aligned})
             return False, {}
 
-
+    # Altcoin Market Leader Corroboration Guard
+    # Altcoins correlate highly to BTC and ETH. Block if BOTH leaders are against our trade.
+    _ALTCOINS = {"SOL", "XRP", "DOGE", "ADA", "LINK", "AVAX", "SUI"}
+    if asset in _ALTCOINS and _entry_source not in ("LATENCY_ARB", "T2_SWEEPER"):
+        tf_map = {"5m": ("5m", 2), "15m": ("15m", 2), "1h": ("1h", 2)}
+        interval, limit = tf_map.get(timeframe, ("5m", 2))
+        
+        leaders_against = 0
+        leaders_checked = 0
+        
+        for leader in ["BTC", "ETH"]:
+            try:
+                from core.engine.updown_engine import _fetch_klines_async
+                from core.pyth_oracle_service import GLOBAL_ORACLE_CACHE
+                
+                leader_klines = await _fetch_klines_async(session, leader, interval, limit)
+                if leader_klines:
+                    leader_open = float(leader_klines[-1][1])
+                    leader_spot = GLOBAL_ORACLE_CACHE.get(leader, {}).get("price", 0.0)
+                    
+                    if leader_spot > 0:
+                        leaders_checked += 1
+                        is_leader_up = leader_spot > leader_open
+                        is_leader_dn = leader_spot < leader_open
+                        
+                        if direction in ("NO", "DOWN") and is_leader_up:
+                            leaders_against += 1
+                        elif direction in ("YES", "UP") and is_leader_dn:
+                            leaders_against += 1
+            except Exception as e:
+                log.warning("[LEADER-GUARD] Failed to check leader %s correlation: %s", leader, e)
+                
+        # Only block if BOTH leaders are successfully checked and BOTH are against the trade
+        if leaders_checked == 2 and leaders_against == 2:
+            log.info(
+                "[LEADER-GUARD] %s/%s %s: blocked because BOTH leaders (BTC & ETH) are against the trade direction",
+                asset, timeframe, direction
+            )
+            context.log_skip("leader_corroboration_guard", asset, timeframe)
+            return False, {}
 
     if is_dual and (up_price + dn_price) >= 0.92:
         is_dual = False
 
     open_positions = state_manager.get_open_positions()
 
-
+    # Same-direction quality gate: moderate ATM FV + ≥3 open same-direction → require high score.
+    # Near-certainty FV (≤38¢ or ≥57¢) is exempt — stacking those is exactly what we want.
+    if _entry_source == "FAIR_VAL" and 0.38 < entry_price < 0.57:
+        _same_dir_count = sum(
+            1 for p in open_positions
+            if (p.get("direction", "").upper() in ("UP", "YES")) == (direction == "UP")
+        )
+        if _same_dir_count >= 3 and score < 0.82:
+            log.info(
+                "[SAME-DIR-GATE] %s/%s: %d open %s + moderate FV (%.0fc) + score %.2f < 0.82 — skip",
+                asset, timeframe, _same_dir_count, direction, entry_price * 100, score,
+            )
+            context.log_skip("same_dir_quality_gate", asset, timeframe)
+            return False, {}
 
     allowed, slot_reason = await request_trade_slot(
         asset, timeframe, score, interval_minutes, open_positions, is_dual=is_dual, direction=direction,
@@ -310,6 +374,22 @@ async def _validate_trade_slot(
     if _entry_source == "SIG" and timeframe == "5m":
         bet_usd *= 1.35
         log.info("[RISK] SIG/5m premium +35%%: $%.2f", bet_usd)
+
+    # ── REVERSAL sizing: quarter-Kelly proportional to actual edge at entry price ──
+    # is_reversal entries (RSI <reversal_lo or >reversal_hi) have the highest edge in the engine.
+    # Bonereaper sizes these at $56-655. Quarter-Kelly at current balance gives $6-10 vs old $0.89.
+    if signal.get("is_reversal") and _entry_source in ("SIG", "SIGNAL"):
+        _ep = entry_price
+        if 0.01 < _ep < 0.99:
+            _gain = (0.99 - _ep) / _ep
+            _loss = (_ep - 0.01) / _ep
+            _rev_wr = float(os.getenv("REVERSAL_WIN_RATE", "0.72"))
+            _kelly = (_rev_wr * _gain - (1.0 - _rev_wr) * _loss) / _gain if _gain > 0 else 0.0
+            _qk_size = max(3.0, min(current_balance * max(0.0, _kelly) * 0.25, 15.0))
+            if _qk_size > bet_usd:
+                log.info("[REVERSAL-SIZE] %s/%s ep=%.0fc kelly=%.1f%% → $%.2f (was $%.2f)",
+                         asset, timeframe, _ep * 100, _kelly * 100, _qk_size, bet_usd)
+                bet_usd = _qk_size
 
     # ── P2: Global Bet Cap (6% balance or $12.0) ──
     global_max_bet = min(current_balance * 0.06, 12.0)
@@ -499,7 +579,8 @@ async def asset_loop(
 
             # 2. Validate Risk & Entry Gates
             allowed, details = await _validate_trade_slot(
-                context, engine, asset, timeframe, interval_minutes, signal, current_balance
+                context, engine, asset, timeframe, interval_minutes, signal, current_balance,
+                session=session,
             )
             if not allowed:
                 try:

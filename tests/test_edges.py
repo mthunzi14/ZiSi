@@ -223,7 +223,8 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         engine_5m = UpDownEngine("BTC", "5m", state_mgr)
         
         # Mock decide_signal to return a valid SIG signal (direction "UP")
-        with patch("core.engine.signal_core.decide_signal", return_value={"direction": "UP", "score": 0.85, "is_reversal": False, "blocked": False}), \
+        with patch("config.FAIR_VALUE_MODE", False), \
+             patch("core.engine.signal_core.decide_signal", return_value={"direction": "UP", "score": 0.85, "is_reversal": False, "blocked": False}), \
              patch("core.engine.updown_engine.UpDownEngine._fetch_market") as mock_mkt:
             
             # Scenario A: YES quote is 0.62 (>0.60 on 5m) -> should be blocked
@@ -393,7 +394,8 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
 
     @patch("infrastructure.exchange.trader.place_order")
     @patch("infrastructure.state.state_manager.get_open_positions", return_value=[])
-    async def test_close_sniper(self, mock_get_positions, mock_place_order):
+    @patch("infrastructure.state.state_manager.get_current_balance", return_value=100.0)
+    async def test_close_sniper(self, mock_balance, mock_get_positions, mock_place_order):
         from core.engine.cycle_manager import start_close_sniper
         import time
 
@@ -401,8 +403,8 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         engine = MagicMock()
         engine.asset = "BTC"
         engine.timeframe = "5m"
-        
-        # Scenario: Price is 0.98, time is T-30s before expiry -> should trigger YES trade
+
+        # Scenario: Price is 0.98, time is T-30s before expiry -> should trigger YES Mode 1 trade
         now = int(time.time())
         market_data_yes = {
             "event_id": "test_event_yes",
@@ -413,10 +415,10 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
             "up_market": {"id": "up_token_123"},
             "dn_market": {"id": "dn_token_123"}
         }
-        
+
         engine._fetch_market = AsyncMock(return_value=market_data_yes)
         engines = {"BTC/5m": engine}
-        
+
         import asyncio
         # Run close sniper, cancel on second iteration
         with patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError()]):
@@ -424,15 +426,20 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
                 await start_close_sniper(None, engines)
             except asyncio.CancelledError:
                 pass
-                
-        # Verify order was placed
+
+        # Mode 1 sizing with balance=100: certainty=(0.98-0.95)/0.04=0.75
+        # base=max(100*0.06,2.50)=6.0, max_add=min(100*0.15,10.0)=10.0
+        # amount=round(6.0+0.75*10.0,2)=13.5
+        _bal = 100.0
+        _cert = (0.98 - 0.95) / 0.04
+        _expected = round(max(_bal * 0.06, 2.50) + _cert * min(_bal * 0.15, 10.0), 2)
         mock_place_order.assert_called_once_with(
             event_id="test_event_yes",
             market_id="up_token_123",
-            amount_dollars=6.0, # (0.98 - 0.97)/0.02 = 0.5 -> 2 + 0.5 * 8 = 6
+            amount_dollars=_expected,
             direction="YES",
             entry_price=0.98,
-            event_title="[UPDOWN][BTC][5m][CLOSE_SNIPE] Bitcoin Up or Down Test",
+            event_title="[UPDOWN][BTC][5m][CLOSE-SNIPE] Bitcoin Up or Down Test",
             expiry_ts=now + 30
         )
 

@@ -18,6 +18,7 @@ Usage in main.py:
         _process_signal(sig, result["eligible_events"][sig["signal_type"]], cfg)
 """
 import logging
+import os
 import time
 import aiohttp
 import asyncio
@@ -1005,27 +1006,56 @@ async def start_close_sniper(session, engines):
                     snipe_dir = None
                     snipe_price = None
                     market_id = None
+                    snipe_mode = None
 
-                    # Pick the near-certain side (97c or above)
-                    if up_price >= 0.97:
+                    _mode2_threshold = float(os.getenv("NCS_MODE2_THRESHOLD", "0.88"))
+
+                    # Mode 1: terminal snipe — 95¢ and above, 8-45s TTL
+                    if up_price >= 0.95:
                         snipe_dir = "YES"
                         snipe_price = up_price
                         market_id = market["up_market"]["id"]
-                    elif dn_price >= 0.97:
+                        snipe_mode = "CLOSE-SNIPE"
+                    elif dn_price >= 0.95:
                         snipe_dir = "NO"
                         snipe_price = dn_price
                         market_id = market["dn_market"]["id"]
+                        snipe_mode = "CLOSE-SNIPE"
+                    # Mode 2: early certainty — 88-94¢, tighter 8-25s TTL window
+                    elif _mode2_threshold <= up_price < 0.95 and 8 <= ttl <= 25:
+                        snipe_dir = "YES"
+                        snipe_price = up_price
+                        market_id = market["up_market"]["id"]
+                        snipe_mode = "CLOSE-SNIPE-EARLY"
+                    elif _mode2_threshold <= dn_price < 0.95 and 8 <= ttl <= 25:
+                        snipe_dir = "NO"
+                        snipe_price = dn_price
+                        market_id = market["dn_market"]["id"]
+                        snipe_mode = "CLOSE-SNIPE-EARLY"
 
                     if not snipe_dir or not market_id:
                         continue
 
-                    # Size scales with certainty: $2 at 97c -> $10 at 99c
-                    certainty = max(0.0, min(1.0, (snipe_price - 0.97) / 0.02))
-                    amount_dollars = round(2.0 + certainty * 8.0, 2)
+                    import infrastructure.state.state_manager as _smgr
+                    current_balance = _smgr.get_current_balance()
+
+                    if snipe_mode == "CLOSE-SNIPE":
+                        # Mode 1: balance-proportional terminal sizing
+                        base = max(current_balance * 0.06, 2.50)
+                        max_add = min(current_balance * 0.15, 10.0)
+                        certainty = max(0.0, min(1.0, (snipe_price - 0.95) / 0.04))
+                        amount_dollars = round(base + certainty * max_add, 2)
+                    else:
+                        # Mode 2: quarter-Kelly sizing
+                        _p = snipe_price
+                        _gain = (0.99 - _p) / _p if _p < 0.99 else 0.0
+                        _loss = (_p - 0.01) / _p if _p > 0.01 else 0.0
+                        _kelly = (_p * _gain - (1.0 - _p) * _loss) / _gain if _gain > 0 else 0.0
+                        amount_dollars = round(max(3.0, min(current_balance * max(0.0, _kelly) * 0.25, 15.0)), 2)
 
                     log.info(
-                        "[CLOSE-SNIPER] Snipe triggered for %s/%s: %s @ %.0fc — %ds to expiry — size=$%.2f",
-                        asset, timeframe, snipe_dir, snipe_price * 100, ttl, amount_dollars
+                        "[CLOSE-SNIPER] %s triggered for %s/%s: %s @ %.0fc — %ds to expiry — size=$%.2f",
+                        snipe_mode, asset, timeframe, snipe_dir, snipe_price * 100, ttl, amount_dollars
                     )
 
                     from infrastructure.exchange.trader import place_order
@@ -1035,7 +1065,7 @@ async def start_close_sniper(session, engines):
                         amount_dollars=amount_dollars,
                         direction=snipe_dir,
                         entry_price=snipe_price,
-                        event_title=f"[UPDOWN][{asset}][{timeframe}][CLOSE_SNIPE] {market['event_title']}",
+                        event_title=f"[UPDOWN][{asset}][{timeframe}][{snipe_mode}] {market['event_title']}",
                         expiry_ts=expiry_ts,
                     )
                     if order:
@@ -1043,12 +1073,12 @@ async def start_close_sniper(session, engines):
                         log.info("[CLOSE-SNIPER] ✅ Successfully sniped %s/%s %s @ %.0fc", asset, timeframe, snipe_dir, snipe_price * 100)
                         try:
                             from app.telegram_bot import send_alert
-                            send_alert(f"CLOSE-SNIPE {asset}/{timeframe} {snipe_dir} @ {int(snipe_price*100)}c")
+                            send_alert(f"{snipe_mode} {asset}/{timeframe} {snipe_dir} @ {int(snipe_price*100)}c $${amount_dollars:.2f}")
                         except Exception:
                             pass
                 except Exception as ex:
                     log.debug("[CLOSE-SNIPER] %s/%s: %s", asset, timeframe, ex)
         except Exception as ex:
             log.error("[CLOSE-SNIPER] loop error: %s", ex)
-        # Scan every 8 seconds
-        await asyncio.sleep(8.0)
+        # Scan every 4 seconds
+        await asyncio.sleep(4.0)
