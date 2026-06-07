@@ -110,16 +110,36 @@ function buildRunningEv(closed) {
   });
 }
 
+function parseType(title, entryType) {
+  const typeUpper = (entryType || '').toUpperCase();
+  if (typeUpper === 'CLOSE_SNIPE' || typeUpper === 'CLOSE-SNIPE' || typeUpper === 'NCS') return 'NCS';
+  if (typeUpper === 'FAIR_VAL' || typeUpper === 'FAIR-VAL' || typeUpper === 'FV') return 'FV';
+  if (typeUpper === 'SIGNAL' || typeUpper === 'SINGLE' || typeUpper === 'SIG') return 'SIG';
+  if (typeUpper === 'SWEEP' || typeUpper === 'T2_SWEEPER') return 'SWEEP';
+  if (typeUpper === 'LATENCY_ARB' || typeUpper === 'LAT-ARB' || typeUpper === 'ARB') return 'ARB';
+  if (typeUpper === 'DUAL' || typeUpper === 'DUAL_MAIN' || typeUpper === 'DUAL_HEDGE') return 'DUAL';
+
+  const titleUpper = (title || '').toUpperCase();
+  if (titleUpper.includes('[CLOSE_SNIPE]') || titleUpper.includes('[NCS]')) return 'NCS';
+  if (titleUpper.includes('[FAIR_VAL]') || titleUpper.includes('[FV]')) return 'FV';
+  if (titleUpper.includes('[T2_SWEEPER]') || titleUpper.includes('[SWEEP]')) return 'SWEEP';
+  if (titleUpper.includes('[LATENCY_ARB]') || titleUpper.includes('[ARB]')) return 'ARB';
+  if (titleUpper.includes('[SINGLE]') || titleUpper.includes('[SIG]')) return 'SIG';
+  if (titleUpper.includes('[DUAL_MAIN]') || titleUpper.includes('[DUAL_HEDGE]') || titleUpper.includes('[DUAL]')) return 'DUAL';
+
+  return 'SIG';
+}
+
 function buildTypeStats(closed) {
   const byType = {};
   for (const t of closed) {
-    const type = t.entry_type || 'SIGNAL';
+    const type = parseType(t.event_title, t.entry_type);
     if (!byType[type]) byType[type] = { wins: 0, total: 0, pnl: 0 };
     byType[type].total += 1;
     byType[type].pnl += parseFloat(t.realized_pnl || 0);
     if (parseFloat(t.realized_pnl || 0) > 0) byType[type].wins += 1;
   }
-  const ORDER = ['LAT-ARB', 'FAIR-VAL', 'REVERSAL-SNIPE', 'SIGNAL', 'SWEEP'];
+  const ORDER = ['ARB', 'FV', 'NCS', 'SIG', 'SWEEP', 'DUAL'];
   return Object.entries(byType)
     .sort((a, b) => (ORDER.indexOf(a[0]) - ORDER.indexOf(b[0])))
     .map(([type, d]) => ({
@@ -131,11 +151,12 @@ function buildTypeStats(closed) {
 }
 
 const TYPE_COLOR = {
-  'LAT-ARB':        '#2b7fff',
-  'FAIR-VAL':       '#00d4a3',
-  'REVERSAL-SNIPE': '#ff007a',
-  'SIGNAL':         'var(--color-iron)',
-  'SWEEP':          '#eab308',
+  'ARB':    '#2b7fff',
+  'FV':     '#00d4a3',
+  'NCS':    '#ff007a',
+  'SIG':    'var(--color-iron)',
+  'SWEEP':  '#eab308',
+  'DUAL':   '#8b5cf6',
 };
 
 // ── shared style constants ────────────────────────────────────────────────────

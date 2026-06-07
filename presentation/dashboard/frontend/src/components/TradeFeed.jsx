@@ -35,15 +35,34 @@ function tfFromTitle(title) {
   return '—';
 }
 
+function parseType(title, entryType) {
+  const typeUpper = (entryType || '').toUpperCase();
+  if (typeUpper === 'CLOSE_SNIPE' || typeUpper === 'CLOSE-SNIPE' || typeUpper === 'NCS') return 'NCS';
+  if (typeUpper === 'FAIR_VAL' || typeUpper === 'FAIR-VAL' || typeUpper === 'FV') return 'FV';
+  if (typeUpper === 'SIGNAL' || typeUpper === 'SINGLE' || typeUpper === 'SIG') return 'SIG';
+  if (typeUpper === 'SWEEP' || typeUpper === 'T2_SWEEPER') return 'SWEEP';
+  if (typeUpper === 'LATENCY_ARB' || typeUpper === 'LAT-ARB' || typeUpper === 'ARB') return 'ARB';
+  if (typeUpper === 'DUAL' || typeUpper === 'DUAL_MAIN' || typeUpper === 'DUAL_HEDGE') return 'DUAL';
+
+  const titleUpper = title.toUpperCase();
+  if (titleUpper.includes('[CLOSE_SNIPE]') || titleUpper.includes('[NCS]')) return 'NCS';
+  if (titleUpper.includes('[FAIR_VAL]') || titleUpper.includes('[FV]')) return 'FV';
+  if (titleUpper.includes('[T2_SWEEPER]') || titleUpper.includes('[SWEEP]')) return 'SWEEP';
+  if (titleUpper.includes('[LATENCY_ARB]') || titleUpper.includes('[ARB]')) return 'ARB';
+  if (titleUpper.includes('[SINGLE]') || titleUpper.includes('[SIG]')) return 'SIG';
+  if (titleUpper.includes('[DUAL_MAIN]') || titleUpper.includes('[DUAL_HEDGE]') || titleUpper.includes('[DUAL]')) return 'DUAL';
+
+  return 'SIG';
+}
+
 function parseMeta(p) {
   const title = p.event_title || '';
   const aTag = title.match(/\[(BTC|ETH|SOL|XRP|DOGE|LINK|BNB)\]/);
   const tTag = title.match(/\[(5m|15m|1h)\]/);
-  const xTag = title.match(/\[(SINGLE|DUAL_MAIN|DUAL_HEDGE|DUAL)\]/);
   return {
     asset:     aTag ? aTag[1] : assetFromTitle(title),
     timeframe: tTag ? tTag[1] : tfFromTitle(title),
-    type:      xTag ? xTag[1].replace('_MAIN','').replace('_HEDGE','*') : 'SINGL',
+    type:      parseType(title, p.entry_type),
   };
 }
 

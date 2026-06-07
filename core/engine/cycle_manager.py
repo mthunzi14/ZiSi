@@ -1019,9 +1019,9 @@ async def start_close_sniper(session, engines):
                     if not snipe_dir or not market_id:
                         continue
 
-                    # Size scales with certainty: $1 at 97c -> $5 at 99c
+                    # Size scales with certainty: $2 at 97c -> $10 at 99c
                     certainty = max(0.0, min(1.0, (snipe_price - 0.97) / 0.02))
-                    amount_dollars = round(1.0 + certainty * 4.0, 2)
+                    amount_dollars = round(2.0 + certainty * 8.0, 2)
 
                     log.info(
                         "[CLOSE-SNIPER] Snipe triggered for %s/%s: %s @ %.0fc — %ds to expiry — size=$%.2f",
