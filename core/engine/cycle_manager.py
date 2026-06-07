@@ -433,6 +433,15 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                              asset, timeframe, entry_price * 100)
                     return
 
+                # ATM divergence floor: block entries within ±8¢ of 50¢ at T-15s
+                # Near-ATM (42-58¢) means CLOB sees ~50/50 — Pyth divergence at this level is noise,
+                # not edge. The BTC/5m 54¢ LAT-ARB loss is the canonical example of this pattern.
+                # T-5s and T-2s bypass — near-certainty windows are structurally different.
+                if t_minus == 15 and abs(entry_price - 0.50) < 0.08:
+                    log.info("[ATM-GATE] %s/%s: entry %.0fc within 8¢ of ATM — skip (no real divergence edge)",
+                             asset, timeframe, entry_price * 100)
+                    return
+
                 # Discount gate: Polymarket must lag our fair probability by ≥6¢
                 # BoneReaper enters at 14¢ when fair prob is 95%+ — the lag is the edge
                 _discount = implied_prob - entry_price
@@ -453,9 +462,10 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
 
                 normal_usd = engine.compute_size(0.85, entry_price, current_balance)
                 if t_minus == 2:
-                    # Sweeper: 0.5x sizing, cap at 2% of balance — low ROI (1-5%) but near-zero risk
-                    usd_size = max(1.50, min(normal_usd * 0.5, current_balance * 0.02))
-                    log.info("[T2-SWEEPER] %s/%s sweep sizing 0.5x capped 2%%: $%.2f", asset, timeframe, usd_size)
+                    # Sweeper: balance-proportional sizing — near-zero risk at T-2s (candle already decided)
+                    # 10% of balance up to $8 — far more than the old 2% cap that produced $1.50 at $50
+                    usd_size = max(2.50, min(current_balance * 0.10, 8.0))
+                    log.info("[T2-SWEEPER] %s/%s sweep sizing 10%% of balance: $%.2f", asset, timeframe, usd_size)
                 elif t_minus == 5:
                     if entry_price < 0.10:
                         usd_size = max(1.0, normal_usd * 1.0)

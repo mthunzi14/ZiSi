@@ -391,10 +391,17 @@ async def _validate_trade_slot(
                          asset, timeframe, _ep * 100, _kelly * 100, _qk_size, bet_usd)
                 bet_usd = _qk_size
 
-    # ── P2: Global Bet Cap (6% balance or $12.0) ──
-    global_max_bet = min(current_balance * 0.06, 12.0)
+    # ── P2: Global Bet Cap — differentiated by timeframe / entry conviction ──
+    # 1h candles and REVERSAL_STREAK (4-candle streak) are the highest-conviction signals.
+    # At $50 balance: 1h cap = $7.50 vs old $3.00 — matches BoneReaper's 1h sizing philosophy.
+    if timeframe == "1h" or _entry_source == "REVERSAL_STREAK":
+        global_max_bet = min(current_balance * 0.15, 20.0)
+        _cap_label = "HIGH-CONV"
+    else:
+        global_max_bet = min(current_balance * 0.06, 12.0)
+        _cap_label = "STANDARD"
     if bet_usd > global_max_bet:
-        log.info("[RISK] bet size capped at global max cap: $%.2f -> $%.2f", bet_usd, global_max_bet)
+        log.info("[RISK] %s bet cap $%.2f -> $%.2f", _cap_label, bet_usd, global_max_bet)
         bet_usd = global_max_bet
 
     # ── P3: SIGNAL-specific Bet Cap ($10.0) ──

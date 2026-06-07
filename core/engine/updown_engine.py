@@ -1473,7 +1473,12 @@ class UpDownEngine:
                     log.info("[SIZE] Adaptive Kelly scaled by session multiplier %.2fx -> $%.2f", session_sizing_mult, usd_size)
                 except Exception as e:
                     log.warning("[SIZE] Failed to scale by session multiplier: %s", e)
-                
+
+                # 1h premium: hourly candles have 12× more duration than 5m → deeper trend conviction
+                if self.timeframe == "1h":
+                    usd_size *= 2.0
+                    log.info("[SIZE-1H] Adaptive Kelly 1h premium 2.0x: $%.2f", usd_size)
+
                 # Price-Scaled Risk Sizer calibration to bypass 70¢ trap and extreme pricing risk
                 price_scalar = 1.0
                 if price > 0.65 and price <= 0.78:
@@ -1566,6 +1571,11 @@ class UpDownEngine:
         max_usd_cap = max(5.00, max_usd_cap)
 
         raw_usd = kelly_pct * balance * regime_mult * price_scalar
+
+        # 1h premium: hourly candles have 12× more duration than 5m → deeper trend conviction
+        if self.timeframe == "1h":
+            raw_usd *= 2.0
+            log.info("[SIZE-1H] Legacy Kelly 1h premium 2.0x: $%.2f", raw_usd)
 
         # Retrieve and apply session sizing multiplier (Sprint 11)
         session_sizing_mult = 1.0
