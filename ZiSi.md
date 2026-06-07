@@ -83,15 +83,11 @@ This guarantees you are viewing the live VPS dashboard data.
 ZiSi is managed by PM2 on the VPS. To query logs, monitor performance, or restart services, SSH into the VPS (`ssh root@204.168.222.48`) and run the following commands.
 
 ### Querying PM2 Logs:
-* **View Python bot engine logs:**
-  ```bash
-  pm2 logs zisi-bot
-  ```
-  *(Shows real-time pricing feeds, indicators, signal calculations, risk checks, and orders).*
-* **View Dashboard backend logs:**
+* **View Bot and Dashboard combined logs:**
   ```bash
   pm2 logs zisi-dashboard
   ```
+  *(Since the Node server spawns the Python bot, all logs from both the dashboard and the trading engine are combined in the `zisi-dashboard` PM2 output).*
   *(Shows client polling status, API route executions, and SSE stream heartbeats).*
 * **View combined log output (last 100 lines):**
   ```bash
@@ -105,14 +101,11 @@ ZiSi is managed by PM2 on the VPS. To query logs, monitor performance, or restar
   # or
   pm2 status
   ```
-* **Restart the trading bot:**
-  ```bash
-  pm2 restart zisi-bot
-  ```
-* **Restart the dashboard server:**
+* **Restart the dashboard & bot engine:**
   ```bash
   pm2 restart zisi-dashboard
   ```
+  *(Restarts the Node server, which automatically terminates the current Python bot and spawns a fresh one).*
 * **Stop all services:**
   ```bash
   pm2 stop all
@@ -159,9 +152,9 @@ If you need to archive old database files and reset the balance to $50:
    /root/ZiSi/venv/bin/python3 miscellaneous/clean_slate.py --balance 50 --force
    ```
    *(This archives past files and creates a fresh `account_state.json` with a `$50.00` balance).*
-3. Restart the bot process to load the new balance:
+3. Restart the dashboard process to load the new balance:
    ```bash
-   pm2 restart zisi-bot
+   pm2 restart zisi-dashboard
    ```
 
 ---
@@ -193,19 +186,28 @@ Every few days or when dashboard logs grow large:
 
 ## 🚀 7. Operator Cheat Sheet: One-Liner Commands
 
-### A. Deployment After Changes (With Balance Clean Slate to $50)
-If you want to pull the latest git commits, reset the balance to $50, clear open/closed positions, and restart everything:
-```bash
-cd /root/ZiSi && git pull origin main && python3 miscellaneous/clean_slate.py --balance 50.0 --force && pm2 restart zisi-bot && pm2 restart zisi-dashboard
-```
+### A. Golden Standard Operation: Local Backup → Pull, Rebuild & Clean Slate to $50 → Restart
+To avoid any data loss, always follow this two-command sequence. First, run the backup locally on your laptop to download all trade/log history. Second, pull and reset on the VPS.
+
+1. **On your Local Laptop (PowerShell)**:
+   ```powershell
+   python tools/backup_and_rotate_logs.py
+   ```
+   *(This downloads and appends all trades and logs to local files, then clears VPS logs. Since we run this, we do not need the `--archive` flag on the VPS reset).*
+
+2. **On the VPS Terminal**:
+   ```bash
+   cd /root/ZiSi && git checkout -- presentation/dashboard/frontend/dist/index.html && git pull origin main && npm run build --prefix presentation/dashboard/frontend && python3 miscellaneous/clean_slate.py --force --balance 50 && pkill -f main.py && pm2 restart zisi-dashboard
+   ```
+   *(Pulls code, rebuilds the frontend, resets the balance to $50, kills any stray Python processes, and restarts PM2 cleanly).*
 
 ### B. Deployment After Changes (No Clean Slate / Keep Current Balance & Trades)
-If you want to pull the latest git commits and restart the bot/dashboard without losing your current balance or active trades:
+If you want to pull the latest git commits, rebuild the frontend, and restart the services without losing your current balance or active trades:
 ```bash
-cd /root/ZiSi && git pull origin main && pm2 restart zisi-bot && pm2 restart zisi-dashboard
+cd /root/ZiSi && git checkout -- presentation/dashboard/frontend/dist/index.html && git pull origin main && npm run build --prefix presentation/dashboard/frontend && pkill -f main.py && pm2 restart zisi-dashboard
 ```
 
-### C. Local Backup & Log Truncation
+### C. Local Backup & Log Truncation (Periodic Maintenance)
 Run this on your local laptop to pull logs/trades and empty the VPS log files:
 ```powershell
 python tools/backup_and_rotate_logs.py
@@ -227,7 +229,7 @@ The dashboard exposes the following endpoints (available over the SSH tunnel on 
 * **GET `/api/equity`**: Returns balance history for graphing equity curves.
 
 #### 🕹️ Control & Reset
-* **POST `/api/control/reset`**: Runs a clean slate reset on the VPS. Body format: `{"balance": 50}`. (Note: The user should restart `zisi-bot` using PM2 afterwards to ensure in-memory state matches disk state).
+* **POST `/api/control/reset`**: Runs a clean slate reset on the VPS. Body format: `{"balance": 50}`. (Note: The user should restart `zisi-dashboard` using PM2 afterwards to ensure in-memory state matches disk state).
 * **GET `/api/control/status`**: Returns the current running state (`running` or `paused`).
 * **POST `/api/control/pause`**: Pauses the bot scanning loop.
 * **POST `/api/control/resume`**: Resumes the bot scanning loop.
