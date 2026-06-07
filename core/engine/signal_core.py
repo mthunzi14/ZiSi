@@ -159,6 +159,14 @@ def decide_signal(
     if rsi is None:
         return res
 
+    # 1. Pre-momentum reversal sniping gets absolute priority at extreme RSI values
+    if rsi < p["reversal_lo"]:
+        res.update(direction="UP", score=p["reversal_score"], is_reversal=True)
+        return res
+    elif rsi > p["reversal_hi"]:
+        res.update(direction="DOWN", score=p["reversal_score"], is_reversal=True)
+        return res
+
     # Volatility Veto (Sprint 5): block 5m mean-reversion entries under extreme volatility.
     # PURE: percentiles are passed in by the caller (the live engine reads regime_status.json
     # and supplies them). When absent (tests / backtester) the veto is skipped, so this
@@ -216,10 +224,5 @@ def decide_signal(
         res["score"] = min(0.85, 0.50 + (rsi_dn_eff - rsi_eff) / max(1.0, rsi_dn_eff) * 0.35)
         return res
 
-    # Pre-momentum reversal sniping
-    if rsi < p["reversal_lo"]:
-        res.update(direction="UP", score=p["reversal_score"], is_reversal=True)
-    elif rsi > p["reversal_hi"]:
-        res.update(direction="DOWN", score=p["reversal_score"], is_reversal=True)
     return res
 

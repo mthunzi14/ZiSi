@@ -8,6 +8,7 @@ TEST_PARAMS = {
     "near_certainty_prob": 0.90,
     "near_certainty_t_frac": 0.85,
     "sigma_scale": 1.0,
+    "min_absolute_prob": 0.50,
 }
 
 
@@ -46,3 +47,26 @@ class TestFairValue(unittest.TestCase):
     def test_high_prob_but_early_is_moderate(self):
         r = decide_value_entry(0.95, up_price=0.80, dn_price=0.20, t_min=1.0, total_min=15.0, params=TEST_PARAMS)
         self.assertEqual(r["archetype"], "moderate")
+
+    def test_absolute_probability_floor_up(self):
+        # With 70% floor, a 62% probability entry (edge 12c) is BLOCKED
+        params_with_floor = TEST_PARAMS.copy()
+        params_with_floor["min_absolute_prob"] = 0.70
+        r = decide_value_entry(0.62, up_price=0.50, dn_price=0.50, t_min=1.0, total_min=15.0, params=params_with_floor)
+        self.assertIsNone(r["direction"])
+        
+        # A 72% probability entry (edge 22c) is ALLOWED
+        r = decide_value_entry(0.72, up_price=0.50, dn_price=0.50, t_min=1.0, total_min=15.0, params=params_with_floor)
+        self.assertEqual(r["direction"], "UP")
+        self.assertAlmostEqual(r["edge"], 0.22, places=4)
+
+    def test_absolute_probability_floor_down(self):
+        params_with_floor = TEST_PARAMS.copy()
+        params_with_floor["min_absolute_prob"] = 0.70
+        # With 70% floor, a 35% probability of UP (65% probability of DOWN) is BLOCKED
+        r = decide_value_entry(0.35, up_price=0.50, dn_price=0.50, t_min=1.0, total_min=15.0, params=params_with_floor)
+        self.assertIsNone(r["direction"])
+        
+        # A 25% probability of UP (75% probability of DOWN) is ALLOWED
+        r = decide_value_entry(0.25, up_price=0.50, dn_price=0.50, t_min=1.0, total_min=15.0, params=params_with_floor)
+        self.assertEqual(r["direction"], "DOWN")

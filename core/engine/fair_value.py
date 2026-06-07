@@ -21,6 +21,7 @@ DEFAULT_VALUE_PARAMS = {
     "near_certainty_prob": 0.90,   # fair_prob at/above which an entry is "near certain"
     "near_certainty_t_frac": 0.85, # only near-certainty once >= 85% of the window has elapsed
     "sigma_scale": 1.0,            # multiplies ATR-derived sigma (carried from backtest calibration)
+    "min_absolute_prob": 0.70,     # min absolute probability of winning required to enter
 }
 
 
@@ -47,6 +48,7 @@ def decide_value_entry(fp_up: float, up_price: float, dn_price: float,
     p = params or DEFAULT_VALUE_PARAMS
     edge_up = fp_up - up_price
     edge_dn = (1.0 - fp_up) - dn_price
+    min_prob = p.get("min_absolute_prob", 0.70)
 
     # ── Regime-Aware Proximity Guard ──
     # In a MEAN_REVERSION regime, require 15c edge in the 47c-53c range
@@ -63,11 +65,11 @@ def decide_value_entry(fp_up: float, up_price: float, dn_price: float,
         return {"direction": None, "edge": 0.0, "archetype": None}
 
     if edge_up >= edge_dn:
-        if edge_up < required_margin_up:
+        if edge_up < required_margin_up or fp_up < min_prob:
             return {"direction": None, "edge": 0.0, "archetype": None}
         direction, edge, fp, price = "UP", edge_up, fp_up, up_price
     else:
-        if edge_dn < required_margin_dn:
+        if edge_dn < required_margin_dn or (1.0 - fp_up) < min_prob:
             return {"direction": None, "edge": 0.0, "archetype": None}
         direction, edge, fp, price = "DOWN", edge_dn, (1.0 - fp_up), dn_price
 
