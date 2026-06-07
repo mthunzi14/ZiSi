@@ -266,6 +266,33 @@ class UpDownEngine:
         self._l2_fail_count:    int   = 0
         self._l2_backoff_until: float = 0.0  # epoch seconds
 
+    def _get_hourly_slug(self, timestamp: int) -> str:
+        from zoneinfo import ZoneInfo
+        import datetime
+        dt_utc = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
+        dt_et = dt_utc.astimezone(ZoneInfo("America/New_York"))
+        
+        months = [
+            "january", "february", "march", "april", "may", "june",
+            "july", "august", "september", "october", "november", "december"
+        ]
+        month_name = months[dt_et.month - 1]
+        
+        hour_12 = dt_et.hour % 12
+        if hour_12 == 0:
+            hour_12 = 12
+        am_pm = "pm" if dt_et.hour >= 12 else "am"
+        
+        asset_map = {
+            "BTC": "bitcoin",
+            "ETH": "ethereum",
+            "SOL": "solana",
+            "XRP": "xrp",
+            "DOGE": "dogecoin",
+        }
+        asset_name = asset_map.get(self.asset, self.asset.lower())
+        return f"{asset_name}-up-or-down-{month_name}-{dt_et.day}-{dt_et.year}-{hour_12}{am_pm}-et"
+
     # ── Circuit breaker ───────────────────────────────────────────────────────
 
     def record_outcome(self, won: bool) -> None:
@@ -358,6 +385,26 @@ class UpDownEngine:
             log.debug("[ENGINE] %s/%s: time gate closed", self.asset, self.timeframe)
             return None
 
+        # Volatility Gate: block 5m entries under high volatility
+        if self.timeframe == "5m":
+            try:
+                import json as _json
+                from pathlib import Path as _Path
+                _rs = _Path(__file__).parent.parent.parent / "regime_status.json"
+                if _rs.exists():
+                    _d = _json.loads(_rs.read_text(encoding="utf-8"))
+                    _reg = _d.get("regime")
+                    _atr_pct = float(_d.get("atr_percentile", 50.0))
+                    if _reg == "VOLATILE_CHAOS" or _atr_pct >= 70.0:
+                        log.info(
+                            "[VOL-VETO] %s/5m: Volatility too high (regime=%s, atr_percentile=%.1f%%) — blocking 5m entry.",
+                            self.asset, _reg, _atr_pct
+                        )
+                        _write_gate_event(self.asset, self.timeframe, "VOLATILE_CHAOS", "N/A", f"regime={_reg}, atr_pct={_atr_pct:.1f}%")
+                        return None
+            except Exception as e:
+                log.warning("[ENGINE] Volatility gate error: %s", e)
+
         # Fetch klines for the primary timeframe
         tf_map = {"5m": ("5m", 30), "15m": ("15m", 30), "1h": ("1h", 30)}
         interval, limit = tf_map.get(self.timeframe, ("5m", 30))
@@ -406,6 +453,68 @@ class UpDownEngine:
         dn_price = market["dn_price"]
         is_dual_eligible = self.should_dual_enter(up_price, dn_price)
         regime = get_regime_mode(self.timeframe)
+
+        # 1-Hour Streak Reversal Check
+        if self.timeframe == "1h" and len(klines) >= 5:
+            closed_klines = klines[-5:-1]
+            all_green = all(float(k[4]) > float(k[1]) for k in closed_klines)
+            all_red = all(float(k[4]) < float(k[1]) for k in closed_klines)
+            if all_green or all_red:
+                raw_dir = "DOWN" if all_green else "UP"
+                direction = apply_regime(raw_dir, regime)
+                if self.invert_signal:
+                    direction = "DOWN" if direction == "UP" else "UP"
+                
+                score = 0.75
+                log.warning(
+                    "[REVERSAL-STREAK-1H] %s/1h: 4 consecutive %s closed candles. Sniping counter-trend %s (regime=%s, raw=%s)",
+                    self.asset, "green" if all_green else "red", direction, regime, raw_dir
+                )
+                
+                edge_ctx = {}
+                try:
+                    from core.engine.edge_orchestrator import edge_orchestrator
+                    sig_dict = {
+                        "signal_type": "TYPE_A_HIGH",
+                        "score": score,
+                        "affected_cryptos": [self.asset],
+                        "entry_price": up_price if direction == "UP" else dn_price,
+                    }
+                    edge_ctx = await edge_orchestrator.get_trade_context(
+                        session=session,
+                        asset=self.asset,
+                        direction=direction,
+                        signal=sig_dict,
+                        market=market,
+                        current_price=closes[-1]
+                    )
+                    self.last_edge_context = edge_ctx
+                    
+                    boost = edge_ctx.get("combined_confidence_boost", 0.0)
+                    if boost != 0.0:
+                        score = max(0.10, min(1.0, score + boost))
+                        log.info("[EDGE] %s/%s Score adjusted by boost: %.2f (boost=%+.2f)", self.asset, self.timeframe, score, boost)
+                    
+                    regime = edge_ctx.get("regime_name", regime)
+                except Exception as e:
+                    log.warning("[EDGE] Failed to query EdgeOrchestrator in 1h streak reversal: %s", e)
+                    self.last_edge_context = None
+
+                return {
+                    "asset":        self.asset,
+                    "timeframe":    self.timeframe,
+                    "direction":    direction,
+                    "score":        score,
+                    "regime":       regime,
+                    "inverted":     self.invert_signal,
+                    "rsi":          rsi,
+                    "momentum":     round(mom, 4),
+                    "market":       market,
+                    "is_dual_eligible": is_dual_eligible,
+                    "edge_context": edge_ctx,
+                    "entry_source": "SIG",
+                    "corroboration_multiplier": 1.0,
+                }
 
         # ── Fair-value primary entry (prioritized check) ──
         # Check if we have a valid fair-value signal that clears the margin first.
@@ -1037,7 +1146,10 @@ class UpDownEngine:
         """Prefetch token IDs for the upcoming market 20s before start and warm WebSocket."""
         coin_lower = self.asset.lower()
         dur_min = 60 if self.timeframe == "1h" else (5 if self.timeframe == "5m" else 15)
-        slug = f"{coin_lower}-updown-{dur_min}m-{next_boundary}"
+        if self.timeframe == "1h":
+            slug = self._get_hourly_slug(next_boundary)
+        else:
+            slug = f"{coin_lower}-updown-{dur_min}m-{next_boundary}"
         
         gamma_url = "https://gamma-api.polymarket.com/events"
         try:
@@ -1164,7 +1276,10 @@ class UpDownEngine:
                     # Skip expired markets to prevent calling _resolve_l2_prices on them
                     # which always fails and triggers the L2 circuit breaker backoff.
                     continue
-                slug = f"{coin_lower}-updown-{dur_min}m-{offset_ts}"
+                if self.timeframe == "1h":
+                    slug = self._get_hourly_slug(offset_ts)
+                else:
+                    slug = f"{coin_lower}-updown-{dur_min}m-{offset_ts}"
 
                 async with session.get(gamma_url, params={"slug": slug}, timeout=5) as r:
                     if r.status != 200:
