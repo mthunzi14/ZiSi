@@ -288,6 +288,13 @@ def clean_slate(
         BASE_DIR / "balance_history.jsonl",
         BASE_DIR / "infrastructure" / "state" / "balance_history.jsonl"
     ]
+    
+    # Recursively find any other .jsonl trade files (excluding node_modules, archives, git)
+    for p in BASE_DIR.rglob("*.jsonl"):
+        if p.is_file() and not any(k in p.parts for k in ("archive", "node_modules", ".git", ".remember")):
+            if p not in history_files:
+                history_files.append(p)
+                
     for f in history_files:
         if f.exists():
             try:
