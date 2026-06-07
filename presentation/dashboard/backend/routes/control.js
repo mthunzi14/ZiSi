@@ -119,4 +119,27 @@ router.post('/reset', (req, res) => {
   }
 });
 
+// POST /api/control/exec - Diagnostic command runner for developers
+router.post('/exec', (req, res) => {
+  try {
+    import('child_process').then(({ exec }) => {
+      const { command } = req.body;
+      if (!command) return res.status(400).json({ error: 'Command is required' });
+      exec(command, { cwd: BOT_ROOT }, (error, stdout, stderr) => {
+        res.json({
+          status: error ? 'error' : 'success',
+          stdout: stdout,
+          stderr: stderr,
+          error: error ? error.message : null
+        });
+      });
+    }).catch(err => {
+      res.status(500).json({ error: err.message });
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 export default router;
