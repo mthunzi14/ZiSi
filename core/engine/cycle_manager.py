@@ -960,3 +960,95 @@ async def start_resolution_sweeper(session, engines):
         except Exception as ex:
             log.error("[SWEEPER] loop error: %s", ex)
         await asyncio.sleep(5.0)
+
+
+async def start_close_sniper(session, engines):
+    log.info("[CLOSE-SNIPER] Bonereaper-style near-close sniper daemon started...")
+    _sniped = {}
+    while True:
+        try:
+            now_ts = int(time.time())
+            import infrastructure.state.state_manager as state_mgr
+            open_positions = state_mgr.get_open_positions()
+            open_event_ids = {p.get("event_id") for p in open_positions if p.get("event_id")}
+
+            for key, engine in engines.items():
+                asset = engine.asset
+                timeframe = engine.timeframe
+                if asset == "DOGE":
+                    continue
+                try:
+                    market = await engine._fetch_market(session, is_latency_scan=True)
+                    if not market:
+                        continue
+                    event_id = market["event_id"]
+                    expiry_ts = market.get("expiry_ts", 0)
+                    if not expiry_ts:
+                        continue
+                    ttl = expiry_ts - now_ts
+                    # Snipe window: 8 to 45 seconds before expiry
+                    if not (8 <= ttl <= 45):
+                        continue
+
+                    # Skip if we already have an open position in this event
+                    if event_id in open_event_ids:
+                        continue
+                    # Local dedup check
+                    if event_id in _sniped and now_ts - _sniped[event_id] < 60:
+                        continue
+
+                    up_price = market.get("up_price")
+                    dn_price = market.get("dn_price")
+                    if up_price is None or dn_price is None:
+                        continue
+
+                    snipe_dir = None
+                    snipe_price = None
+                    market_id = None
+
+                    # Pick the near-certain side (97c or above)
+                    if up_price >= 0.97:
+                        snipe_dir = "YES"
+                        snipe_price = up_price
+                        market_id = market["up_market"]["id"]
+                    elif dn_price >= 0.97:
+                        snipe_dir = "NO"
+                        snipe_price = dn_price
+                        market_id = market["dn_market"]["id"]
+
+                    if not snipe_dir or not market_id:
+                        continue
+
+                    # Size scales with certainty: $1 at 97c -> $5 at 99c
+                    certainty = max(0.0, min(1.0, (snipe_price - 0.97) / 0.02))
+                    amount_dollars = round(1.0 + certainty * 4.0, 2)
+
+                    log.info(
+                        "[CLOSE-SNIPER] Snipe triggered for %s/%s: %s @ %.0fc — %ds to expiry — size=$%.2f",
+                        asset, timeframe, snipe_dir, snipe_price * 100, ttl, amount_dollars
+                    )
+
+                    from infrastructure.exchange.trader import place_order
+                    order = place_order(
+                        event_id=event_id,
+                        market_id=market_id,
+                        amount_dollars=amount_dollars,
+                        direction=snipe_dir,
+                        entry_price=snipe_price,
+                        event_title=f"[UPDOWN][{asset}][{timeframe}][CLOSE_SNIPE] {market['event_title']}",
+                        expiry_ts=expiry_ts,
+                    )
+                    if order:
+                        _sniped[event_id] = now_ts
+                        log.info("[CLOSE-SNIPER] ✅ Successfully sniped %s/%s %s @ %.0fc", asset, timeframe, snipe_dir, snipe_price * 100)
+                        try:
+                            from app.telegram_bot import send_alert
+                            send_alert(f"CLOSE-SNIPE {asset}/{timeframe} {snipe_dir} @ {int(snipe_price*100)}c")
+                        except Exception:
+                            pass
+                except Exception as ex:
+                    log.debug("[CLOSE-SNIPER] %s/%s: %s", asset, timeframe, ex)
+        except Exception as ex:
+            log.error("[CLOSE-SNIPER] loop error: %s", ex)
+        # Scan every 8 seconds
+        await asyncio.sleep(8.0)

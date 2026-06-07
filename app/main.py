@@ -709,6 +709,13 @@ async def main() -> None:
             except Exception as e:
                 log.error("[MAIN] Failed to import start_resolution_sweeper: %s", e)
 
+            try:
+                from core.engine.cycle_manager import start_close_sniper
+                tasks.append(start_close_sniper(session, context.engines))
+                log.info("[MAIN] Close sniper background task registered.")
+            except Exception as e:
+                log.error("[MAIN] Failed to import start_close_sniper: %s", e)
+
             log.info("[MAIN] Launching %d asyncio tasks (Dynamic asset loops + reconciliation + arbitrage scanner)", len(tasks))
             await asyncio.gather(*tasks)
     finally:

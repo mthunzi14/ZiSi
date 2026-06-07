@@ -67,7 +67,7 @@ def simulate_value(candles_1m_by_asset: Dict[str, List[Candle]],
                 fp_up = fair_prob_up(s_t, s_0, sigma_frac, t_min, total_min, cfg.pricing.sigma_scale)
                 up_q = contract_price(s_lag, s_0, sigma, t_min, total_min)
                 dn_q = round(1.0 - up_q, 4)
-                dec = decide_value_entry(fp_up, up_q, dn_q, t_min, total_min, cfg.value_params)
+                dec = decide_value_entry(fp_up, up_q, dn_q, t_min, total_min, cfg.value_params, timeframe=f"{cfg.window_min}m")
                 if dec["direction"] is None:
                     continue
                 quoted = up_q if dec["direction"] == "UP" else dn_q

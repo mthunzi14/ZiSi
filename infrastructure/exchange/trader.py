@@ -54,6 +54,8 @@ def _get_config() -> dict:
 
 def _derive_entry_type(title: str) -> str:
     t = (title or "").upper()
+    if "CLOSE_SNIPE" in t or "CLOSE-SNIPE" in t:
+        return "CLOSE-SNIPE"
     if "T2_SWEEPER" in t or "SWEEP" in t:
         return "SWEEP"
     if "LATENCY_ARB" in t or "LAT_ARB" in t or "ARB" in t:

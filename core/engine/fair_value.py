@@ -41,7 +41,8 @@ def fair_prob_up(s_t: float, s_0: float, sigma_frac: float, t_min: float,
 def decide_value_entry(fp_up: float, up_price: float, dn_price: float,
                        t_min: float, total_min: float,
                        params: Optional[dict] = None,
-                       regime: str = "TREND") -> dict:
+                       regime: str = "TREND",
+                       timeframe: str = "5m") -> dict:
     """Return {"direction": "UP"|"DOWN"|None, "edge": float, "archetype": str|None}.
     Enters the side whose (fair_prob - market_price) clears edge_margin; if both do,
     takes the larger edge. archetype in {"moderate", "near_certainty"}."""
@@ -60,6 +61,15 @@ def decide_value_entry(fp_up: float, up_price: float, dn_price: float,
             required_margin_up = p["edge_margin"] + 0.05
         if 0.47 <= dn_price <= 0.53:
             required_margin_dn = p["edge_margin"] + 0.05
+
+    # Timeframe-specific edge margin tightening
+    # 15m window has 3x the time for price to move against us — require stronger mispricing
+    if timeframe == '15m':
+        required_margin_up = max(required_margin_up, 0.12)
+        required_margin_dn = max(required_margin_dn, 0.12)
+    elif timeframe == '1h':
+        required_margin_up = max(required_margin_up, 0.10)
+        required_margin_dn = max(required_margin_dn, 0.10)
 
     if edge_up < required_margin_up and edge_dn < required_margin_dn:
         return {"direction": None, "edge": 0.0, "archetype": None}

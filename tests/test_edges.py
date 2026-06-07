@@ -37,6 +37,21 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dec_pass["direction"], "UP")
         self.assertGreater(dec_pass["edge"], 0.0)
 
+    def test_fv_15m_edge_margin(self):
+        # 1. 5m contract with edge 0.11 (above default 0.10 margin) should pass
+        # fp_up = 0.70, up_price = 0.59 => edge = 0.11
+        dec_5m = decide_value_entry(fp_up=0.70, up_price=0.59, dn_price=0.41, t_min=2.0, total_min=5.0, timeframe="5m")
+        self.assertEqual(dec_5m["direction"], "UP")
+
+        # 2. 15m contract with edge 0.11 should be blocked because it requires 0.12 margin
+        dec_15m = decide_value_entry(fp_up=0.70, up_price=0.59, dn_price=0.41, t_min=2.0, total_min=15.0, timeframe="15m")
+        self.assertEqual(dec_15m["direction"], None)
+
+        # 3. 15m contract with edge 0.13 should pass
+        # fp_up = 0.70, up_price = 0.57 => edge = 0.13
+        dec_15m_pass = decide_value_entry(fp_up=0.70, up_price=0.57, dn_price=0.43, t_min=2.0, total_min=15.0, timeframe="15m")
+        self.assertEqual(dec_15m_pass["direction"], "UP")
+
     @patch("infrastructure.exchange.trader._open_positions")
     @patch("infrastructure.exchange.trader.execute_exit")
     @patch("infrastructure.websocket.extraterrestrial_ws_gateway.polymarket_l2_gateway")
@@ -375,6 +390,51 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
             context3, engine, "BTC", "5m", 5, signal_atm_fv, current_balance=200.0
         )
         self.assertTrue(allowed3, "FAIR_VAL at 48c should bypass ATM gate")
+
+    @patch("infrastructure.exchange.trader.place_order")
+    @patch("infrastructure.state.state_manager.get_open_positions", return_value=[])
+    async def test_close_sniper(self, mock_get_positions, mock_place_order):
+        from core.engine.cycle_manager import start_close_sniper
+        import time
+
+        # Mock engine and market
+        engine = MagicMock()
+        engine.asset = "BTC"
+        engine.timeframe = "5m"
+        
+        # Scenario: Price is 0.98, time is T-30s before expiry -> should trigger YES trade
+        now = int(time.time())
+        market_data_yes = {
+            "event_id": "test_event_yes",
+            "expiry_ts": now + 30,
+            "event_title": "Bitcoin Up or Down Test",
+            "up_price": 0.98,
+            "dn_price": 0.02,
+            "up_market": {"id": "up_token_123"},
+            "dn_market": {"id": "dn_token_123"}
+        }
+        
+        engine._fetch_market = AsyncMock(return_value=market_data_yes)
+        engines = {"BTC/5m": engine}
+        
+        import asyncio
+        # Run close sniper, cancel on second iteration
+        with patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError()]):
+            try:
+                await start_close_sniper(None, engines)
+            except asyncio.CancelledError:
+                pass
+                
+        # Verify order was placed
+        mock_place_order.assert_called_once_with(
+            event_id="test_event_yes",
+            market_id="up_token_123",
+            amount_dollars=3.0, # (0.98 - 0.97)/0.02 = 0.5 -> 1 + 0.5 * 4 = 3
+            direction="YES",
+            entry_price=0.98,
+            event_title="[UPDOWN][BTC][5m][CLOSE_SNIPE] Bitcoin Up or Down Test",
+            expiry_ts=now + 30
+        )
 
 
 if __name__ == "__main__":

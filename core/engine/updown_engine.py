@@ -367,7 +367,7 @@ class UpDownEngine:
         regime = get_regime_mode()
 
         fp_up = fair_prob_up(spot, s_0, sigma_frac, elapsed_min, total_min, drift=drift)
-        dec = decide_value_entry(fp_up, up_price, dn_price, elapsed_min, total_min, regime=regime)
+        dec = decide_value_entry(fp_up, up_price, dn_price, elapsed_min, total_min, regime=regime, timeframe=self.timeframe)
         dec["fp_up"] = round(fp_up, 4)
         dec["sigma_frac"] = round(sigma_frac, 6)
         return dec
