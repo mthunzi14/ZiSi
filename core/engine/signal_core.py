@@ -189,6 +189,15 @@ def decide_signal(
     )
 
     if up_trigger:
+        # Overextension block for trend-following in MEAN_REVERTING regime
+        if (regime or "").upper() == "MEAN_REVERTING" and rsi > 60.0:
+            import logging
+            logging.getLogger("zisi.signal_core").info(
+                "[OVEREXTENDED-GATE] Blocking MEAN_REVERTING UP trade: RSI %.2f > 60.0", rsi
+            )
+            res["blocked"] = True
+            return res
+
         # Mandatory micro-OFI direction gate for 5m to filter out false breakouts
         if timeframe == "5m" and ofi <= 0.0:
             import logging
@@ -207,6 +216,15 @@ def decide_signal(
         return res
 
     if dn_trigger:
+        # Overextension block for trend-following in MEAN_REVERTING regime
+        if (regime or "").upper() == "MEAN_REVERTING" and rsi < 40.0:
+            import logging
+            logging.getLogger("zisi.signal_core").info(
+                "[OVEREXTENDED-GATE] Blocking MEAN_REVERTING DOWN trade: RSI %.2f < 40.0", rsi
+            )
+            res["blocked"] = True
+            return res
+
         # Mandatory micro-OFI direction gate for 5m to filter out false breakouts
         if timeframe == "5m" and ofi >= 0.0:
             import logging
