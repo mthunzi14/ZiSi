@@ -158,8 +158,11 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
             "direction": "UP",
             "score": 0.85,
             "entry_source": "SIG",
-            "market": {"up_price": 0.45, "dn_price": 0.55}
+            "market": {"up_price": 0.45, "dn_price": 0.55},
+            "whale_aligned": True,
+            "confluence_score": 2,
         }
+
         allowed3, details3 = await _validate_trade_slot(
             context, engine, "BTC", "5m", 5, signal_sig, current_balance=200.0
         )
@@ -265,5 +268,115 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(allowed_dual)
         self.assertEqual(reason_dual, "dual_ok")
 
+    async def test_correlated_asset_block(self):
+        """BTC/ETH correlated group: UP open blocks opposing DOWN. Same dir allowed. DOGE unaffected."""
+        import core.engine.session_governor as governor
+        from core.engine.session_governor import request_trade_slot
+
+        # Clean state
+        governor._lat_arb_in_flight.clear()
+        governor._lat_arb_cooldowns.clear()
+        governor._candle_slots.clear()
+
+        # Open position: BTC UP
+        open_positions_btc_up = [
+            {
+                "order_id": "zisi_corr_1",
+                "event_title": "[UPDOWN][BTC][5m][SINGLE] Bitcoin Up or Down",
+                "direction": "YES",
+                "asset": "BTC",
+            }
+        ]
+
+        # 1. ETH DOWN should be BLOCKED (BTC UP open, ETH is correlated, DOWN is opposing)
+        with patch("infrastructure.state.state_manager.get_open_positions", return_value=open_positions_btc_up):
+            allowed, reason = await request_trade_slot(
+                "ETH", "5m", 0.80, 5, open_positions_btc_up, is_dual=False, direction="DOWN"
+            )
+        self.assertFalse(allowed, "ETH DOWN should be blocked when BTC UP is open (correlated opposing)")
+        self.assertEqual(reason, "correlated_opposing_ETH")
+
+        # 2. ETH UP should be ALLOWED (same direction as BTC UP — no self-hedge)
+        with patch("infrastructure.state.state_manager.get_open_positions", return_value=open_positions_btc_up):
+            allowed2, reason2 = await request_trade_slot(
+                "ETH", "5m", 0.80, 5, open_positions_btc_up, is_dual=False, direction="UP"
+            )
+        self.assertTrue(allowed2, "ETH UP should be allowed when BTC UP is open (same direction)")
+
+        # 3. DOGE DOWN should NOT be blocked by BTC UP (DOGE is not in BTC/ETH group)
+        with patch("infrastructure.state.state_manager.get_open_positions", return_value=open_positions_btc_up):
+            allowed3, reason3 = await request_trade_slot(
+                "DOGE", "5m", 0.80, 5, open_positions_btc_up, is_dual=False, direction="DOWN"
+            )
+        self.assertTrue(allowed3, "DOGE DOWN should not be blocked by BTC UP (different correlation group)")
+        self.assertNotEqual(reason3, "correlated_opposing_DOGE")
+
+    @patch("app.main.request_trade_slot", return_value=(True, "slot_ok"))
+    @patch("app.main.global_diagnostics.get_risk_multiplier", return_value=1.0)
+    @patch("infrastructure.state.state_manager.get_open_positions", return_value=[])
+    async def test_atm_precision_gate(self, mock_open, mock_risk, mock_request):
+        """ATM entry at 48c with whale_aligned=False should be blocked by ATM Precision Gate."""
+        from app.main import _validate_trade_slot
+
+        engine = MagicMock()
+        engine.compute_size.return_value = 5.0
+
+        context = MagicMock()
+        context.log_skip = MagicMock()
+
+        # Signal: SIG entry at 48c (inside ATM zone 44-56c), no whale alignment, low confluence
+        signal_atm_no_whale = {
+            "direction": "UP",
+            "score": 0.80,
+            "entry_source": "SIG",
+            "market": {"up_price": 0.48, "dn_price": 0.52},
+            "whale_aligned": False,
+            "confluence_score": 1,
+        }
+
+        allowed, details = await _validate_trade_slot(
+            context, engine, "BTC", "5m", 5, signal_atm_no_whale, current_balance=200.0
+        )
+        self.assertFalse(allowed, "ATM entry without whale alignment should be blocked")
+        context.log_skip.assert_called()
+        call_args = context.log_skip.call_args
+        self.assertEqual(call_args[0][0], "atm_precision_gate")
+
+        # Signal: SIG entry at 48c but WITH whale alignment AND conf >= 2 -> allowed
+        signal_atm_with_whale = {
+            "direction": "UP",
+            "score": 0.80,
+            "entry_source": "SIG",
+            "market": {"up_price": 0.48, "dn_price": 0.52},
+            "whale_aligned": True,
+            "confluence_score": 2,
+        }
+        context2 = MagicMock()
+        context2.log_skip = MagicMock()
+
+        allowed2, details2 = await _validate_trade_slot(
+            context2, engine, "BTC", "5m", 5, signal_atm_with_whale, current_balance=200.0
+        )
+        self.assertTrue(allowed2, "ATM entry WITH whale alignment and conf>=2 should be allowed")
+
+        # Signal: FAIR_VAL at 48c should bypass ATM gate entirely
+        signal_atm_fv = {
+            "direction": "UP",
+            "score": 0.80,
+            "entry_source": "FAIR_VAL",
+            "market": {"up_price": 0.48, "dn_price": 0.52},
+            "whale_aligned": False,
+            "confluence_score": 0,
+        }
+        context3 = MagicMock()
+        context3.log_skip = MagicMock()
+
+        allowed3, details3 = await _validate_trade_slot(
+            context3, engine, "BTC", "5m", 5, signal_atm_fv, current_balance=200.0
+        )
+        self.assertTrue(allowed3, "FAIR_VAL at 48c should bypass ATM gate")
+
+
 if __name__ == "__main__":
     unittest.main()
+

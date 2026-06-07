@@ -514,7 +514,10 @@ class UpDownEngine:
                     "edge_context": edge_ctx,
                     "entry_source": "SIG",
                     "corroboration_multiplier": 1.0,
+                    "whale_aligned": True,   # default allow for streak-reversal path
+                    "confluence_score": 2,   # default allow for streak-reversal path
                 }
+
 
         # ── Fair-value primary entry (prioritized check) ──
         # Check if we have a valid fair-value signal that clears the margin first.
@@ -1027,6 +1030,18 @@ class UpDownEngine:
             up_price * 100, dn_price * 100, is_dual_eligible, market["event_title"],
         )
 
+        # Add whale alignment and confluence to signal for downstream gates
+        if self.last_edge_context:
+            ec = self.last_edge_context
+            whale_pressure = ec.get('whale_pressure', 0.0)
+            # whale_pressure > 0 means bullish, < 0 means bearish
+            whale_is_up = whale_pressure >= 0.0
+            _whale_aligned = (whale_is_up == (direction == 'UP'))
+            _confluence_score = ec.get('confluence_score', 0)
+        else:
+            _whale_aligned = True   # default allow if no edge context
+            _confluence_score = 2   # default allow
+
         return {
             "asset":        self.asset,
             "timeframe":    self.timeframe,
@@ -1041,7 +1056,10 @@ class UpDownEngine:
             "edge_context": edge_ctx,
             "entry_source": entry_source,
             "corroboration_multiplier": _corroboration_multiplier,
+            "whale_aligned": _whale_aligned,
+            "confluence_score": _confluence_score,
         }
+
 
     async def _resolve_l2_prices(
         self,

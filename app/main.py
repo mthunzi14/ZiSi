@@ -260,6 +260,22 @@ async def _validate_trade_slot(
         context.log_skip("entry_price", asset, timeframe, {"price": entry_price, "score": score})
         return False, {}
 
+    # ATM Precision Gate: 44-56c zone requires whale + confluence alignment
+    # PBot-6 only enters ATM with Pyth edge. Our losses avg 46.9c entry.
+    _ATM_LOW, _ATM_HIGH = 0.44, 0.56
+    if _ATM_LOW <= entry_price <= _ATM_HIGH and _entry_source not in ("FAIR_VAL", "LATENCY_ARB"):
+        whale_aligned = signal.get("whale_aligned", False)
+        conf_score = signal.get("confluence_score", 0)
+        if not whale_aligned or conf_score < 2:
+            log.info(
+                "[ATM-GATE] %s/%s: SIG entry %.0fc in ATM zone — whale_aligned=%s conf=%d — skip",
+                asset, timeframe, entry_price * 100, whale_aligned, conf_score
+            )
+            context.log_skip("atm_precision_gate", asset, timeframe,
+                             {"price": entry_price, "conf": conf_score, "whale": whale_aligned})
+            return False, {}
+
+
 
     if is_dual and (up_price + dn_price) >= 0.92:
         is_dual = False

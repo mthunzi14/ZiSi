@@ -12,6 +12,8 @@ from typing import Optional
 
 log = logging.getLogger("zisi.governor")
 
+CORRELATED_GROUPS = [frozenset({'BTC', 'ETH'}), frozenset({'SOL', 'XRP'})]
+
 _lock = asyncio.Lock()
 # candle_bucket_key -> list of {asset, score, timeframe}
 _candle_slots: dict[str, list[dict]] = {}
@@ -72,6 +74,41 @@ def has_open_asset_tf_exposure(open_positions: list, asset: str, timeframe: str)
 
 def has_open_btc_exposure(open_positions: list) -> bool:
     return has_open_asset_exposure(open_positions, BTC_ASSET)
+
+
+def has_opposing_correlated_exposure(open_positions: list, asset: str, direction: str) -> bool:
+    """True if a correlated asset has an opposing direction open position.
+    BTC+ETH are correlated. SOL+XRP are correlated. Blocks self-hedging.
+    """
+    asset_upper = asset.upper()
+    sig_is_up = direction == "UP"
+
+    # Find the correlation group for this asset
+    asset_group = None
+    for group in CORRELATED_GROUPS:
+        if asset_upper in group:
+            asset_group = group
+            break
+
+    if not asset_group:
+        return False  # No correlation group found, no block
+
+    # Check all open positions for opposing direction in correlated assets
+    for p in open_positions:
+        t = p.get('event_title') or ''
+        p_asset = (p.get('asset') or _parse_asset_from_title(t) or '').upper()
+
+        # Skip if not in the same correlation group, or if it's the same asset
+        if p_asset not in asset_group or p_asset == asset_upper:
+            continue
+
+        p_dir = p.get('direction') or ''
+        p_is_up = p_dir in ('YES', 'UP')
+
+        if p_is_up != sig_is_up:
+            return True  # Correlated asset has opposing direction
+
+    return False
 
 
 async def request_trade_slot(
@@ -150,6 +187,14 @@ async def request_trade_slot(
                             asset, timeframe, direction, p_asset, p_dir, p.get("order_id")
                         )
                         return False, f"opposing_exposure_{asset}"
+
+        # Block opposing direction on correlated assets (BTC/ETH group, SOL/XRP group)
+        if has_opposing_correlated_exposure(open_positions, asset, direction):
+            log.warning(
+                "[GOVERNOR] Correlated opposing block: %s/%s %s — correlated asset has opposing position",
+                asset, timeframe, direction
+            )
+            return False, f"correlated_opposing_{asset}"
 
         # Correlation cap: max 2 open positions in same direction (tightened from 4).
         # 3+ same-direction positions = correlated macro exposure, not independent edge.

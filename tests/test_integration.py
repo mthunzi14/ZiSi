@@ -34,6 +34,8 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
             "kelly_multiplier": 1.5,
             "signal_type": "TYPE_A_HIGH",
             "confidence": 9,
+            "whale_aligned": True,
+            "confluence_score": 2,
             "market": {
                 "up_price": 0.45,
                 "dn_price": 0.55,
@@ -44,6 +46,7 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
                 "expiry_ts": 1779592200,
             },
         }
+
 
         # Validate trade slot
         from unittest.mock import patch
