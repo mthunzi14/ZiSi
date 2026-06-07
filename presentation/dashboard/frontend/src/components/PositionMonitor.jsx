@@ -36,7 +36,7 @@ function assetFallback(title) {
 function parsePositionMeta(pos) {
   const title = pos.event_title || '';
   const assetMatch = title.match(/\[(BTC|ETH|SOL|XRP)\]/);
-  const tfMatch    = title.match(/\[(5m|15m)\]/);
+  const tfMatch    = title.match(/\[(5m|15m|1h)\]/);
   const typeMatch  = title.match(/\[(SINGLE|DUAL_MAIN|DUAL_HEDGE|DUAL)\]/);
   return {
     asset:     assetMatch ? assetMatch[1] : assetFallback(title),

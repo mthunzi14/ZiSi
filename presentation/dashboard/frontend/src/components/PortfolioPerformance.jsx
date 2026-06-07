@@ -56,7 +56,7 @@ function assetFromTitle(title) {
 }
 
 function tfFromTitle(title) {
-  const tag = title.match(/\[(5m|15m)\]/);
+  const tag = title.match(/\[(5m|15m|1h)\]/);
   if (tag) return tag[1];
   return '?';
 }

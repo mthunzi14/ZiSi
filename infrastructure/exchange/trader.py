@@ -1294,7 +1294,7 @@ def execute_exit(order_id: str, current_price: float, exit_reason: str = "UNKNOW
     title = pos.get("event_title", "")
     import re as _re
     _asset_tag = _re.search(r'\[(BTC|ETH|SOL|XRP|DOGE|HYPE|BNB)\]', title)
-    _tf_tag    = _re.search(r'\[(5m|15m)\]', title)
+    _tf_tag    = _re.search(r'\[(5m|15m|1h)\]', title)
     _asset = _asset_tag.group(1) if _asset_tag else (
         'BTC' if 'bitcoin' in title.lower() else
         'ETH' if 'ethereum' in title.lower() else

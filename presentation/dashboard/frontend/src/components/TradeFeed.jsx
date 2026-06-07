@@ -16,7 +16,7 @@ function assetFromTitle(title) {
 }
 
 function tfFromTitle(title) {
-  const tagMatch = title.match(/\[(5m|15m)\]/);
+  const tagMatch = title.match(/\[(5m|15m|1h)\]/);
   if (tagMatch) return tagMatch[1];
   const timeMatch = title.match(/(\d+:\d+[AP]M)-(\d+:\d+[AP]M)/i);
   if (timeMatch) {
@@ -38,7 +38,7 @@ function tfFromTitle(title) {
 function parseMeta(p) {
   const title = p.event_title || '';
   const aTag = title.match(/\[(BTC|ETH|SOL|XRP|DOGE|LINK|BNB)\]/);
-  const tTag = title.match(/\[(5m|15m)\]/);
+  const tTag = title.match(/\[(5m|15m|1h)\]/);
   const xTag = title.match(/\[(SINGLE|DUAL_MAIN|DUAL_HEDGE|DUAL)\]/);
   return {
     asset:     aTag ? aTag[1] : assetFromTitle(title),
