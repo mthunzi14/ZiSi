@@ -867,7 +867,7 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             from infrastructure.state.state_manager import get_current_balance
             balance = get_current_balance()
             # Dynamic fractional size with a $0.50 floor to prevent disabling on small accounts
-            usd_size = max(0.50, min(balance * 0.005, 2.0)) * _snipe_size_mult
+            usd_size = max(1.50, min(balance * 0.005, 5.0)) * _snipe_size_mult  # $1.50 floor clears Polymarket $1 CLOB minimum
 
             market_id = market["dn_market"]["id"] if snipe_direction == "DOWN" else market["up_market"]["id"]
 
@@ -930,7 +930,7 @@ async def start_resolution_sweeper(session, engines):
             import infrastructure.state.state_manager as state_mgr
             balance = get_current_balance()
             # Dynamic fractional size with a $0.50 floor to prevent disabling on small accounts
-            usd_size = max(0.50, min(balance * 0.005, 5.0))
+            usd_size = max(1.50, min(balance * 0.005, 5.0))  # $1.50 floor clears Polymarket $1 CLOB minimum
             now = time.time()
             for key, engine in engines.items():
                 asset = engine.asset
@@ -1107,6 +1107,29 @@ async def start_close_sniper(session, engines):
                         )
                         continue
 
+                    # NCS candle-direction gate: prior closed candle must align with bet direction.
+                    # Prevents NCS firing into reversal setups (e.g. NCS YES after a DOWN candle).
+                    # Fail-open: if klines unavailable, allow trade.
+                    if snipe_mode == "CLOSE-SNIPE" and snipe_dir and hasattr(engine, "klines") and engine.klines and len(engine.klines) >= 2:
+                        try:
+                            _prev_kline = engine.klines[-2]
+                            _prev_open  = float(_prev_kline[1])
+                            _prev_close = float(_prev_kline[4])
+                            _prev_was_up = _prev_close >= _prev_open
+                            _ncs_expects_up = (snipe_dir == "YES")
+                            if _prev_was_up != _ncs_expects_up:
+                                log.info(
+                                    "[NCS-CANDLE-GATE] %s/%s: prior candle %s but NCS=%s — reversal risk — skip",
+                                    asset, timeframe,
+                                    "UP" if _prev_was_up else "DN", snipe_dir
+                                )
+                                snipe_dir = None
+                        except Exception:
+                            pass  # fail-open
+
+                    if not snipe_dir or not market_id:
+                        continue
+
                     current_balance = _smgr.get_current_balance()
 
                     if snipe_mode == "CLOSE-SNIPE":
@@ -1118,7 +1141,7 @@ async def start_close_sniper(session, engines):
                         # Tail-risk cap: at ep > 0.90 wrong resolution costs ~89c/$
                         # Cap at $2.00 to prevent one reversal from wiping all prior wins
                         if snipe_price > 0.90:
-                            _ncs_tail_cap = float(os.getenv("NCS_TAIL_CAP", "2.00"))
+                            _ncs_tail_cap = float(os.getenv("NCS_TAIL_CAP", "12.50"))  # Raised: $2 cap made wins too small vs losses
                             if amount_dollars > _ncs_tail_cap:
                                 log.info("[NCS-TAIL-CAP] CLOSE-SNIPE %.0fc: size $%.2f -> $%.2f (tail-risk cap ep>90c)",
                                          snipe_price * 100, amount_dollars, _ncs_tail_cap)

@@ -410,9 +410,9 @@ async def _validate_trade_slot(
             context.log_skip("same_dir_quality_gate", asset, timeframe)
             return False, {}
 
-    # FV upper dead zone: 58-65¢ has 0%WR in live data (4 losses, 0 wins).
-    # FV model has no edge when market already agrees direction (>58¢ means market ~58%+ confident).
-    if _entry_source == "FAIR_VAL" and entry_price >= 0.58 and entry_price < 0.65:
+    # FV upper dead zone: 57-65¢ has 0%WR in live data. Closes the 56-58c gap between ATM-CORE and upper-dead.
+    # Any FV between 56c and 65c has no directional edge — market is too evenly split.
+    if _entry_source == "FAIR_VAL" and entry_price > 0.56 and entry_price < 0.65:
         log.info(
             "[FV-UPPER-DEAD] %s/%s: %.0fc FV in 52-65c dead zone — 0%%WR historically — skip",
             asset, timeframe, entry_price * 100
@@ -507,8 +507,8 @@ async def _validate_trade_slot(
     if timeframe == "1h" or _entry_source == "REVERSAL_STREAK":
         global_max_bet = min(current_balance * 0.30, 50.0)
         _cap_label = "HIGH-CONV"
-    elif _entry_source == "FAIR_VAL" and entry_price < 0.38:
-        global_max_bet = min(current_balance * 0.25, 40.0)
+    elif _entry_source == "FAIR_VAL" and entry_price < 0.40:
+        global_max_bet = min(current_balance * 0.30, 50.0)
         _cap_label = "FV-DEEP"
     else:
         global_max_bet = min(current_balance * 0.12, 20.0)
@@ -524,12 +524,15 @@ async def _validate_trade_slot(
             bet_usd = 10.0
 
     # ── Optimal Altcoin Sizing Gates (Fix A - Maximize P&L safely) ──
-    if asset in ["SOL", "XRP"]:
-        bet_usd = bet_usd * 0.60
-        log.info("[RISK] SOL/XRP Sizing calibrated to 60%%: $%.2f", bet_usd)
-    elif asset in ["ADA", "DOGE", "AVAX", "SUI"]:
-        bet_usd = min(bet_usd * 0.35, 35.0)
-        log.info("[RISK] Altcoin %s Sizing calibrated to 35%% (max $35): $%.2f", asset, bet_usd)
+    # Exempt FV deep contrarian (<40c): sized by edge, not asset volatility.
+    _fv_deep_exempt = (_entry_source == "FAIR_VAL" and entry_price < 0.40)
+    if not _fv_deep_exempt:
+        if asset in ["SOL", "XRP"]:
+            bet_usd = bet_usd * 0.60
+            log.info("[RISK] SOL/XRP Sizing calibrated to 60%%: $%.2f", bet_usd)
+        elif asset in ["ADA", "DOGE", "AVAX", "SUI"]:
+            bet_usd = min(bet_usd * 0.35, 35.0)
+            log.info("[RISK] Altcoin %s Sizing calibrated to 35%% (max $35): $%.2f", asset, bet_usd)
 
     # Safety cap: Max 35% of current_balance per trade slot — Bonereaper-scale sizing.
     # 35% allows $17.50 at $50 balance, $35 at $100, $70 at $200 — matches mentor's proportional bets.

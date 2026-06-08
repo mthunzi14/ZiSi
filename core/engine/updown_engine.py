@@ -363,7 +363,7 @@ class UpDownEngine:
         closes = [float(k[4]) for k in klines]
         ema_5 = _ema(closes, 5)
         ema_20 = _ema(closes, 20)
-        drift = (ema_5 - ema_20) / ema_20 if ema_20 > 0 else 0.0
+        drift = 0.0  # Driftless: EMA drift caused denominator-collapse trap near expiry (fake 99%+ edge)
 
         regime = get_regime_mode()
 
@@ -457,8 +457,8 @@ class UpDownEngine:
         # Verify that the fetched market's start timestamp matches the current candle start timestamp
         # Prevents timeframe mismatch where we place trades on upcoming or previous candles
         # based on the current candle's indicators.
-        import sys
-        is_testing = "unittest" in sys.modules
+        import sys, os as _os_t
+        is_testing = _os_t.environ.get("ZISI_TESTING") == "True" or any("unittest" in a or "pytest" in a for a in sys.argv)
 
         duration_min = market.get("duration_min")
         if duration_min is None:
@@ -561,7 +561,8 @@ class UpDownEngine:
             _last_kline_ts = int(klines[-1][0]) // 1000 if klines else 0
 
             import sys
-            is_testing = "unittest" in sys.modules
+            import os as _os2
+            is_testing = _os2.environ.get("ZISI_TESTING") == "True" or any("unittest" in a or "pytest" in a for a in sys.argv)
 
             if _last_kline_ts != _expected_start_ts and not is_testing:
                 # Klines list is lagged — wait for next tick to resolve current strike
@@ -575,7 +576,11 @@ class UpDownEngine:
                 _elapsed_min = max(0.0, (_now_ts - _candle_open_ts) / 60.0)
 
                 # Timing gate check
-                _fv_min = 5.0 if self.timeframe == "1h" else 1.0
+                # Deep contrarian (<40c): 0.5 min minimum — the best setup is the very first minute
+                # after a strong directional candle (market overreacts, spot starts at 0% from open).
+                # ATM/moderate: 1.0 min minimum to let price action settle.
+                _is_deep_contra_price = min(up_price, dn_price) < 0.40
+                _fv_min = 5.0 if self.timeframe == "1h" else (0.1 if _is_deep_contra_price else 1.0)  # 0.1min=6s: catch early-candle overreaction
                 _timing_ok = True
 
                 # Strict upper-bound timing gates: block late-candle entries
@@ -602,19 +607,29 @@ class UpDownEngine:
                         _candle_open = float(klines[-1][1])
                         _spot_now = closes[-1]  # Pyth-overwritten if available
                         _spot_pct = (_spot_now - _candle_open) / _candle_open if _candle_open > 0 else 0.0
-                        _ALIGN_THRESH = 0.0050  # 0.50% — stronger confirmation against ATM direction errors
-                        if _fv['direction'] == 'DOWN' and _spot_pct > _ALIGN_THRESH:
+                        _ALIGN_THRESH = 0.0050  # 0.50% — ATM directional-conflict gate
+                        # Deep contrarian (<40c) BYPASSES this gate. A cheap contract exists
+                        # because spot moved strongly against it — that IS the contrarian setup.
+                        _fv_entry_p = dn_price if _fv['direction'] == 'DOWN' else up_price
+                        _fv_is_deep_contra = _fv_entry_p < 0.40
+                        if not _fv_is_deep_contra:
+                            if _fv['direction'] == 'DOWN' and _spot_pct > _ALIGN_THRESH:
+                                log.info(
+                                    '[FV-SPOT-ALIGN] %s/%s: FV=DOWN but spot +%.3f%% above open — misaligned — skip',
+                                    self.asset, self.timeframe, _spot_pct * 100,
+                                )
+                                _fv_spot_align = False
+                            elif _fv['direction'] == 'UP' and _spot_pct < -_ALIGN_THRESH:
+                                log.info(
+                                    '[FV-SPOT-ALIGN] %s/%s: FV=UP but spot -%.3f%% below open — misaligned — skip',
+                                    self.asset, self.timeframe, abs(_spot_pct) * 100,
+                                )
+                                _fv_spot_align = False
+                        else:
                             log.info(
-                                '[FV-SPOT-ALIGN] %s/%s: FV=DOWN but spot +%.3f%% above open — misaligned — skip',
-                                self.asset, self.timeframe, _spot_pct * 100,
+                                '[FV-SPOT-ALIGN] %s/%s: deep contrarian %.0fc — bypassing alignment gate (spot %.3f%%)',
+                                self.asset, self.timeframe, _fv_entry_p * 100, _spot_pct * 100,
                             )
-                            _fv_spot_align = False
-                        elif _fv['direction'] == 'UP' and _spot_pct < -_ALIGN_THRESH:
-                            log.info(
-                                '[FV-SPOT-ALIGN] %s/%s: FV=UP but spot -%.3f%% below open — misaligned — skip',
-                                self.asset, self.timeframe, abs(_spot_pct) * 100,
-                            )
-                            _fv_spot_align = False
                     except Exception:
                         pass  # fail open — do not block if price data unavailable
                     if not _fv_spot_align:
@@ -627,7 +642,9 @@ class UpDownEngine:
                 # Applies to both 5m and 15m timeframes.
                 if _fv.get("direction") is not None:
                     _fv_arch = _fv.get("archetype", "moderate")
-                    if _fv_arch == "moderate":
+                    _fv_entry_p_arch = dn_price if _fv['direction'] == 'DOWN' else up_price
+                    _fv_is_deep_contra_arch = _fv_entry_p_arch < 0.40
+                    if _fv_arch == "moderate" and not _fv_is_deep_contra_arch:
                         from config import get_config
                         start_utc = int(get_config("FV_NIGHT_SESSION_START_UTC", 2))
                         end_utc = int(get_config("FV_NIGHT_SESSION_END_UTC", 9))

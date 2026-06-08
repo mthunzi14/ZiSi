@@ -1036,6 +1036,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
                         "[DORMANCY-SAFETY] Deferring exit for expired trade %s (%s). Live prices/resolution fetch failed (likely offline/sleep wake-up). Waiting for network to recover to get true settlement.",
                         order_id, _ev_title
                     )
+                    pos["status"] = "RESOLVING"  # Visible in dashboard while awaiting settlement
                     continue
             else:
                 _stored = float(pos.get("current_price", entry_price))
