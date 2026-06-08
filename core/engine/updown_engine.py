@@ -592,6 +592,34 @@ class UpDownEngine:
             if _timing_ok:
                 _fv = self._fair_value_entry(klines, closes[-1], up_price, dn_price, _elapsed_min)
 
+                if _fv.get('direction') is not None:
+                    # FV spot-direction alignment gate
+                    # Block FV entries where current spot is moving AGAINST the signal direction.
+                    # fair_value_entry() can lag spot by 1-2 ticks; if spot has already moved
+                    # 0.25%+ against the FV call, the edge has been arbitraged away.
+                    _fv_spot_align = True
+                    try:
+                        _candle_open = float(klines[-1][1])
+                        _spot_now = closes[-1]  # Pyth-overwritten if available
+                        _spot_pct = (_spot_now - _candle_open) / _candle_open if _candle_open > 0 else 0.0
+                        _ALIGN_THRESH = 0.0025  # 0.25% — ignore sub-noise moves
+                        if _fv['direction'] == 'DOWN' and _spot_pct > _ALIGN_THRESH:
+                            log.info(
+                                '[FV-SPOT-ALIGN] %s/%s: FV=DOWN but spot +%.3f%% above open — misaligned — skip',
+                                self.asset, self.timeframe, _spot_pct * 100,
+                            )
+                            _fv_spot_align = False
+                        elif _fv['direction'] == 'UP' and _spot_pct < -_ALIGN_THRESH:
+                            log.info(
+                                '[FV-SPOT-ALIGN] %s/%s: FV=UP but spot -%.3f%% below open — misaligned — skip',
+                                self.asset, self.timeframe, abs(_spot_pct) * 100,
+                            )
+                            _fv_spot_align = False
+                    except Exception:
+                        pass  # fail open — do not block if price data unavailable
+                    if not _fv_spot_align:
+                        _fv = {'direction': None, 'edge': 0.0, 'archetype': None}
+
                 # FV Archetype Gate — blocks moderate ATM entries unless regime has clear mean-reversion structure.
                 # RANGE is the only safe regime for moderate (38-57¢) entries — price oscillates in a band.
                 # MEAN_REVERTING is excluded: at ATM prices the market is mid-correction with no directional bias.

@@ -308,9 +308,9 @@ async def _validate_trade_slot(
     # SIGNAL dead zone: 35-47¢ has 0%WR in live data (7 consecutive losses, 0 wins).
     # At these prices the market's moderate skepticism against our direction is correct.
     # Deep contrarian (<35¢) and ATM+ (≥48¢) entries are kept.
-    if _entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE", "T2_SWEEPER") and 0.35 < entry_price < 0.48:
+    if _entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE", "T2_SWEEPER", "REVERSAL_STREAK") and 0.35 < entry_price < 0.46:
         log.info(
-            "[SIGNAL-DEAD-ZONE] %s/%s: %.0fc SIGNAL in 35-47c dead zone — 0%%WR historically — skip",
+            "[SIGNAL-DEAD-ZONE] %s/%s: %.0fc SIGNAL in 35-46c dead zone — 0%%WR historically — skip",
             asset, timeframe, entry_price * 100
         )
         context.log_skip("signal_dead_zone", asset, timeframe)
@@ -410,9 +410,9 @@ async def _validate_trade_slot(
             context.log_skip("same_dir_quality_gate", asset, timeframe)
             return False, {}
 
-    # FV upper dead zone: 52-65¢ has 0%WR in live data (4 losses, 0 wins).
-    # FV model has no edge when market already agrees direction (>52¢ means market ~52%+ confident).
-    if _entry_source == "FAIR_VAL" and entry_price >= 0.52 and entry_price < 0.65:
+    # FV upper dead zone: 58-65¢ has 0%WR in live data (4 losses, 0 wins).
+    # FV model has no edge when market already agrees direction (>58¢ means market ~58%+ confident).
+    if _entry_source == "FAIR_VAL" and entry_price >= 0.58 and entry_price < 0.65:
         log.info(
             "[FV-UPPER-DEAD] %s/%s: %.0fc FV in 52-65c dead zone — 0%%WR historically — skip",
             asset, timeframe, entry_price * 100
@@ -420,13 +420,17 @@ async def _validate_trade_slot(
         context.log_skip("fv_upper_dead_zone", asset, timeframe)
         return False, {}
 
-    # FV coin-flip gate: 40-52¢ requires score ≥ 0.88 — FV model profitable at 46-50¢ with high score.
-    if _entry_source == "FAIR_VAL" and 0.40 < entry_price <= 0.52:
-        _fv_min_score = float(os.getenv("FV_COIN_FLIP_SCORE_MIN", "0.88"))
+    # FV coin-flip gate: 42-58¢ is the ATM ambiguity zone — no genuine FV edge unless near_certainty arch
+    if _entry_source == "FAIR_VAL" and 0.42 < entry_price < 0.58:
+        _fv_arch = signal.get("fv_archetype", "moderate")
+        if _fv_arch == "near_certainty":
+            _fv_min_score = float(os.getenv("FV_COIN_FLIP_SCORE_MIN_NC", "0.82"))
+        else:
+            _fv_min_score = float(os.getenv("FV_COIN_FLIP_SCORE_MIN", "0.90"))
         if score < _fv_min_score:
             log.info(
-                "[FV-COIN-FLIP] %s/%s: %.0fc entry, score %.2f < %.2f — coin-flip zone blocked",
-                asset, timeframe, entry_price * 100, score, _fv_min_score,
+                "[FV-COIN-FLIP] %s/%s: %.0fc entry, score %.2f < %.2f (arch=%s) — 42-58c ATM zone blocked",
+                asset, timeframe, entry_price * 100, score, _fv_min_score, _fv_arch,
             )
             context.log_skip("fv_coin_flip_gate", asset, timeframe)
             return False, {}

@@ -219,18 +219,29 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 
             open_price = float(klines[-1][1])
             pct_move = (pyth_price - open_price) / open_price
-            
+
+            # Fast ATR-sigma for threshold scaling (uses same logic as line 403)
+            try:
+                _closed_k = klines[:-1]
+                _atr_vals_q = [
+                    abs(float(k[2]) - float(k[3])) / max(float(k[4]), 1e-9)
+                    for k in _closed_k[-14:]
+                ]
+                sigma_frac = sum(_atr_vals_q) / len(_atr_vals_q) if _atr_vals_q else 0.004
+            except Exception:
+                sigma_frac = 0.004  # fallback: 0.4% is a conservative floor
+
             import infrastructure.state.state_manager as state_mgr
             open_positions = state_mgr.get_open_positions()
-            
+
             if t_minus == 2:
-                _lat_threshold = 0.008  # T-2s sweeper: need 0.8%+ move for near-certainty
+                _lat_threshold = max(0.006, sigma_frac * 0.40)   # 40% of 1-candle sigma — near-certainty
             elif t_minus == 5:
-                _lat_threshold = 0.003  # T-5s: candle direction just needs to be clear
+                _lat_threshold = max(0.002, sigma_frac * 0.15)   # 15% of sigma — direction just needs to be clear
             elif timeframe == "5m":
-                _lat_threshold = 0.005  # T-15s 5m: stronger requirement
+                _lat_threshold = max(0.003, sigma_frac * 0.25)   # 25% of sigma — T-15s 5m
             else:
-                _lat_threshold = 0.004  # T-15s 15m: standard
+                _lat_threshold = max(0.002, sigma_frac * 0.20)   # 20% of sigma — T-15s 15m/1h
             if abs(pct_move) < _lat_threshold:
                 return
 
@@ -444,11 +455,13 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
 
                 # Discount gate: Polymarket must lag our fair probability by ≥6¢
                 # BoneReaper enters at 14¢ when fair prob is 95%+ — the lag is the edge
+                # T-5s entries relax to 4¢ — typical lag is 4-5¢ at that window
                 _discount = implied_prob - entry_price
-                if _discount < 0.06:
+                _discount_min = 0.04 if t_minus == 5 else 0.06
+                if _discount < _discount_min:
                     log.info(
-                        "[DISCOUNT] %s/%s %s: entry=%.2f fair=%.2f discount=%.2f < 0.06 — no lag, skip",
-                        asset, timeframe, direction, entry_price, implied_prob, _discount,
+                        "[DISCOUNT] %s/%s %s: entry=%.2f fair=%.2f discount=%.2f < %.2f — no lag, skip",
+                        asset, timeframe, direction, entry_price, implied_prob, _discount, _discount_min,
                     )
                     return
                     
@@ -1027,7 +1040,7 @@ async def start_close_sniper(session, engines):
                     market_id = None
                     snipe_mode = None
 
-                    _mode2_threshold = float(os.getenv("NCS_MODE2_THRESHOLD", "0.88"))
+                    _mode2_threshold = float(os.getenv("NCS_MODE2_THRESHOLD", "0.90"))
 
                     # Mode 1: terminal snipe — 95¢ and above, 8-45s TTL
                     if up_price >= 0.95:
@@ -1051,6 +1064,28 @@ async def start_close_sniper(session, engines):
                         snipe_price = dn_price
                         market_id = market["dn_market"]["id"]
                         snipe_mode = "CLOSE-SNIPE-EARLY"
+
+                    # High-price opposing-resolution guard for CLOSE-SNIPE (Mode 1 only)
+                    # At ep > 0.93 the tail loss is ~92c per dollar — one wrong resolution
+                    # wipes 10-15 wins. Require at least 2 of last 3 CLOB ticks to be
+                    # moving toward resolution (price increasing, not flat/reversing).
+                    if snipe_mode == "CLOSE-SNIPE" and snipe_price is not None and snipe_price > 0.93:
+                        # Fetch last 3 ticks from recent orderbook snapshot cache if available
+                        try:
+                            from infrastructure.state.state_manager import get_recent_price_ticks
+                            _ticks = get_recent_price_ticks(asset, timeframe, n=3)
+                            if _ticks and len(_ticks) >= 2:
+                                _tick_increasing = sum(1 for i in range(1, len(_ticks)) if _ticks[i] >= _ticks[i-1])
+                                if _tick_increasing < 1:   # all ticks flat or declining — price stalling
+                                    log.info(
+                                        "[NCS-MOMENTUM] %s/%s: CLOSE-SNIPE %.0fc but last %d ticks not advancing — opposing resolution risk — skip",
+                                        asset, timeframe, snipe_price * 100, len(_ticks)
+                                    )
+                                    snipe_dir = None
+                                    snipe_price = None
+                                    market_id = None
+                        except Exception:
+                            pass  # no tick cache available — allow trade (fail open)
 
                     if not snipe_dir or not market_id:
                         continue
@@ -1080,6 +1115,14 @@ async def start_close_sniper(session, engines):
                         max_add = min(current_balance * 0.15, 10.0)
                         certainty = max(0.0, min(1.0, (snipe_price - 0.95) / 0.04))
                         amount_dollars = round(base + certainty * max_add, 2)
+                        # Tail-risk cap: at ep > 0.90 wrong resolution costs ~89c/$
+                        # Cap at $2.00 to prevent one reversal from wiping all prior wins
+                        if snipe_price > 0.90:
+                            _ncs_tail_cap = float(os.getenv("NCS_TAIL_CAP", "2.00"))
+                            if amount_dollars > _ncs_tail_cap:
+                                log.info("[NCS-TAIL-CAP] CLOSE-SNIPE %.0fc: size $%.2f -> $%.2f (tail-risk cap ep>90c)",
+                                         snipe_price * 100, amount_dollars, _ncs_tail_cap)
+                                amount_dollars = _ncs_tail_cap
                     else:
                         # Mode 2: quarter-Kelly sizing
                         _p = snipe_price
