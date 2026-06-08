@@ -587,9 +587,9 @@ class UpDownEngine:
                 if not is_testing:
                     if self.timeframe == "5m" and _elapsed_min > 4.0:
                         _timing_ok = False
-                    elif self.timeframe == "15m" and _elapsed_min > 13.0:
+                    elif self.timeframe == "15m" and _elapsed_min > 14.5:
                         _timing_ok = False
-                    elif self.timeframe == "1h" and _elapsed_min > 55.0:
+                    elif self.timeframe == "1h" and _elapsed_min > 57.0:
                         _timing_ok = False
                     elif _elapsed_min < _fv_min:
                         _timing_ok = False
