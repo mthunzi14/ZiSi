@@ -395,7 +395,11 @@ class UpDownEngine:
                 if _rs.exists():
                     _d = _json.loads(_rs.read_text(encoding="utf-8"))
                     _reg = _d.get("regime")
-                    _atr_pct = float(_d.get("atr_percentile", 50.0))
+                    _price_samples = int(_d.get("price_samples", 0))
+                    # Require >=20 samples for a meaningful percentile rank.
+                    # With <20 samples the mean ATR lands near the 75th percentile by construction,
+                    # causing a false-positive VOL-VETO that blocks all 5m entries after a clean slate.
+                    _atr_pct = float(_d.get("atr_percentile", 50.0)) if _price_samples >= 20 else 50.0
                     if _reg == "VOLATILE_CHAOS" or _atr_pct >= 70.0:
                         log.info(
                             "[VOL-VETO] %s/5m: Volatility too high (regime=%s, atr_percentile=%.1f%%) — blocking 5m entry.",
