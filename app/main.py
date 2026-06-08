@@ -346,7 +346,7 @@ async def _validate_trade_slot(
 
     # FV upper dead zone: 52-65¢ has 0%WR in live data (4 losses, 0 wins).
     # FV model has no edge when market already agrees direction (>52¢ means market ~52%+ confident).
-    if _entry_source == "FAIR_VAL" and 0.52 < entry_price < 0.65:
+    if _entry_source == "FAIR_VAL" and entry_price >= 0.52 and entry_price < 0.65:
         log.info(
             "[FV-UPPER-DEAD] %s/%s: %.0fc FV in 52-65c dead zone — 0%%WR historically — skip",
             asset, timeframe, entry_price * 100
