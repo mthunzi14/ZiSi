@@ -348,6 +348,32 @@ async def _validate_trade_slot(
             context.log_skip("same_dir_quality_gate", asset, timeframe)
             return False, {}
 
+    # FV coin-flip gate: 40-60¢ entries have ~40% WR historically — they are coin-flips.
+    # At these prices the fair-probability model is unreliable. Require high confidence score
+    # to even consider entering, or the CLOB must already be showing strong direction (>60¢).
+    if _entry_source == "FAIR_VAL" and 0.40 < entry_price < 0.60:
+        _fv_min_score = float(os.getenv("FV_COIN_FLIP_SCORE_MIN", "0.88"))
+        if score < _fv_min_score:
+            log.info(
+                "[FV-COIN-FLIP] %s/%s: %.0fc entry, score %.2f < %.2f — coin-flip zone blocked",
+                asset, timeframe, entry_price * 100, score, _fv_min_score,
+            )
+            context.log_skip("fv_coin_flip_gate", asset, timeframe)
+            return False, {}
+
+    # Correlation cap: max 2 simultaneous 15m positions open at any time.
+    # At 22:45, 4 correlated 15m positions (BTC+ETH+XRP+SOL) all expired wrong → -$10.91 in 2s.
+    # Cap at 2 so one directional regime shift can lose at most 2 trades simultaneously.
+    if timeframe == "15m":
+        _open_15m = sum(1 for p in open_positions if "[15m]" in p.get("event_title", ""))
+        if _open_15m >= 2:
+            log.info(
+                "[15M-CORR-CAP] %s/15m: %d open 15m positions — correlation cap reached, skip",
+                asset, _open_15m,
+            )
+            context.log_skip("15m_correlation_cap", asset, timeframe)
+            return False, {}
+
     allowed, slot_reason = await request_trade_slot(
         asset, timeframe, score, interval_minutes, open_positions, is_dual=is_dual, direction=direction,
     )

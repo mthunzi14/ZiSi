@@ -433,13 +433,13 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                              asset, timeframe, entry_price * 100)
                     return
 
-                # ATM divergence floor: block entries within ±8¢ of 50¢ at T-15s
-                # Near-ATM (42-58¢) means CLOB sees ~50/50 — Pyth divergence at this level is noise,
-                # not edge. The BTC/5m 54¢ LAT-ARB loss is the canonical example of this pattern.
-                # T-5s and T-2s bypass — near-certainty windows are structurally different.
-                if t_minus == 15 and abs(entry_price - 0.50) < 0.08:
-                    log.info("[ATM-GATE] %s/%s: entry %.0fc within 8¢ of ATM — skip (no real divergence edge)",
-                             asset, timeframe, entry_price * 100)
+                # ATM divergence floor: block entries within ±10¢ of 50¢ at T-15s AND T-5s
+                # Near-ATM (40-60¢) means CLOB sees ~50/50 — Pyth divergence is noise, not edge.
+                # BTC/5m at 48¢ and SOL/5m at 46¢ both fired at T-5s AFTER the T-15s gate was added.
+                # T-2s has its own CLOB floor (≥75¢) above — T-2s does NOT bypass this gate.
+                if t_minus in (5, 15) and abs(entry_price - 0.50) < 0.10:
+                    log.info("[ATM-GATE] %s/%s T-%ds: entry %.0fc within 10¢ of ATM — skip (no divergence edge)",
+                             asset, timeframe, t_minus, entry_price * 100)
                     return
 
                 # Discount gate: Polymarket must lag our fair probability by ≥6¢
@@ -452,6 +452,15 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                     )
                     return
                     
+                # T2_SWEEPER CLOB confirmation floor: at T-2s, the CLOB must already confirm direction.
+                # If CLOB says 50¢ (50/50) with 2s left, Pyth noise is not edge — it's gambling.
+                # ETH/15m T2_SWEEPER at 50¢ = -$5.05 loss: the canonical reason for this gate.
+                # Require ≥75% CLOB confidence in our direction before sweeping.
+                if t_minus == 2 and entry_price < 0.75:
+                    log.info("[T2-CLOB-FLOOR] %s/%s: entry %.0fc < 75c — CLOB not yet confirmed — skip sweep",
+                             asset, timeframe, entry_price * 100)
+                    return
+
                 # For T-2s sweeper: implied_prob is always 0.999 — any price < 99.9¢ is positive EV
                 if t_minus == 2:
                     implied_prob = 0.999
@@ -462,10 +471,10 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
 
                 normal_usd = engine.compute_size(0.85, entry_price, current_balance)
                 if t_minus == 2:
-                    # Sweeper: balance-proportional sizing — near-zero risk at T-2s (candle already decided)
-                    # 10% of balance up to $8 — far more than the old 2% cap that produced $1.50 at $50
-                    usd_size = max(2.50, min(current_balance * 0.10, 8.0))
-                    log.info("[T2-SWEEPER] %s/%s sweep sizing 10%% of balance: $%.2f", asset, timeframe, usd_size)
+                    # Sweeper: conservative sizing — near-zero risk ONLY when CLOB confirms (≥75¢ floor above)
+                    # 4% of balance up to $3 — high WR but tiny ROI (+5-25%), keep loss risk low
+                    usd_size = max(1.50, min(current_balance * 0.04, 3.0))
+                    log.info("[T2-SWEEPER] %s/%s sweep sizing 4%% of balance: $%.2f", asset, timeframe, usd_size)
                 elif t_minus == 5:
                     if entry_price < 0.10:
                         usd_size = max(1.0, normal_usd * 1.0)

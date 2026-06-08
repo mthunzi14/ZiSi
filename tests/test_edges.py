@@ -146,19 +146,20 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         context = MagicMock()
         context.log_skip = MagicMock()
         
+        # Use score=0.92 to pass the FV coin-flip gate (requires ≥0.88 at 40-60¢)
         signal_fv = {
             "direction": "UP",
-            "score": 0.85,
+            "score": 0.92,
             "entry_source": "FAIR_VAL",
             "market": {"up_price": 0.45, "dn_price": 0.55}
         }
-        
+
         allowed, details = await _validate_trade_slot(
             context, engine, "BTC", "5m", 5, signal_fv, current_balance=100.0
         )
         self.assertTrue(allowed)
         self.assertAlmostEqual(details["bet_usd"], 6.00) # capped to 6% of $100
-        
+
         # Balance = $300 -> 6% is $18.00. bet_usd should be capped to $12.00 (global bet cap ceiling).
         allowed2, details2 = await _validate_trade_slot(
             context, engine, "BTC", "5m", 5, signal_fv, current_balance=300.0
@@ -375,8 +376,8 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(allowed2, "ATM entry WITH whale alignment and conf>=2 should be allowed")
 
-        # Signal: FAIR_VAL at 48c should bypass ATM gate entirely
-        signal_atm_fv = {
+        # Signal: FAIR_VAL at 48c with low score (0.80) should be blocked by FV coin-flip gate
+        signal_atm_fv_low = {
             "direction": "UP",
             "score": 0.80,
             "entry_source": "FAIR_VAL",
@@ -388,9 +389,26 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         context3.log_skip = MagicMock()
 
         allowed3, details3 = await _validate_trade_slot(
-            context3, engine, "BTC", "5m", 5, signal_atm_fv, current_balance=200.0
+            context3, engine, "BTC", "5m", 5, signal_atm_fv_low, current_balance=200.0
         )
-        self.assertTrue(allowed3, "FAIR_VAL at 48c should bypass ATM gate")
+        self.assertFalse(allowed3, "FAIR_VAL at 48c with score=0.80 should be blocked by coin-flip gate")
+
+        # Signal: FAIR_VAL at 48c with high score (0.92) should be allowed — high confidence bypasses gate
+        signal_atm_fv_high = {
+            "direction": "UP",
+            "score": 0.92,
+            "entry_source": "FAIR_VAL",
+            "market": {"up_price": 0.48, "dn_price": 0.52},
+            "whale_aligned": False,
+            "confluence_score": 0,
+        }
+        context3b = MagicMock()
+        context3b.log_skip = MagicMock()
+
+        allowed3b, details3b = await _validate_trade_slot(
+            context3b, engine, "BTC", "5m", 5, signal_atm_fv_high, current_balance=200.0
+        )
+        self.assertTrue(allowed3b, "FAIR_VAL at 48c with score=0.92 should be allowed")
 
     @patch("infrastructure.exchange.trader.place_order")
     @patch("infrastructure.state.state_manager.get_open_positions", return_value=[])

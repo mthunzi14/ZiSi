@@ -588,8 +588,10 @@ class UpDownEngine:
             if _timing_ok:
                 _fv = self._fair_value_entry(klines, closes[-1], up_price, dn_price, _elapsed_min)
 
-                # FV Archetype Gate — blocks moderate ATM entries in trending/volatile sessions.
-                # Only fires in RANGE or MEAN_REVERTING where ATM mean-reversion has edge.
+                # FV Archetype Gate — blocks moderate ATM entries unless regime has clear mean-reversion structure.
+                # RANGE is the only safe regime for moderate (38-57¢) entries — price oscillates in a band.
+                # MEAN_REVERTING is excluded: at ATM prices the market is mid-correction with no directional bias.
+                # ETH/15m 48¢ in MEAN_REVERTING and DOGE/5m 50¢ are canonical examples of why this matters.
                 # Applies to both 5m and 15m timeframes.
                 if _fv.get("direction") is not None:
                     _fv_arch = _fv.get("archetype", "moderate")
@@ -599,10 +601,10 @@ class UpDownEngine:
                         end_utc = int(get_config("FV_NIGHT_SESSION_END_UTC", 9))
                         cur_utc_hour = datetime.now(timezone.utc).hour
                         is_night = (start_utc <= cur_utc_hour < end_utc) if start_utc < end_utc else (cur_utc_hour >= start_utc or cur_utc_hour < end_utc)
-                        is_range = (regime in ("RANGE", "MEAN_REVERTING"))
+                        is_range = (regime == "RANGE")
                         if not is_range and not is_night:
                             log.info(
-                                "[FV-ARCH-GATE] %s/%s: moderate FV blocked in %s regime (not RANGE/MR/night)",
+                                "[FV-ARCH-GATE] %s/%s: moderate FV blocked in %s regime (only RANGE/night allowed)",
                                 self.asset, self.timeframe, regime,
                             )
                             _fv = {"direction": None, "edge": 0.0, "archetype": None}
@@ -1474,11 +1476,6 @@ class UpDownEngine:
                 except Exception as e:
                     log.warning("[SIZE] Failed to scale by session multiplier: %s", e)
 
-                # 1h premium: hourly candles have 12× more duration than 5m → deeper trend conviction
-                if self.timeframe == "1h":
-                    usd_size *= 2.0
-                    log.info("[SIZE-1H] Adaptive Kelly 1h premium 2.0x: $%.2f", usd_size)
-
                 # Price-Scaled Risk Sizer calibration to bypass 70¢ trap and extreme pricing risk
                 price_scalar = 1.0
                 if price > 0.65 and price <= 0.78:
@@ -1571,11 +1568,6 @@ class UpDownEngine:
         max_usd_cap = max(5.00, max_usd_cap)
 
         raw_usd = kelly_pct * balance * regime_mult * price_scalar
-
-        # 1h premium: hourly candles have 12× more duration than 5m → deeper trend conviction
-        if self.timeframe == "1h":
-            raw_usd *= 2.0
-            log.info("[SIZE-1H] Legacy Kelly 1h premium 2.0x: $%.2f", raw_usd)
 
         # Retrieve and apply session sizing multiplier (Sprint 11)
         session_sizing_mult = 1.0
