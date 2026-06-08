@@ -112,7 +112,7 @@ function buildRunningEv(closed) {
 
 function parseType(title, entryType) {
   const typeUpper = (entryType || '').toUpperCase();
-  if (typeUpper === 'CLOSE_SNIPE' || typeUpper === 'CLOSE-SNIPE' || typeUpper === 'NCS') return 'NCS';
+  if (typeUpper === 'CLOSE_SNIPE' || typeUpper === 'CLOSE-SNIPE' || typeUpper === 'CLOSE-SNIPE-EARLY' || typeUpper === 'CLOSE_SNIPE_EARLY' || typeUpper === 'NCS') return 'NCS';
   if (typeUpper === 'FAIR_VAL' || typeUpper === 'FAIR-VAL' || typeUpper === 'FV') return 'FV';
   if (typeUpper === 'SIGNAL' || typeUpper === 'SINGLE' || typeUpper === 'SIG') return 'SIG';
   if (typeUpper === 'SWEEP' || typeUpper === 'T2_SWEEPER') return 'SWEEP';
@@ -122,7 +122,7 @@ function parseType(title, entryType) {
   if (typeUpper === 'DUAL' || typeUpper === 'DUAL_MAIN' || typeUpper === 'DUAL_HEDGE') return 'DUAL';
 
   const titleUpper = (title || '').toUpperCase();
-  if (titleUpper.includes('[CLOSE_SNIPE]') || titleUpper.includes('[NCS]')) return 'NCS';
+  if (titleUpper.includes('[CLOSE_SNIPE]') || titleUpper.includes('[CLOSE-SNIPE]') || titleUpper.includes('[CLOSE-SNIPE-EARLY]') || titleUpper.includes('[NCS]')) return 'NCS';
   if (titleUpper.includes('[FAIR_VAL]') || titleUpper.includes('[FV]')) return 'FV';
   if (titleUpper.includes('[T2_SWEEPER]') || titleUpper.includes('[SWEEP]')) return 'SWEEP';
   if (titleUpper.includes('[LATENCY_ARB]') || titleUpper.includes('[ARB]')) return 'LAT ARB';
