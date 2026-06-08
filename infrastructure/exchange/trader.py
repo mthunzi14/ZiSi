@@ -71,6 +71,23 @@ def _derive_entry_type(title: str) -> str:
     return "SIGNAL"
 
 
+
+def _derive_trade_type(entry_type: str) -> str:
+    e = (entry_type or "").upper()
+    if "CLOSE-SNIPE" in e or "CLOSE_SNIPE" in e:
+        return "NCS"
+    if "FAIR" in e:
+        return "FAIR-VAL"
+    if "LAT" in e or "ARB" in e:
+        return "LAT-ARB"
+    if "SWEEP" in e:
+        return "SWEEP"
+    if "REVERSAL_SNIPE" in e or "REVERSAL-SNIPE" in e:
+        return "REVERSAL-SNIPE"
+    if "REVERSAL_STREAK" in e or "REVERSAL-STREAK" in e:
+        return "REVERSAL-STREAK"
+    return "SIGNAL"
+
 def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, title: str = "") -> tuple[Optional[float], Optional[float]]:
     try:
         _title_upper = (title or "").upper()
@@ -483,6 +500,7 @@ def place_order(
             "stop_loss": sl,
             "open_time": datetime.now(timezone.utc),
             "entry_type": _derive_entry_type(_display_title),
+            "trade_type": _derive_trade_type(_derive_entry_type(_display_title)),
             "hold_to_expiry": hold_to_expiry,
         }
         persist_positions()
@@ -546,6 +564,7 @@ def place_order(
         "stop_loss":    sl,
         "open_time":    datetime.now(timezone.utc),
         "entry_type":   _derive_entry_type(event_title or ""),
+        "trade_type":   _derive_trade_type(_derive_entry_type(event_title or "")),
         **({"expiry_ts": expiry_ts} if expiry_ts else {}),
     }
     persist_positions()
@@ -1506,6 +1525,7 @@ def persist_positions() -> None:
                     "exit_time":        pos.get("exit_timestamp", ""),
                     "expiry_ts":        pos.get("expiry_ts", 0),
                     "entry_type":       pos.get("entry_type", "SIGNAL"),
+                    "trade_type":       _derive_trade_type(pos.get("entry_type","SIGNAL")),
                 })
             else:
                 current_price = pos.get("current_price", entry_price)
@@ -1529,6 +1549,7 @@ def persist_positions() -> None:
                     "status":         status,
                     "expiry_ts":      pos.get("expiry_ts", 0),
                     "entry_type":     pos.get("entry_type", "SIGNAL"),
+                    "trade_type":     _derive_trade_type(pos.get("entry_type","SIGNAL")),
                 })
 
         # Newest closed trades first
@@ -1805,6 +1826,7 @@ def _recover_active_positions_from_disk() -> None:
                         "stop_loss": pos.get("stop_loss"),
                         "expiry_ts": pos.get("expiry_ts", 0),
                         "entry_type": pos.get("entry_type", "SIGNAL"),
+                        "trade_type": _derive_trade_type(pos.get("entry_type","SIGNAL")),
                     }
                     loaded += 1
         if loaded:
