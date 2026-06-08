@@ -1056,6 +1056,22 @@ async def start_close_sniper(session, engines):
                         continue
 
                     import infrastructure.state.state_manager as _smgr
+
+                    # Same-asset NCS dedup: block if any NCS position already active on this asset.
+                    # ETH/5m + ETH/15m NCS simultaneously creates correlated double-exposure;
+                    # when asset reverses both lose together (-$8.43 observed 2026-06-08).
+                    _open_ncs = [
+                        p for p in _smgr.get_open_positions()
+                        if f"[{asset}]" in p.get("event_title", "")
+                        and p.get("entry_type", "") in ("CLOSE-SNIPE", "CLOSE-SNIPE-EARLY")
+                    ]
+                    if _open_ncs:
+                        log.info(
+                            "[NCS-DEDUP] %s/%s: active NCS on %s already — skip (double-exposure prevention)",
+                            asset, timeframe, asset,
+                        )
+                        continue
+
                     current_balance = _smgr.get_current_balance()
 
                     if snipe_mode == "CLOSE-SNIPE":

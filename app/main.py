@@ -362,6 +362,23 @@ async def _validate_trade_slot(
 
     open_positions = state_manager.get_open_positions()
 
+    # NCS same-asset dedup: block new NCS entry on an asset if an active NCS position exists on that asset.
+    # ETH/5m NCS + ETH/15m NCS firing simultaneously creates correlated double-exposure;
+    # when ETH reverses both lose together (-$8.43 observed 2026-06-08 08:00 ET).
+    if _entry_source in ("CLOSE-SNIPE", "CLOSE-SNIPE-EARLY"):
+        _active_ncs_on_asset = any(
+            f"[{asset}]" in p.get("event_title", "") and
+            p.get("entry_type", "") in ("CLOSE-SNIPE", "CLOSE-SNIPE-EARLY")
+            for p in open_positions
+        )
+        if _active_ncs_on_asset:
+            log.info(
+                "[NCS-DEDUP] %s/%s: active NCS on %s already — skip (double-exposure prevention)",
+                asset, timeframe, asset
+            )
+            context.log_skip("ncs_same_asset_dedup", asset, timeframe)
+            return False, {}
+
     # Same-direction quality gate: moderate ATM FV + ≥3 open same-direction → require high score.
     # Near-certainty FV (≤38¢ or ≥57¢) is exempt — stacking those is exactly what we want.
     if _entry_source == "FAIR_VAL" and 0.38 < entry_price < 0.57:
