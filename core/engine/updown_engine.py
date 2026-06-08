@@ -602,7 +602,7 @@ class UpDownEngine:
                         _candle_open = float(klines[-1][1])
                         _spot_now = closes[-1]  # Pyth-overwritten if available
                         _spot_pct = (_spot_now - _candle_open) / _candle_open if _candle_open > 0 else 0.0
-                        _ALIGN_THRESH = 0.0025  # 0.25% — ignore sub-noise moves
+                        _ALIGN_THRESH = 0.0050  # 0.50% — stronger confirmation against ATM direction errors
                         if _fv['direction'] == 'DOWN' and _spot_pct > _ALIGN_THRESH:
                             log.info(
                                 '[FV-SPOT-ALIGN] %s/%s: FV=DOWN but spot +%.3f%% above open — misaligned — skip',

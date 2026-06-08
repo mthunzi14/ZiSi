@@ -492,13 +492,16 @@ async def _validate_trade_slot(
                 bet_usd = _qk_size
 
     # ── P2: Global Bet Cap — differentiated by timeframe / entry conviction ──
-    # 1h candles and REVERSAL_STREAK (4-candle streak) are the highest-conviction signals.
-    # At $50 balance: 1h cap = $7.50 vs old $3.00 — matches BoneReaper's 1h sizing philosophy.
+    # Bonereaper bets 13-50% of account per trade. ZiSi raised to match proportionally.
+    # REVERSAL_STREAK / 1h = highest conviction → 30% Kelly. Standard → 12%.
     if timeframe == "1h" or _entry_source == "REVERSAL_STREAK":
-        global_max_bet = min(current_balance * 0.15, 20.0)
+        global_max_bet = min(current_balance * 0.30, 50.0)
         _cap_label = "HIGH-CONV"
+    elif _entry_source == "FAIR_VAL" and entry_price < 0.38:
+        global_max_bet = min(current_balance * 0.25, 40.0)
+        _cap_label = "FV-DEEP"
     else:
-        global_max_bet = min(current_balance * 0.06, 12.0)
+        global_max_bet = min(current_balance * 0.12, 20.0)
         _cap_label = "STANDARD"
     if bet_usd > global_max_bet:
         log.info("[RISK] %s bet cap $%.2f -> $%.2f", _cap_label, bet_usd, global_max_bet)
@@ -518,11 +521,12 @@ async def _validate_trade_slot(
         bet_usd = min(bet_usd * 0.35, 35.0)
         log.info("[RISK] Altcoin %s Sizing calibrated to 35%% (max $35): $%.2f", asset, bet_usd)
 
-    # Safety cap: Max 15% of current_balance per trade slot to prevent black-swan drawdowns
-    max_safety_size = current_balance * 0.15
+    # Safety cap: Max 35% of current_balance per trade slot — Bonereaper-scale sizing.
+    # 35% allows $17.50 at $50 balance, $35 at $100, $70 at $200 — matches mentor's proportional bets.
+    max_safety_size = current_balance * 0.35
     if bet_usd > max_safety_size:
         log.info(
-            "[RISK] Sizing capped at 15%% safety limit: $%.2f -> $%.2f",
+            "[RISK] Sizing capped at 35%% safety limit: $%.2f -> $%.2f",
             bet_usd, max_safety_size
         )
         bet_usd = max_safety_size
