@@ -39,6 +39,20 @@ function deduplicateById(positions) {
   });
 }
 
+
+function enrichTradeType(p) {
+  if (p.trade_type) return p;
+  const et = (p.entry_type || p.event_title || '').toUpperCase();
+  if (et.includes('CLOSE-SNIPE') || et.includes('CLOSE_SNIPE')) p.trade_type = 'NCS';
+  else if (et.includes('FAIR')) p.trade_type = 'FAIR-VAL';
+  else if (et.includes('LATENCY') || et.includes('LAT_ARB') || et.includes('LAT-ARB')) p.trade_type = 'LAT-ARB';
+  else if (et.includes('T2_SWEEPER') || et.includes('SWEEP')) p.trade_type = 'SWEEP';
+  else if (et.includes('REVERSAL_SNIPE') || et.includes('REVERSAL-SNIPE')) p.trade_type = 'REVERSAL-SNIPE';
+  else if (et.includes('REVERSAL_STREAK') || et.includes('REVERSAL-STREAK')) p.trade_type = 'REVERSAL-STREAK';
+  else p.trade_type = 'SIGNAL';
+  return p;
+}
+
 function readPositionsFile() {
   if (!fs.existsSync(POSITIONS_FILE)) {
     return { active: [], closed: [], summary: DEFAULT_SUMMARY, last_updated: null };
@@ -53,8 +67,8 @@ function readPositionsFile() {
       throw new Error('Positions file JSON is invalid or incomplete');
     }
 
-    const active = deduplicateById(data.active || []);
-    const closed = deduplicateById(data.closed || []);
+    const active = deduplicateById(data.active || []).map(enrichTradeType);
+    const closed = deduplicateById(data.closed || []).map(enrichTradeType);
 
     const baseSummary = { ...DEFAULT_SUMMARY, ...(data.summary || {}) };
     const summary = {

@@ -66,7 +66,7 @@ function parseMeta(p) {
   return {
     asset:     aTag ? aTag[1] : assetFromTitle(title),
     timeframe: tTag ? tTag[1] : tfFromTitle(title),
-    type:      parseType(title, p.entry_type),
+    type:      parseType(title, p.trade_type || p.entry_type),
   };
 }
 
