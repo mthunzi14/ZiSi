@@ -1072,14 +1072,14 @@ class UpDownEngine:
             return None
 
         # Confluence-Veto Gate: SIG-only — FV signal is Pyth divergence, not multi-TF RSI consensus
-        if entry_source != "FAIR_VAL" and not is_dual_eligible and edge_ctx and edge_ctx.get("confluence_score", 2) == 0:
+        if entry_source != "FAIR_VAL" and not is_dual_eligible and edge_ctx and edge_ctx.get("confluence_score", 2) <= 1:
             log.warning(
-                "[CONFLUENCE-VETO] %s/%s: Blocking directional entry due to complete lack of multi-timeframe agreement (score = 0)",
+                "[CONFLUENCE-VETO] %s/%s: Blocking entry - confluence <=1 (WEAK/CONFLICT, need >=2/4)",
                 self.asset, self.timeframe
             )
             return None
 
-        if score < 0.50 and not is_dual_eligible:
+        if score < 0.65 and not is_dual_eligible:
             return None
 
         # Directional saturation gate: SIG-only — FV fires on Pyth divergence every candle like Bone Reaper

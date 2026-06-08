@@ -1134,8 +1134,8 @@ async def start_close_sniper(session, engines):
 
                     if snipe_mode == "CLOSE-SNIPE":
                         # Mode 1: balance-proportional terminal sizing
-                        base = max(current_balance * 0.06, 2.50)
-                        max_add = min(current_balance * 0.15, 10.0)
+                        base = max(current_balance * 0.10, 2.50)
+                        max_add = min(current_balance * 0.20, 12.50)
                         certainty = max(0.0, min(1.0, (snipe_price - 0.95) / 0.04))
                         amount_dollars = round(base + certainty * max_add, 2)
                         # Tail-risk cap: at ep > 0.90 wrong resolution costs ~89c/$
