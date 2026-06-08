@@ -255,6 +255,39 @@ async def _validate_trade_slot(
         context.log_skip("fv_rate_limit", asset, timeframe)
         return False, {}
 
+    # FV per-asset loss cooldown: block new FV entries for an asset for 10 min after its last FV loss.
+    # Prevents consecutive same-asset FV losses when the asset trends strongly against the signal.
+    # Root cause: BTC trended UP for 10+ min while FV called DOWN twice in a row (3:30-3:40 AM ET).
+    if _entry_source == "FAIR_VAL":
+        import json as _json_cd
+        import time as _time_cd
+        from pathlib import Path as _path_cd
+        try:
+            _ps_path = _path_cd(__file__).parent.parent / "infrastructure" / "exchange" / "positions_state.json"
+            if _ps_path.exists():
+                _ps_data = _json_cd.loads(_ps_path.read_text(encoding="utf-8"))
+                for _ct in reversed(_ps_data.get("closed", [])[-30:]):
+                    _et_title = _ct.get("event_title", "")
+                    if f"[{asset}]" in _et_title and "FAIR_VAL" in _et_title:
+                        if _ct.get("realized_pnl", 0.0) < 0:
+                            _exit_ts = _ct.get("exit_time", "")
+                            try:
+                                from datetime import datetime as _dt_cd
+                                _et = _dt_cd.fromisoformat(_exit_ts.replace("Z", "+00:00"))
+                                _age_s = _time_cd.time() - _et.timestamp()
+                                if 0 < _age_s < 600:
+                                    log.info(
+                                        "[FV-COOLDOWN] %s/%s: last FV trade was a loss (pnl=%.2f, %.0fs ago) — 10min cooldown",
+                                        asset, timeframe, _ct.get("realized_pnl", 0.0), _age_s,
+                                    )
+                                    context.log_skip("fv_loss_cooldown", asset, timeframe)
+                                    return False, {}
+                            except Exception:
+                                pass
+                        break  # most recent FV trade for this asset checked — stop
+        except Exception:
+            pass
+
     is_dual = signal.get("is_dual_eligible") or UpDownEngine.should_dual_enter(up_price, dn_price)
 
     from config import DUAL_ENTRY_MAX_COMBINED
