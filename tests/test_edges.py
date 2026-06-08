@@ -174,7 +174,7 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
             "direction": "UP",
             "score": 0.85,
             "entry_source": "SIG",
-            "market": {"up_price": 0.45, "dn_price": 0.55},
+            "market": {"up_price": 0.30, "dn_price": 0.70},  # deep contrarian — outside 35-47c dead zone
             "whale_aligned": True,
             "confluence_score": 2,
         }
@@ -341,8 +341,26 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         context = MagicMock()
         context.log_skip = MagicMock()
 
-        # Signal: SIG entry at 48c (inside ATM zone 44-56c), no whale alignment, low confluence
-        signal_atm_no_whale = {
+        # Signal: SIG entry at 44c (inside SIGNAL dead zone 35-47c) → always blocked
+        signal_dead_zone = {
+            "direction": "UP",
+            "score": 0.95,
+            "entry_source": "SIG",
+            "market": {"up_price": 0.44, "dn_price": 0.56},
+            "whale_aligned": True,
+            "confluence_score": 3,
+        }
+
+        allowed, details = await _validate_trade_slot(
+            context, engine, "BTC", "5m", 5, signal_dead_zone, current_balance=200.0
+        )
+        self.assertFalse(allowed, "SIG entry at 44c (dead zone 35-47c) should be blocked regardless of score/whale")
+        context.log_skip.assert_called()
+        call_args = context.log_skip.call_args
+        self.assertEqual(call_args[0][0], "signal_dead_zone")
+
+        # Signal: SIG entry at 48c (above dead zone) → allowed
+        signal_above_dead_zone = {
             "direction": "UP",
             "score": 0.80,
             "entry_source": "SIG",
@@ -350,31 +368,13 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
             "whale_aligned": False,
             "confluence_score": 1,
         }
-
-        allowed, details = await _validate_trade_slot(
-            context, engine, "BTC", "5m", 5, signal_atm_no_whale, current_balance=200.0
-        )
-        self.assertFalse(allowed, "ATM entry without whale alignment should be blocked")
-        context.log_skip.assert_called()
-        call_args = context.log_skip.call_args
-        self.assertEqual(call_args[0][0], "atm_precision_gate")
-
-        # Signal: SIG entry at 48c but WITH whale alignment AND conf >= 2 -> allowed
-        signal_atm_with_whale = {
-            "direction": "UP",
-            "score": 0.80,
-            "entry_source": "SIG",
-            "market": {"up_price": 0.48, "dn_price": 0.52},
-            "whale_aligned": True,
-            "confluence_score": 2,
-        }
         context2 = MagicMock()
         context2.log_skip = MagicMock()
 
         allowed2, details2 = await _validate_trade_slot(
-            context2, engine, "BTC", "5m", 5, signal_atm_with_whale, current_balance=200.0
+            context2, engine, "BTC", "5m", 5, signal_above_dead_zone, current_balance=200.0
         )
-        self.assertTrue(allowed2, "ATM entry WITH whale alignment and conf>=2 should be allowed")
+        self.assertTrue(allowed2, "SIG entry at 48c (above dead zone) should be allowed")
 
         # Signal: FAIR_VAL at 48c with low score (0.80) should be blocked by FV coin-flip gate
         signal_atm_fv_low = {

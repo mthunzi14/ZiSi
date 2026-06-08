@@ -272,20 +272,16 @@ async def _validate_trade_slot(
         context.log_skip("entry_price", asset, timeframe, {"price": entry_price, "score": score})
         return False, {}
 
-    # ATM Precision Gate: 44-56c zone requires whale + confluence alignment
-    # PBot-6 only enters ATM with Pyth edge. Our losses avg 46.9c entry.
-    _ATM_LOW, _ATM_HIGH = 0.44, 0.56
-    if _ATM_LOW <= entry_price <= _ATM_HIGH and _entry_source not in ("FAIR_VAL", "LATENCY_ARB"):
-        whale_aligned = signal.get("whale_aligned", False)
-        conf_score = signal.get("confluence_score", 0)
-        if not whale_aligned or conf_score < 2:
-            log.info(
-                "[ATM-GATE] %s/%s: SIG entry %.0fc in ATM zone — whale_aligned=%s conf=%d — skip",
-                asset, timeframe, entry_price * 100, whale_aligned, conf_score
-            )
-            context.log_skip("atm_precision_gate", asset, timeframe,
-                             {"price": entry_price, "conf": conf_score, "whale": whale_aligned})
-            return False, {}
+    # SIGNAL dead zone: 35-47¢ has 0%WR in live data (7 consecutive losses, 0 wins).
+    # At these prices the market's moderate skepticism against our direction is correct.
+    # Deep contrarian (<35¢) and ATM+ (≥48¢) entries are kept.
+    if _entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE", "T2_SWEEPER") and 0.35 < entry_price < 0.48:
+        log.info(
+            "[SIGNAL-DEAD-ZONE] %s/%s: %.0fc SIGNAL in 35-47c dead zone — 0%%WR historically — skip",
+            asset, timeframe, entry_price * 100
+        )
+        context.log_skip("signal_dead_zone", asset, timeframe)
+        return False, {}
 
     # Altcoin Market Leader Corroboration Guard
     # Altcoins correlate highly to BTC and ETH. Block if BOTH leaders are against our trade.
@@ -348,10 +344,18 @@ async def _validate_trade_slot(
             context.log_skip("same_dir_quality_gate", asset, timeframe)
             return False, {}
 
-    # FV coin-flip gate: 40-60¢ entries have ~40% WR historically — they are coin-flips.
-    # At these prices the fair-probability model is unreliable. Require high confidence score
-    # to even consider entering, or the CLOB must already be showing strong direction (>60¢).
-    if _entry_source == "FAIR_VAL" and 0.40 < entry_price < 0.60:
+    # FV upper dead zone: 52-65¢ has 0%WR in live data (4 losses, 0 wins).
+    # FV model has no edge when market already agrees direction (>52¢ means market ~52%+ confident).
+    if _entry_source == "FAIR_VAL" and 0.52 < entry_price < 0.65:
+        log.info(
+            "[FV-UPPER-DEAD] %s/%s: %.0fc FV in 52-65c dead zone — 0%%WR historically — skip",
+            asset, timeframe, entry_price * 100
+        )
+        context.log_skip("fv_upper_dead_zone", asset, timeframe)
+        return False, {}
+
+    # FV coin-flip gate: 40-52¢ requires score ≥ 0.88 — FV model profitable at 46-50¢ with high score.
+    if _entry_source == "FAIR_VAL" and 0.40 < entry_price <= 0.52:
         _fv_min_score = float(os.getenv("FV_COIN_FLIP_SCORE_MIN", "0.88"))
         if score < _fv_min_score:
             log.info(
