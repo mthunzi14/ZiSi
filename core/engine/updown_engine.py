@@ -635,16 +635,15 @@ class UpDownEngine:
                     if not _fv_spot_align:
                         _fv = {'direction': None, 'edge': 0.0, 'archetype': None}
 
-                # FV Archetype Gate — blocks moderate ATM entries unless regime has clear mean-reversion structure.
-                # RANGE is the only safe regime for moderate (38-57¢) entries — price oscillates in a band.
-                # MEAN_REVERTING is excluded: at ATM prices the market is mid-correction with no directional bias.
-                # ETH/15m 48¢ in MEAN_REVERTING and DOGE/5m 50¢ are canonical examples of why this matters.
+                # FV Archetype Gate — blocks moderate FV entries in non-RANGE/non-night regimes.
+                # RANGE is the only safe regime for moderate entries — price oscillates in a band.
+                # MEAN_REVERTING: mean reversion pulls spot back toward open, defeating both ATM and
+                # deep contrarian theses. SOL/5m 36.5¢ NO in MEAN_REVERTING is the canonical example.
+                # Deep contrarian bypasses SPOT-ALIGN gate only, not this regime gate.
                 # Applies to both 5m and 15m timeframes.
                 if _fv.get("direction") is not None:
                     _fv_arch = _fv.get("archetype", "moderate")
-                    _fv_entry_p_arch = dn_price if _fv['direction'] == 'DOWN' else up_price
-                    _fv_is_deep_contra_arch = _fv_entry_p_arch < 0.40
-                    if _fv_arch == "moderate" and not _fv_is_deep_contra_arch:
+                    if _fv_arch == "moderate":
                         from config import get_config
                         start_utc = int(get_config("FV_NIGHT_SESSION_START_UTC", 2))
                         end_utc = int(get_config("FV_NIGHT_SESSION_END_UTC", 9))
