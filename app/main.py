@@ -420,7 +420,17 @@ async def _validate_trade_slot(
         context.log_skip("fv_upper_dead_zone", asset, timeframe)
         return False, {}
 
-    # FV coin-flip gate: 42-58¢ is the ATM ambiguity zone — no genuine FV edge unless near_certainty arch
+    # Hard ATM core block: 44-56¢ has 0% live WR — the FV model has no directional edge here.
+    # Deep contrarian (<44¢) and fringe (56-58¢) can pass the score gate below.
+    if _entry_source == "FAIR_VAL" and 0.44 <= entry_price <= 0.56:
+        log.info(
+            "[FV-ATM-CORE] %s/%s: %.0fc in 44-56c hard block (0%%WR zone) — skip",
+            asset, timeframe, entry_price * 100,
+        )
+        context.log_skip("fv_atm_core_block", asset, timeframe)
+        return False, {}
+
+    # FV coin-flip gate: 42-44¢ / 56-58¢ fringe zone — score gate for near-certainty
     if _entry_source == "FAIR_VAL" and 0.42 < entry_price < 0.58:
         _fv_arch = signal.get("fv_archetype", "moderate")
         if _fv_arch == "near_certainty":

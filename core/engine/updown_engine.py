@@ -1476,12 +1476,12 @@ class UpDownEngine:
                 }
                 
                 ctx = self.last_edge_context
-                # Unified sizing bounds — IDENTICAL to the legacy fallback path
-                # below, so position size no longer depends on whether the edge
-                # context happened to load. Floor = MIN_USD ($1), ceiling = the
-                # same score-based sliding cap ($5–$20), bankroll fraction = 15%
-                # (matches the downstream safety cap in main._validate_trade_slot).
-                unified_max_cap = max(5.00, min(20.00, 5.00 + (score - 0.50) * 40.0))
+                # Deep contrarian (<40¢) uses 30% bankroll — Bonereaper sizes these at 13-50%.
+                # Standard entries stay at 15% to maintain discipline on ATM/NCS.
+                _is_deep_contrarian = price < 0.40
+                _bk_frac = 0.30 if _is_deep_contrarian else 0.15
+                unified_max_cap = max(5.00, min(50.00 if _is_deep_contrarian else 20.00,
+                                                5.00 + (score - 0.50) * 60.0))
                 usd_size = sizer.calculate_adaptive(
                     signal=sig_dict,
                     market=mkt_dict,
@@ -1494,7 +1494,7 @@ class UpDownEngine:
                     category_weight=1.0,
                     min_position_usd=MIN_USD,
                     max_position_usd=unified_max_cap,
-                    max_bankroll_fraction=0.15,
+                    max_bankroll_fraction=_bk_frac,
                 )
                 
                 # Retrieve and apply session sizing multiplier (Sprint 11)
@@ -1518,15 +1518,12 @@ class UpDownEngine:
                     log.info("[SIZE] Price %.4f extremely expensive -> applying 75%% scaling (x0.25) in adaptive Kelly", price)
                 usd_size *= price_scalar
 
-                # Range-based multiplier for 25-65¢ range (only when price_scalar=1.0, i.e. price<65¢)
-                # <25¢: high variance entries — 40% size to control risk
-                # 25-50¢: profit zone — full size
-                # 50-65¢: 45% WR historically — 65% size
+                # Range-based multiplier for 50-65¢ (only when price_scalar=1.0, i.e. price<65¢)
+                # Deep contrarian (<40¢): full size — highest EV, sized proportionally above
+                # 40-50¢: full size — genuine FV edge in fringe zones
+                # 50-65¢: 65% size — ATM core blocked upstream, 50-58¢ fringe only
                 if price_scalar == 1.0:
-                    if price < 0.25:
-                        usd_size *= 0.40
-                        log.info("[SIZE-RANGE] <25c entry → 40%% size: $%.2f", usd_size)
-                    elif price >= 0.50:
+                    if price >= 0.50:
                         usd_size *= 0.65
                         log.info("[SIZE-RANGE] 50-65c entry → 65%% size: $%.2f", usd_size)
 
