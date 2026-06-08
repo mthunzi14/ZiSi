@@ -867,7 +867,7 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             from infrastructure.state.state_manager import get_current_balance
             balance = get_current_balance()
             # Dynamic fractional size with a $0.50 floor to prevent disabling on small accounts
-            usd_size = max(1.50, min(balance * 0.005, 5.0)) * _snipe_size_mult  # $1.50 floor clears Polymarket $1 CLOB minimum
+            usd_size = max(1.50, min(balance * 0.05, 25.0)) * _snipe_size_mult  # $1.50 floor; 5% bankroll; 25 cap
 
             market_id = market["dn_market"]["id"] if snipe_direction == "DOWN" else market["up_market"]["id"]
 

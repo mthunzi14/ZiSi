@@ -18,8 +18,8 @@ _EPS = 1e-9
 DEFAULT_VALUE_PARAMS = {
     "edge_margin": 0.10,           # min (fair_prob - price) required to enter (breakeven buffer)
     "edge_target": 0.15,           # preferred edge ("+15c to profit")
-    "near_certainty_prob": 0.90,   # fair_prob at/above which an entry is "near certain"
-    "near_certainty_t_frac": 0.85, # only near-certainty once >= 85% of the window has elapsed
+    "near_certainty_prob": 0.80,   # fair_prob at/above which an entry is "near certain"
+    "near_certainty_t_frac": 0.75, # only near-certainty once >= 75% of the window has elapsed
     "sigma_scale": 1.0,            # multiplies ATR-derived sigma (carried from backtest calibration)
     "min_absolute_prob": 0.70,     # min absolute probability of winning required to enter
 }
