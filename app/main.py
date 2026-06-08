@@ -362,6 +362,22 @@ async def _validate_trade_slot(
 
     open_positions = state_manager.get_open_positions()
 
+    # FV same-asset active dedup: block new FV entry if another FV position is already active on this asset.
+    # Fixes race condition where candle-open FV signal fires before the previous candle's exit is written
+    # to closed[] in positions_state.json — causing the disk-based cooldown to miss back-to-back losses.
+    if _entry_source == "FAIR_VAL":
+        _active_fv_on_asset = any(
+            f"[{asset}]" in p.get("event_title", "") and "FAIR_VAL" in p.get("event_title", "")
+            for p in open_positions
+        )
+        if _active_fv_on_asset:
+            log.info(
+                "[FV-ACTIVE-DEDUP] %s/%s: active FV position on %s — skip (prev candle still live)",
+                asset, timeframe, asset
+            )
+            context.log_skip("fv_active_dedup", asset, timeframe)
+            return False, {}
+
     # NCS same-asset dedup: block new NCS entry on an asset if an active NCS position exists on that asset.
     # ETH/5m NCS + ETH/15m NCS firing simultaneously creates correlated double-exposure;
     # when ETH reverses both lose together (-$8.43 observed 2026-06-08 08:00 ET).
