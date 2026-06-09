@@ -101,7 +101,32 @@ const ENTRY_TYPE_CONFIG = {
   'CLOSE-SNIPE-EARLY': { label: 'NCS',        color: '#e27622' },
   'DUAL':              { label: 'DUAL',       color: '#9945ff' },
 };
-function entryTypeCfg(t) { return ENTRY_TYPE_CONFIG[t] || ENTRY_TYPE_CONFIG['SIGNAL']; }
+function entryTypeCfg(t) {
+  if (!t) return ENTRY_TYPE_CONFIG['SIGNAL'];
+  const upper = t.toUpperCase();
+  if (upper === 'CLOSE-SNIPE' || upper === 'CLOSE_SNIPE' || upper === 'CLOSE-SNIPE-EARLY' || upper === 'CLOSE_SNIPE_EARLY' || upper === 'NCS') {
+    return ENTRY_TYPE_CONFIG['CLOSE-SNIPE'];
+  }
+  if (upper === 'FAIR-VAL' || upper === 'FAIR_VAL' || upper === 'FV') {
+    return ENTRY_TYPE_CONFIG['FAIR-VAL'];
+  }
+  if (upper === 'LAT-ARB' || upper === 'LAT_ARB' || upper === 'LAT ARB' || upper === 'ARB') {
+    return ENTRY_TYPE_CONFIG['LAT-ARB'];
+  }
+  if (upper === 'SWEEP' || upper === 'T2_SWEEPER') {
+    return ENTRY_TYPE_CONFIG['SWEEP'];
+  }
+  if (upper === 'REVERSAL-SNIPE' || upper === 'REVERSAL_SNIPE' || upper === 'REV SNIPE') {
+    return ENTRY_TYPE_CONFIG['REVERSAL-SNIPE'];
+  }
+  if (upper === 'REVERSAL-STREAK' || upper === 'REVERSAL_STREAK' || upper === 'REV STREAK') {
+    return ENTRY_TYPE_CONFIG['REVERSAL-STREAK'];
+  }
+  if (upper === 'DUAL' || upper === 'DUAL_MAIN' || upper === 'DUAL_HEDGE') {
+    return ENTRY_TYPE_CONFIG['DUAL'];
+  }
+  return ENTRY_TYPE_CONFIG['SIGNAL'];
+}
 
 // ── Market session ────────────────────────────────────────────────────────────
 
@@ -810,8 +835,8 @@ function ClosedRow({ p }) {
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtLocalDT(p.entry_time)}</span>
       <span style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: 13, color: 'var(--color-text-primary)' }}>{meta.asset}</span>
       <span style={{ color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)' }}>{meta.timeframe}</span>
-      <span style={{ fontWeight: 700, fontSize: 9, letterSpacing: '0.05em', color: entryTypeCfg(p.entry_type).color }}>
-        {entryTypeCfg(p.entry_type).label}
+      <span style={{ fontWeight: 700, fontSize: 9, letterSpacing: '0.05em', color: entryTypeCfg(meta.type || p.entry_type).color }}>
+        {entryTypeCfg(meta.type || p.entry_type).label}
       </span>
       <span style={{ fontWeight: 600, color: dir === 'UP' ? 'var(--color-profit)' : 'var(--color-loss)' }}>
         {dir === 'UP' ? '↑ UP' : '↓ DN'}
@@ -859,8 +884,8 @@ function OpenRow({ p }) {
       <span style={{ fontWeight: 600, color: dir === 'UP' ? 'var(--color-profit)' : 'var(--color-loss)' }}>
         {dir === 'UP' ? '↑ UP' : '↓ DN'}
       </span>
-      <span style={{ fontWeight: 700, fontSize: 9, letterSpacing: '0.05em', color: entryTypeCfg(p.entry_type).color }}>
-        {entryTypeCfg(p.entry_type).label}
+      <span style={{ fontWeight: 700, fontSize: 9, letterSpacing: '0.05em', color: entryTypeCfg(meta.type || p.entry_type).color }}>
+        {entryTypeCfg(meta.type || p.entry_type).label}
       </span>
       <span style={{ fontFamily: 'var(--font-mono)' }}>{(entry * 100).toFixed(0)}¢</span>
       <span style={{ fontFamily: 'var(--font-mono)', color: cur >= entry ? 'var(--color-profit)' : 'var(--color-loss)' }}>
@@ -1421,8 +1446,10 @@ const SRC_TO_ENTRY_TYPE = {
 
 function filterBySrc(trades, src) {
   if (src === 'ALL') return trades;
-  const et = SRC_TO_ENTRY_TYPE[src];
-  return trades.filter(p => (p.entry_type || 'SIGNAL') === et);
+  return trades.filter(p => {
+    const meta = parseMeta(p);
+    return meta.type === src;
+  });
 }
 
 function SrcPill({ src, active, count, pnl, onClick }) {

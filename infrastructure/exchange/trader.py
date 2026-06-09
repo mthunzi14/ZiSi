@@ -944,23 +944,34 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         open_time: datetime = pos.get("open_time", now)
         age_minutes = (now - open_time).total_seconds() / 60
 
-        # Derive the correct market window from the event_title TF tag [5m], [15m], etc.
+        # Derive the correct market window from the event_title TF tag [5m], [15m], [1h], etc.
         # hold_minutes stored on the position is the age at entry (0.0) — not the window.
         _ev_title = (pos.get("event_title") or "").upper()
         is_updown = "UPDOWN" in _ev_title or "UP OR DOWN" in _ev_title
         if is_updown:
             import re as _re
-            _tf_match = _re.search(r'\[(\d+)M\]', _ev_title)
-            effective_max_minutes = int(_tf_match.group(1)) if _tf_match else 5
+            _tf_match = _re.search(r'\[(\d+)([MH])\]', _ev_title)
+            if _tf_match:
+                _val, _unit = _tf_match.group(1), _tf_match.group(2)
+                effective_max_minutes = int(_val) * 60 if _unit == "H" else int(_val)
+            else:
+                effective_max_minutes = 5
         else:
             effective_max_minutes = max_hold_minutes
 
         entry_price = pos["entry_price"]
         _is_short_tf = "5M" in _ev_title or "15M" in _ev_title or "UPDOWN" in _ev_title
 
+        _trade_type = pos.get("trade_type", "SIGNAL")
+        _is_ncs_or_sweep = _trade_type in ("NCS", "SWEEP")
+
         target_price = pos.get("target_price")
         if _is_short_tf:
-            target_price = 0.99
+            if _is_ncs_or_sweep:
+                target_price = 0.99
+            elif not target_price or target_price <= 0:
+                _is_5m = "][5M]" in _ev_title
+                target_price = 0.72 if _is_5m else 0.88
         elif not target_price or target_price <= 0:
             target_price = round(entry_price * cfg.get("POSITION_TARGET_MULTIPLIER", 1.50), 4)
 

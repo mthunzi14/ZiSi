@@ -1132,27 +1132,18 @@ async def start_close_sniper(session, engines):
 
                     current_balance = _smgr.get_current_balance()
 
-                    if snipe_mode == "CLOSE-SNIPE":
-                        # Mode 1: balance-proportional terminal sizing
-                        base = max(current_balance * 0.06, 2.50)
-                        max_add = min(current_balance * 0.15, 10.0)
-                        certainty = max(0.0, min(1.0, (snipe_price - 0.95) / 0.04))
-                        amount_dollars = round(base + certainty * max_add, 2)
-                        # Tail-risk cap: at ep > 0.90 wrong resolution costs ~89c/$
-                        # Cap at $2.00 to prevent one reversal from wiping all prior wins
-                        if snipe_price > 0.90:
-                            _ncs_tail_cap = float(os.getenv("NCS_TAIL_CAP", "12.50"))
-                            if amount_dollars > _ncs_tail_cap:
-                                log.info("[NCS-TAIL-CAP] CLOSE-SNIPE %.0fc: size $%.2f -> $%.2f (tail-risk cap ep>90c)",
-                                         snipe_price * 100, amount_dollars, _ncs_tail_cap)
-                                amount_dollars = _ncs_tail_cap
+                    # Target 50 cents net profit per win (exit at 0.99)
+                    _target_exit = 0.99
+                    _profit_per_share = _target_exit - snipe_price
+                    _ncs_tail_cap = float(os.getenv("NCS_TAIL_CAP", "12.50"))
+                    
+                    if _profit_per_share > 0.005:
+                        amount_dollars = (0.50 / _profit_per_share) * snipe_price
                     else:
-                        # Mode 2: quarter-Kelly sizing
-                        _p = snipe_price
-                        _gain = (0.99 - _p) / _p if _p < 0.99 else 0.0
-                        _loss = (_p - 0.01) / _p if _p > 0.01 else 0.0
-                        _kelly = (_p * _gain - (1.0 - _p) * _loss) / _gain if _gain > 0 else 0.0
-                        amount_dollars = round(max(3.0, min(current_balance * max(0.0, _kelly) * 0.25, 15.0)), 2)
+                        amount_dollars = _ncs_tail_cap
+                        
+                    # Cap at the lower of tail cap and 45% of current balance to prevent over-exposure
+                    amount_dollars = round(max(2.50, min(amount_dollars, _ncs_tail_cap, current_balance * 0.45)), 2)
 
                     log.info(
                         "[CLOSE-SNIPER] %s triggered for %s/%s: %s @ %.0fc — %ds to expiry — size=$%.2f",

@@ -386,8 +386,8 @@ class UpDownEngine:
             log.debug("[ENGINE] %s/%s: time gate closed", self.asset, self.timeframe)
             return None
 
-        # Volatility Gate: block 5m entries under high volatility
-        if self.timeframe == "5m":
+        # Volatility Gate: block 5m entries under high volatility (DISABLED to allow continuous execution)
+        if False:  # self.timeframe == "5m":
             try:
                 import json as _json
                 from pathlib import Path as _Path
