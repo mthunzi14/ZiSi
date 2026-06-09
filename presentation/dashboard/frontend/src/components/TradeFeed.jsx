@@ -36,6 +36,16 @@ function tfFromTitle(title) {
 }
 
 function parseType(title, entryType) {
+  const titleUpper = (title || '').toUpperCase();
+  if (titleUpper.includes('[CLOSE_SNIPE]') || titleUpper.includes('[CLOSE-SNIPE]') || titleUpper.includes('[CLOSE-SNIPE-EARLY]') || titleUpper.includes('[NCS]')) return 'NCS';
+  if (titleUpper.includes('[FAIR_VAL]') || titleUpper.includes('[FV]')) return 'FV';
+  if (titleUpper.includes('[T2_SWEEPER]') || titleUpper.includes('[SWEEP]')) return 'SWEEP';
+  if (titleUpper.includes('[LATENCY_ARB]') || titleUpper.includes('[LAT-ARB]') || titleUpper.includes('[ARB]') || titleUpper.includes('[LAG_ARB_FUSION]')) return 'LAT ARB';
+  if (titleUpper.includes('[REVERSAL_SNIPE]') || titleUpper.includes('[REVERSAL-SNIPE]')) return 'REV SNIPE';
+  if (titleUpper.includes('[REVERSAL_STREAK]') || titleUpper.includes('[REVERSAL-STREAK]')) return 'REV STREAK';
+  if (titleUpper.includes('[SINGLE]') || titleUpper.includes('[SIG]')) return 'SIG';
+  if (titleUpper.includes('[DUAL_MAIN]') || titleUpper.includes('[DUAL_HEDGE]') || titleUpper.includes('[DUAL]')) return 'DUAL';
+
   const typeUpper = (entryType || '').toUpperCase();
   if (typeUpper === 'CLOSE_SNIPE' || typeUpper === 'CLOSE-SNIPE' || typeUpper === 'CLOSE-SNIPE-EARLY' || typeUpper === 'CLOSE_SNIPE_EARLY' || typeUpper === 'NCS') return 'NCS';
   if (typeUpper === 'FAIR_VAL' || typeUpper === 'FAIR-VAL' || typeUpper === 'FV') return 'FV';
@@ -45,16 +55,6 @@ function parseType(title, entryType) {
   if (typeUpper === 'REVERSAL-SNIPE' || typeUpper === 'REVERSAL_SNIPE' || typeUpper === 'REV SNIPE' || typeUpper === 'REV') return 'REV SNIPE';
   if (typeUpper === 'REVERSAL-STREAK' || typeUpper === 'REVERSAL_STREAK' || typeUpper === 'REV STREAK') return 'REV STREAK';
   if (typeUpper === 'DUAL' || typeUpper === 'DUAL_MAIN' || typeUpper === 'DUAL_HEDGE') return 'DUAL';
-
-  const titleUpper = title.toUpperCase();
-  if (titleUpper.includes('[CLOSE_SNIPE]') || titleUpper.includes('[CLOSE-SNIPE]') || titleUpper.includes('[CLOSE-SNIPE-EARLY]') || titleUpper.includes('[NCS]')) return 'NCS';
-  if (titleUpper.includes('[FAIR_VAL]') || titleUpper.includes('[FV]')) return 'FV';
-  if (titleUpper.includes('[T2_SWEEPER]') || titleUpper.includes('[SWEEP]')) return 'SWEEP';
-  if (titleUpper.includes('[LATENCY_ARB]') || titleUpper.includes('[ARB]')) return 'LAT ARB';
-  if (titleUpper.includes('[REVERSAL_SNIPE]') || titleUpper.includes('[REVERSAL-SNIPE]')) return 'REV SNIPE';
-  if (titleUpper.includes('[REVERSAL_STREAK]') || titleUpper.includes('[REVERSAL-STREAK]')) return 'REV STREAK';
-  if (titleUpper.includes('[SINGLE]') || titleUpper.includes('[SIG]')) return 'SIG';
-  if (titleUpper.includes('[DUAL_MAIN]') || titleUpper.includes('[DUAL_HEDGE]') || titleUpper.includes('[DUAL]')) return 'DUAL';
 
   return 'SIG';
 }
@@ -429,29 +429,30 @@ function SessionAnalytics({ closed }) {
     const dd = peak - runBal;
     if (dd > maxDD) maxDD = dd;
     
-    const et = (t.entry_type || 'SIGNAL').toUpperCase();
-    if (et === 'LAT-ARB' || et === 'LATENCY-ARB' || et === 'LAT') {
+    const meta = parseMeta(t);
+    const et = meta.type;
+    if (et === 'LAT ARB') {
       latBal += pnl;
       latSeries.push(latBal);
-    } else if (et === 'FAIR-VAL' || et === 'FAIR_VAL' || et === 'FV') {
+    } else if (et === 'FV') {
       fvBal += pnl;
       fvSeries.push(fvBal);
-    } else if (et === 'CLOSE-SNIPE' || et === 'CLOSE_SNIPE' || et === 'NCS') {
+    } else if (et === 'NCS') {
       ncsBal += pnl;
       ncsSeries.push(ncsBal);
-    } else if (et === 'REVERSAL-SNIPE' || et === 'REVERSAL_SNIPE' || et === 'REV-SNIPE' || et === 'REV_SNIPE' || et === 'REV') {
+    } else if (et === 'REV SNIPE') {
       revSnipeBal += pnl;
       revSnipeSeries.push(revSnipeBal);
-    } else if (et === 'REVERSAL-STREAK' || et === 'REVERSAL_STREAK' || et === 'REV-STREAK' || et === 'REV_STREAK') {
+    } else if (et === 'REV STREAK') {
       revStreakBal += pnl;
       revStreakSeries.push(revStreakBal);
-    } else if (et === 'SIGNAL' || et === 'SINGLE' || et === 'SIG') {
+    } else if (et === 'SIG') {
       sigBal += pnl;
       sigSeries.push(sigBal);
-    } else if (et === 'SWEEP' || et === 'T2_SWEEPER') {
+    } else if (et === 'SWEEP') {
       sweepBal += pnl;
       sweepSeries.push(sweepBal);
-    } else if (et === 'DUAL' || et === 'DUAL_MAIN' || et === 'DUAL_HEDGE') {
+    } else if (et === 'DUAL') {
       dualBal += pnl;
       dualSeries.push(dualBal);
     }
@@ -563,13 +564,12 @@ function AssetHeatmap({ closed }) {
 function SourceHeatmap({ closed }) {
   if (closed.length === 0) return null;
 
-  const SOURCES = ['LAT-ARB', 'FAIR-VAL', 'CLOSE-SNIPE', 'REVERSAL-SNIPE', 'REVERSAL-STREAK', 'SIGNAL', 'SWEEP', 'DUAL'];
+  const SOURCES = ['LAT ARB', 'FV', 'NCS', 'REV SNIPE', 'REV STREAK', 'SIG', 'SWEEP', 'DUAL'];
 
   const stats = SOURCES.map(src => {
     const trades = closed.filter(t => {
-      let et = t.entry_type || 'SIGNAL';
-      if (et === 'DUAL_MAIN' || et === 'DUAL_HEDGE') et = 'DUAL';
-      return et === src;
+      const meta = parseMeta(t);
+      return meta.type === src;
     });
     if (trades.length === 0) return null;
     const wins = trades.filter(t => parseFloat(t.realized_pnl || 0) > 0).length;
@@ -585,12 +585,12 @@ function SourceHeatmap({ closed }) {
   const netColor = net => net >= 0  ? '#10b981' : '#ef4444';
 
   const SRC_LABELS = {
-    'LAT-ARB': 'Latency Arb',
-    'FAIR-VAL': 'Fair Value',
-    'CLOSE-SNIPE': 'Near Close Sniper (NCS)',
-    'REVERSAL-SNIPE': 'Reversal Snipe',
-    'REVERSAL-STREAK': 'Streak Reversal',
-    'SIGNAL': 'Signal',
+    'LAT ARB': 'Latency Arb',
+    'FV': 'Fair Value',
+    'NCS': 'Near Close Sniper (NCS)',
+    'REV SNIPE': 'Reversal Snipe',
+    'REV STREAK': 'Streak Reversal',
+    'SIG': 'Signal',
     'SWEEP': 'Sweeper',
     'DUAL': 'Dual Arb'
   };
