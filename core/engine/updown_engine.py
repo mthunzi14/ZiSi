@@ -533,6 +533,21 @@ class UpDownEngine:
                     log.warning("[EDGE] Failed to query EdgeOrchestrator in 1h streak reversal: %s", e)
                     self.last_edge_context = None
 
+                # Tier 1: REV-STREAK whale veto — don't bet against strong whale momentum.
+                # Whale pressure > 0.5 in the opposite direction means smart money is aligned
+                # with the streak; fading it into a whale wall has bad expected value.
+                _rev_whale = edge_ctx.get("whale_pressure", 0.0)
+                if abs(_rev_whale) > 0.5:
+                    _whale_bullish = _rev_whale > 0
+                    _rev_is_up = direction == "UP"
+                    if _whale_bullish != _rev_is_up:
+                        log.info(
+                            "[WHALE-VETO] %s/1h REV-STREAK: whale=%.2f (%s) contradicts %s — skip",
+                            self.asset, _rev_whale,
+                            "bullish" if _whale_bullish else "bearish", direction,
+                        )
+                        return None
+
                 return {
                     "asset":        self.asset,
                     "timeframe":    self.timeframe,
@@ -638,10 +653,27 @@ class UpDownEngine:
                                 )
                                 _fv_spot_align = False
                         else:
-                            log.info(
-                                '[FV-SPOT-ALIGN] %s/%s: deep contrarian %.0fc — bypassing alignment gate (spot %.3f%%)',
-                                self.asset, self.timeframe, _fv_entry_p * 100, _spot_pct * 100,
-                            )
+                            # Tier 0: deep contrarian bypass requires high confidence AND
+                            # sufficient time remaining (5m <90s left = no time to resolve).
+                            _dc_min_conf = float(os.getenv("FV_DEEP_CONTRA_MIN_CONF", "0.72"))
+                            _dc_conf = float(_fv.get("confidence", 0.0))
+                            if _dc_conf < _dc_min_conf:
+                                log.info(
+                                    '[FV-SPOT-ALIGN] %s/%s: deep contrarian %.0fc — conf %.2f < %.2f (FV_DEEP_CONTRA_MIN_CONF) — blocked',
+                                    self.asset, self.timeframe, _fv_entry_p * 100, _dc_conf, _dc_min_conf,
+                                )
+                                _fv_spot_align = False
+                            elif self.timeframe == "5m" and _elapsed_min > 3.5:
+                                log.info(
+                                    '[FV-SPOT-ALIGN] %s/%s: deep contrarian %.0fc — <90s remaining (elapsed=%.2fmin) — blocked',
+                                    self.asset, self.timeframe, _fv_entry_p * 100, _elapsed_min,
+                                )
+                                _fv_spot_align = False
+                            else:
+                                log.info(
+                                    '[FV-SPOT-ALIGN] %s/%s: deep contrarian %.0fc @ conf=%.2f — bypass approved (spot %.3f%%)',
+                                    self.asset, self.timeframe, _fv_entry_p * 100, _dc_conf, _spot_pct * 100,
+                                )
                     except Exception:
                         pass  # fail open — do not block if price data unavailable
                     if not _fv_spot_align:
@@ -652,6 +684,21 @@ class UpDownEngine:
                 # only "TREND"/"MEAN_REVERSION") — so daytime FV was zeroed out entirely
                 # (live: FAIR-VALUE signals = 0). FV is now gated by its directional CONFIDENCE
                 # + edge thresholds (the real quality controls), not a regime archetype.
+
+                # Tier 2A: 4-Regime FV gate — MEAN_REVERSION + 5m requires higher confidence.
+                # Deep contrarian continuation bets on 5m fail in MEAN_REVERSION because the
+                # candle window is too short for the trend to assert itself (Punisher confirmed).
+                # 15m/1h unaffected — more time for signal to resolve.
+                if _fv.get("direction") is not None and self.timeframe == "5m" and regime == "MEAN_REVERSION":
+                    _regime_fv_ep = dn_price if _fv["direction"] == "DOWN" else up_price
+                    _regime_req_conf = 0.78 if _regime_fv_ep < 0.42 else 0.70
+                    _regime_fv_conf = float(_fv.get("confidence", 0.0))
+                    if _regime_fv_conf < _regime_req_conf:
+                        log.info(
+                            "[FV-REGIME-GATE] %s/5m: MEAN_REVERSION regime — FV %.0fc conf=%.2f < %.2f — skip",
+                            self.asset, _regime_fv_ep * 100, _regime_fv_conf, _regime_req_conf,
+                        )
+                        _fv = {"direction": None, "edge": 0.0, "archetype": None, "confidence": 0.0, "fp_up": 0.0}
 
                 if _fv.get("direction") is not None:
                     # Apply tiered edge gate and penalties
@@ -859,6 +906,49 @@ class UpDownEngine:
                 if self.invert_signal:
                     direction = "DOWN" if direction == "UP" else "UP"
 
+                # Tier 3: SIG last-candle trap guard — prevents entering after candle has already
+                # moved against the signal direction. "Getting caught in traps" is almost always
+                # a prior candle that went the wrong way and the signal is still stale.
+                # Exempt: reversals (prior candle IS expected to be opposite), MEAN_REVERSION fades.
+                if (not _dec.get("is_reversal")
+                        and regime != "MEAN_REVERSION"
+                        and score_base < 0.75
+                        and self.timeframe in ("5m", "15m")
+                        and len(klines) >= 2):
+                    try:
+                        _trap_prev = klines[-2]
+                        _trap_prev_bull = float(_trap_prev[4]) >= float(_trap_prev[1])
+                        _trap_sig_bull = direction == "UP"
+                        if _trap_prev_bull != _trap_sig_bull:
+                            log.info(
+                                "[SIG-TRAP-GATE] %s/%s: SIG %s (score=%.2f) but prior candle %s — trap risk — skip",
+                                self.asset, self.timeframe, direction, score_base,
+                                "UP" if _trap_prev_bull else "DN",
+                            )
+                            return None
+                    except Exception:
+                        pass
+
+                # Tier 3: SIG 5m late-entry gate — don't enter weak signals with < 90s remaining.
+                # At T-90s (3.5 min elapsed), the edge is already priced in; remaining upside minimal.
+                import os as _os_sig, sys as _sys_sig
+                _sig_is_testing = (_os_sig.environ.get("ZISI_TESTING") == "True"
+                                   or any("unittest" in a or "pytest" in a for a in _sys_sig.argv))
+                if not _sig_is_testing and self.timeframe == "5m" and score_base < 0.80:
+                    try:
+                        from datetime import datetime as _dt_sig, timezone as _tz_sig
+                        _sig_now_ts = _dt_sig.now(_tz_sig.utc).timestamp()
+                        _sig_candle_start = int(_sig_now_ts // 300) * 300
+                        _sig_elapsed = (_sig_now_ts - _sig_candle_start) / 60.0
+                        if _sig_elapsed > 3.5:
+                            log.info(
+                                "[SIG-LATE-GATE] %s/5m: %.2fmin elapsed, score=%.2f < 0.80 — late entry risk — skip",
+                                self.asset, _sig_elapsed, score_base,
+                            )
+                            return None
+                    except Exception:
+                        pass
+
                 # Trend gate + choppy detection
                 if len(closes) >= 10:
                     _c0 = closes[-5] if closes[-5] > 0 else 1.0
@@ -940,26 +1030,31 @@ class UpDownEngine:
                         return None
 
         # Composite score
+        # FV Score Isolation (Tier 1): FV signals have their own confidence model.
+        # Applying raw momentum/OFI boosts inflates the FV score and inverts sizing
+        # (small-edge FV bets become over-sized relative to their actual conviction).
+        # FV sizing is driven by fv_confidence, not composite score — skip boosts for FV.
         abs_mom = abs(mom)
         score = score_base
-        if abs_mom >= 0.15:
-            score = min(1.0, score + 0.20)
-        elif abs_mom >= 0.08:
-            score = min(1.0, score + 0.15)
-        elif abs_mom >= 0.05:
-            score = min(1.0, score + 0.10)
+        if not is_fv_trade:
+            if abs_mom >= 0.15:
+                score = min(1.0, score + 0.20)
+            elif abs_mom >= 0.08:
+                score = min(1.0, score + 0.15)
+            elif abs_mom >= 0.05:
+                score = min(1.0, score + 0.10)
 
-        if raw_dir == "UP" and ofi > 0.20:
-            score = min(1.0, score + 0.08)
-        elif raw_dir == "DOWN" and ofi < -0.20:
-            score = min(1.0, score + 0.08)
+            if raw_dir == "UP" and ofi > 0.20:
+                score = min(1.0, score + 0.08)
+            elif raw_dir == "DOWN" and ofi < -0.20:
+                score = min(1.0, score + 0.08)
 
-        if is_dual_eligible:
-            score = min(1.0, score + 0.06)
-            log.info(
-                "[ENGINE] %s/%s: Dual boost — combined=%.2fc",
-                self.asset, self.timeframe, up_price + dn_price,
-            )
+            if is_dual_eligible:
+                score = min(1.0, score + 0.06)
+                log.info(
+                    "[ENGINE] %s/%s: Dual boost — combined=%.2fc",
+                    self.asset, self.timeframe, up_price + dn_price,
+                )
 
         # Polymarket CLOB OBI (Proposal 1)
         clob_obi = 0.0

@@ -1429,6 +1429,21 @@ def execute_exit(order_id: str, current_price: float, exit_reason: str = "UNKNOW
     except Exception:
         pass
 
+    # Tier 2C: Record trade outcome into Alpha Weight Manager for dynamic strategy weighting
+    try:
+        from core.engine.alpha_weight_manager import alpha_weights
+        _aw_strategy = _get_entry_type_from_title(title)  # uses existing helper
+        alpha_weights.record_trade(strategy=_aw_strategy, pnl=profit)
+    except Exception:
+        pass
+
+    # Tier 3I: Trade calibration logger (Obsidian-style — for Platt scaling & weekly analysis)
+    try:
+        from infrastructure.state.trade_calibration_logger import log_trade_closed
+        log_trade_closed(pos=pos, profit=profit, exit_price=current_price, exit_reason=exit_reason)
+    except Exception:
+        pass
+
     # Record UP/DOWN outcome into Markov tracker for statistical edge learning
     try:
         _direction = (pos.get("direction") or "").upper()

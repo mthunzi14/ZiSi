@@ -824,18 +824,22 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             snipe_direction = None
             snipe_price = None
 
+            # Tier 1: REV-SNIPE thresholds relaxed (blueprint Fix 6).
+            # Primary: 0.85→0.70 (less certainty needed to trigger) + 0.002→0.001 (smaller move).
+            # Secondary (half-size): kept at 0.60 with slightly relaxed move threshold 0.003→0.002.
+            # More opportunities surface while size discipline prevents overexposure.
             _snipe_size_mult = 1.0
-            if up_price >= 0.85 and dn_price <= 0.20 and pct_move <= -0.002:
+            if up_price >= 0.70 and dn_price <= 0.30 and pct_move <= -0.001:
                 snipe_direction = "DOWN"
                 snipe_price = dn_price
-            elif dn_price >= 0.85 and up_price <= 0.20 and pct_move >= 0.002:
+            elif dn_price >= 0.70 and up_price <= 0.30 and pct_move >= 0.001:
                 snipe_direction = "UP"
                 snipe_price = up_price
-            elif up_price >= 0.60 and dn_price <= 0.40 and pct_move <= -0.003:
+            elif up_price >= 0.60 and dn_price <= 0.40 and pct_move <= -0.002:
                 snipe_direction = "DOWN"
                 snipe_price = dn_price
                 _snipe_size_mult = 0.5
-            elif dn_price >= 0.60 and up_price <= 0.40 and pct_move >= 0.003:
+            elif dn_price >= 0.60 and up_price <= 0.40 and pct_move >= 0.002:
                 snipe_direction = "UP"
                 snipe_price = up_price
                 _snipe_size_mult = 0.5
@@ -959,12 +963,25 @@ async def start_resolution_sweeper(session, engines):
                         sweep_mid = market["dn_market"]["id"]
                     if not sweep_dir:
                         continue
+                    # Tier 1: SWEEP same-direction double-down.
+                    # If an open position on this market is the SAME direction → allow a second
+                    # smaller position to compound the win. Opposite direction → block (don't hedge).
+                    _sweep_double = False
                     for pos in state_mgr.get_open_positions():
                         if pos.get("event_id") == event_id:
-                            sweep_dir = None
+                            _pos_dir = pos.get("direction", "").upper()
+                            _pos_is_yes = _pos_dir in ("UP", "YES")
+                            _sweep_is_yes = sweep_dir == "YES"
+                            if _pos_is_yes == _sweep_is_yes:
+                                _sweep_double = True   # same direction — allow half-size double-down
+                            else:
+                                sweep_dir = None       # opposite direction — block
                             break
                     if not sweep_dir:
                         continue
+                    if _sweep_double:
+                        usd_size = max(1.50, round(usd_size * 0.5, 2))
+                        log.info("[SWEEPER-DD] %s/%s: same-dir double-down @ $%.2f", asset, timeframe, usd_size)
                     interval_minutes = 60 if timeframe == "1h" else int(timeframe.rstrip("m"))
                     next_close = ((int(now) // (interval_minutes * 60)) + 1) * (interval_minutes * 60)
                     if now >= next_close:
@@ -1127,6 +1144,40 @@ async def start_close_sniper(session, engines):
                         except Exception:
                             pass  # fail-open
 
+                    # Tier 1: NCS Proximity Guard — flat-candle killer.
+                    # At 90¢+ entry, if Pyth spot hasn't actually MOVED ≥0.15×ATR(14) from candle
+                    # open, the contract is priced there all along — NOT because the candle is
+                    # resolving toward expiry. These flat-candle entries have catastrophic tail risk:
+                    # the 5¢ edge can vanish instantly if candle reverses in the final 10-15s.
+                    # Observed: -$19.50 and -$20.16 on flat-candle entries (the two largest NCS losses).
+                    if snipe_dir and snipe_price is not None and snipe_price >= 0.90:
+                        try:
+                            from core.pyth_oracle_service import GLOBAL_ORACLE_CACHE
+                            _pyth_now = GLOBAL_ORACLE_CACHE.get(asset, {}).get("price", 0.0)
+                            if _pyth_now > 0.0 and hasattr(engine, "klines") and engine.klines and len(engine.klines) >= 15:
+                                _kl = engine.klines
+                                _highs = [float(k[2]) for k in _kl[-15:]]
+                                _lows  = [float(k[3]) for k in _kl[-15:]]
+                                _cls   = [float(k[4]) for k in _kl[-15:]]
+                                _trs   = [
+                                    max(_highs[i] - _lows[i],
+                                        abs(_highs[i] - _cls[i - 1]),
+                                        abs(_lows[i]  - _cls[i - 1]))
+                                    for i in range(1, len(_highs))
+                                ]
+                                _atr14 = sum(_trs[-13:]) / max(1, len(_trs[-13:]))
+                                _c_open = float(_kl[-1][1])
+                                _move   = abs(_pyth_now - _c_open)
+                                _min_move = 0.15 * _atr14
+                                if _atr14 > 0 and _move < _min_move:
+                                    log.info(
+                                        "[NCS-PROXIMITY] %s/%s: %.0fc but |spot-open|=%.2f < 0.15×ATR=%.2f — flat candle — skip",
+                                        asset, timeframe, snipe_price * 100, _move, _min_move,
+                                    )
+                                    snipe_dir = None
+                        except Exception:
+                            pass  # fail-open: guard errors → allow the trade
+
                     if not snipe_dir or not market_id:
                         continue
 
@@ -1147,6 +1198,16 @@ async def start_close_sniper(session, engines):
                         
                     # Cap at the lower of tail cap and 45% of current balance to prevent over-exposure
                     amount_dollars = round(max(2.50, min(amount_dollars, _ncs_tail_cap, current_balance * 0.45)), 2)
+
+                    # Tier 3H: NCS Gamma Scaling — reduce size as TTL → 0.
+                    # Near-expiry gamma is extreme: the same 1c move at T-10s moves the contract
+                    # 5-10x more than at T-45s. Smaller size protects against last-second reversals.
+                    if ttl < 10:
+                        amount_dollars = round(max(1.50, amount_dollars * 0.50), 2)
+                        log.info("[NCS-GAMMA] %s/%s: T-%ds — gamma scaling 0.50x → $%.2f", asset, timeframe, ttl, amount_dollars)
+                    elif ttl < 20:
+                        amount_dollars = round(max(1.50, amount_dollars * 0.70), 2)
+                        log.info("[NCS-GAMMA] %s/%s: T-%ds — gamma scaling 0.70x → $%.2f", asset, timeframe, ttl, amount_dollars)
 
                     log.info(
                         "[CLOSE-SNIPER] %s triggered for %s/%s: %s @ %.0fc — %ds to expiry — size=$%.2f",

@@ -422,6 +422,23 @@ async def _validate_trade_slot(
             context.log_skip("ncs_same_asset_dedup", asset, timeframe)
             return False, {}
 
+    # Tier 1: FV Correlated Exposure Cap — max 2 FV positions open in same direction.
+    # BTC+ETH+SOL all firing FV DOWN simultaneously creates correlated cluster risk:
+    # a single candle reversal destroys all three at once. Cap at 2 same-direction FV.
+    if _entry_source == "FAIR_VAL":
+        _fv_same_dir = sum(
+            1 for p in open_positions
+            if "FAIR_VAL" in p.get("event_title", "")
+            and (p.get("direction", "").upper() in ("UP", "YES")) == (direction == "UP")
+        )
+        if _fv_same_dir >= 2:
+            log.info(
+                "[FV-CORR-CAP] %s/%s: %d FV %s positions open — corr cap (max 2) — skip",
+                asset, timeframe, _fv_same_dir, direction,
+            )
+            context.log_skip("fv_corr_cap", asset, timeframe)
+            return False, {}
+
     # Same-direction quality gate: moderate ATM FV + ≥3 open same-direction → require high score.
     # Near-certainty FV (≤38¢ or ≥57¢) is exempt — stacking those is exactly what we want.
     if _entry_source == "FAIR_VAL" and 0.38 < entry_price < 0.57:
@@ -445,7 +462,13 @@ async def _validate_trade_slot(
     # skip. No blanket ban — being right at the coin-flip IS the edge.
     if _entry_source == "FAIR_VAL" and 0.42 < entry_price < 0.65:
         _fv_conf = float(signal.get("fv_confidence", score))
-        _fv_atm_min = float(os.getenv("FV_ATM_MIN_CONF", "0.60"))
+        # Tier 2D: 15m/1h FV is the primary engine per Punisher ("5m is noise").
+        # 15m/1h have 7-55 min of remaining resolution time — lower confidence bar.
+        # 5m gets the standard threshold (less time = need more conviction).
+        if timeframe in ("15m", "1h"):
+            _fv_atm_min = float(os.getenv("FV_ATM_MIN_CONF_15M", "0.55"))
+        else:
+            _fv_atm_min = float(os.getenv("FV_ATM_MIN_CONF", "0.60"))
         if _fv_conf < _fv_atm_min:
             log.info(
                 "[FV-ATM-CONF] %s/%s: %.0fc ATM, confidence %.2f < %.2f — no directional edge, skip",
@@ -485,6 +508,28 @@ async def _validate_trade_slot(
                                       confidence=(signal.get("fv_confidence") or None))
     corr_mult = signal.get("corroboration_multiplier", 1.0)
     bet_usd = raw_bet_usd * risk_multiplier * corr_mult
+
+    # Tier 2C: Apply dynamic alpha weight multiplier (rolling strategy performance)
+    try:
+        from core.engine.alpha_weight_manager import alpha_weights
+        _aw_mult = alpha_weights.get_multiplier(_entry_source)
+        if _aw_mult != 1.0:
+            log.info("[ALPHA-WEIGHT] %s: strategy mult=%.2f → bet $%.2f → $%.2f",
+                     _entry_source, _aw_mult, bet_usd, bet_usd * _aw_mult)
+            bet_usd *= _aw_mult
+    except Exception:
+        pass
+
+    # Tier 3G: Fear & Greed extreme-market size reducer
+    try:
+        from core.analytics.sentiment_daemon import sentiment_filter
+        _fng_mult = sentiment_filter.get_size_multiplier()
+        if _fng_mult != 1.0:
+            log.info("[SENTIMENT] F&G=%d extreme → size ×%.2f: $%.2f → $%.2f",
+                     sentiment_filter.get_fear_greed_index(), _fng_mult, bet_usd, bet_usd * _fng_mult)
+            bet_usd *= _fng_mult
+    except Exception:
+        pass
     if corr_mult != 1.0:
         log.info("[RISK] %s/%s corroboration_mult=%.1f → bet $%.2f",
                  asset, timeframe, corr_mult, bet_usd)
@@ -532,6 +577,15 @@ async def _validate_trade_slot(
         if bet_usd > 10.0:
             log.info("[RISK] SIGNAL trade size capped at $10.0: $%.2f -> $10.00", bet_usd)
             bet_usd = 10.0
+
+    # ── Tier 0: FV 1h hard cap ──
+    # Until FV probability is calibrated (Platt scaling), cap 1h FV at 10%/balance or $8.
+    # A single 1h FV loss at $10+ on a $22 balance = -45% drawdown; this prevents runaway.
+    if _entry_source == "FAIR_VAL" and timeframe == "1h":
+        _fv_1h_cap = min(current_balance * 0.10, 8.0)
+        if bet_usd > _fv_1h_cap:
+            log.info("[RISK] FV-1h cap: $%.2f → $%.2f (uncalibrated — env FV_1H_MAX_BET to override)", bet_usd, _fv_1h_cap)
+            bet_usd = float(os.getenv("FV_1H_MAX_BET", str(_fv_1h_cap)))
 
     # ── Optimal Altcoin Sizing Gates (Fix A - Maximize P&L safely) ──
     # Exempt FV deep contrarian (<40c): sized by edge, not asset volatility.
@@ -921,6 +975,14 @@ async def main() -> None:
                 log.info("[MAIN] Resolution sweeper background task registered.")
             except Exception as e:
                 log.error("[MAIN] Failed to import start_resolution_sweeper: %s", e)
+
+            # Tier 3G: Fear & Greed sentiment daemon (macro size filter)
+            try:
+                from core.analytics.sentiment_daemon import sentiment_filter
+                tasks.append(sentiment_filter.start_poll_loop())
+                log.info("[MAIN] Sentiment (F&G) daemon registered.")
+            except Exception as e:
+                log.error("[MAIN] Failed to start sentiment daemon: %s", e)
 
             try:
                 from core.engine.cycle_manager import start_close_sniper
