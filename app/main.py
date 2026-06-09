@@ -66,10 +66,11 @@ log = logging.getLogger("zisi.main")
 
 # Cross-asset corroboration: when a non-NCS trade fires on a lead asset,
 # shadow it onto correlated assets on the same timeframe without re-running gates.
-# BTC is the primary leader; ETH is a secondary leader for SOL.
+# BTC is the primary leader (all alts follow); ETH is secondary (SOL+XRP follow, not BTC).
+# DOGE excluded — insufficient correlation with BTC/ETH price action.
 _CORR_MAP: dict[str, list[str]] = {
-    "BTC": ["ETH", "SOL"],
-    "ETH": ["SOL"],
+    "BTC": ["ETH", "SOL", "XRP"],
+    "ETH": ["SOL", "XRP"],
 }
 _NCS_SOURCES = frozenset({"CLOSE-SNIPE", "CLOSE-SNIPE-EARLY"})
 
