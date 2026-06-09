@@ -1015,6 +1015,10 @@ async def start_resolution_sweeper(session, engines):
 async def start_close_sniper(session, engines):
     log.info("[CLOSE-SNIPER] Bonereaper-style near-close sniper daemon started...")
     _sniped = {}
+    # Price history for stability gate: tracks max(up, dn) per asset/timeframe over last 120s.
+    # Rapid escalation from ~50c to 95c+ in <90s = volatile/reversal risk — skip NCS.
+    # Root cause of XRP -$19.95: was 50/50 at T-2min, spiked to 96c, reversed at close.
+    _price_hist: dict = {}
     while True:
         try:
             now_ts = int(time.time())
@@ -1036,6 +1040,15 @@ async def start_close_sniper(session, engines):
                     if not expiry_ts:
                         continue
                     ttl = expiry_ts - now_ts
+
+                    # Always track price history before TTL gate so stability check has full 90s window
+                    _up_p = market.get("up_price")
+                    _dn_p = market.get("dn_price")
+                    if _up_p is not None and _dn_p is not None:
+                        _ph_key = f"{asset}/{timeframe}"
+                        _price_hist.setdefault(_ph_key, []).append((now_ts, max(_up_p, _dn_p)))
+                        _price_hist[_ph_key] = [(ts, p) for ts, p in _price_hist[_ph_key] if now_ts - ts <= 120]
+
                     # Snipe window: 8 to 45 seconds before expiry
                     if not (8 <= ttl <= 45):
                         continue
@@ -1047,8 +1060,8 @@ async def start_close_sniper(session, engines):
                     if event_id in _sniped and now_ts - _sniped[event_id] < 60:
                         continue
 
-                    up_price = market.get("up_price")
-                    dn_price = market.get("dn_price")
+                    up_price = _up_p
+                    dn_price = _dn_p
                     if up_price is None or dn_price is None:
                         continue
 
@@ -1081,6 +1094,21 @@ async def start_close_sniper(session, engines):
                         snipe_price = dn_price
                         market_id = market["dn_market"]["id"]
                         snipe_mode = "CLOSE-SNIPE-EARLY"
+
+                    # NCS Stability gate: block rapid-escalation entries.
+                    # If max(up, dn) was below 0.70 at any point in the last 90s, the price
+                    # moved from uncertain to near-certain too fast — classic last-second reversal
+                    # setup. Only applies to Mode 1 (Mode 2 EARLY is already short-window).
+                    if snipe_mode == "CLOSE-SNIPE" and snipe_dir:
+                        _hist_90s = [p for ts, p in _price_hist.get(f"{asset}/{timeframe}", []) if now_ts - ts <= 90]
+                        if _hist_90s and min(_hist_90s) < 0.70:
+                            log.info(
+                                "[NCS-STABILITY] %s/%s: %.0fc now but was %.0fc in last 90s — rapid escalation — skip",
+                                asset, timeframe, snipe_price * 100, min(_hist_90s) * 100,
+                            )
+                            snipe_dir = None
+                            snipe_price = None
+                            market_id = None
 
                     # High-price opposing-resolution guard for CLOSE-SNIPE (Mode 1 only)
                     # At ep > 0.93 the tail loss is ~92c per dollar — one wrong resolution
@@ -1126,23 +1154,35 @@ async def start_close_sniper(session, engines):
 
                     # NCS candle-direction gate: prior closed candle must align with bet direction.
                     # Prevents NCS firing into reversal setups (e.g. NCS YES after a DOWN candle).
-                    # Fail-open: if klines unavailable, allow trade.
-                    if snipe_mode == "CLOSE-SNIPE" and snipe_dir and hasattr(engine, "klines") and engine.klines and len(engine.klines) >= 2:
-                        try:
-                            _prev_kline = engine.klines[-2]
-                            _prev_open  = float(_prev_kline[1])
-                            _prev_close = float(_prev_kline[4])
-                            _prev_was_up = _prev_close >= _prev_open
-                            _ncs_expects_up = (snipe_dir == "YES")
-                            if _prev_was_up != _ncs_expects_up:
+                    # Fail-CLOSED: if klines unavailable, skip the snipe — one missed win is
+                    # far cheaper than one wrong-direction loss (50:1 loss-to-win ratio at 96c).
+                    if snipe_mode == "CLOSE-SNIPE" and snipe_dir:
+                        if hasattr(engine, "klines") and engine.klines and len(engine.klines) >= 2:
+                            try:
+                                _prev_kline = engine.klines[-2]
+                                _prev_open  = float(_prev_kline[1])
+                                _prev_close = float(_prev_kline[4])
+                                _prev_was_up = _prev_close >= _prev_open
+                                _ncs_expects_up = (snipe_dir == "YES")
+                                if _prev_was_up != _ncs_expects_up:
+                                    log.info(
+                                        "[NCS-CANDLE-GATE] %s/%s: prior candle %s but NCS=%s — reversal risk — skip",
+                                        asset, timeframe,
+                                        "UP" if _prev_was_up else "DN", snipe_dir
+                                    )
+                                    snipe_dir = None
+                            except Exception as _cg_err:
                                 log.info(
-                                    "[NCS-CANDLE-GATE] %s/%s: prior candle %s but NCS=%s — reversal risk — skip",
-                                    asset, timeframe,
-                                    "UP" if _prev_was_up else "DN", snipe_dir
+                                    "[NCS-CANDLE-GATE] %s/%s: klines error (%s) — fail-closed, skip",
+                                    asset, timeframe, _cg_err,
                                 )
                                 snipe_dir = None
-                        except Exception:
-                            pass  # fail-open
+                        else:
+                            log.info(
+                                "[NCS-CANDLE-GATE] %s/%s: no klines available — fail-closed, skip",
+                                asset, timeframe,
+                            )
+                            snipe_dir = None
 
                     # Tier 1: NCS Proximity Guard — flat-candle killer.
                     # At 90¢+ entry, if Pyth spot hasn't actually MOVED ≥0.15×ATR(14) from candle

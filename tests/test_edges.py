@@ -428,6 +428,12 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         engine = MagicMock()
         engine.asset = "BTC"
         engine.timeframe = "5m"
+        # Green prior candle so candle gate passes for YES (UP) snipe at 0.98
+        engine.klines = [
+            [0, "98000", "98500", "97800", "98400", "100"],
+            [0, "98400", "98700", "98200", "98600", "120"],   # [-2]: green (close > open)
+            [0, "98600", "98800", "98500", "98750", "110"],   # [-1]: current (not closed)
+        ]
 
         # Scenario: Price is 0.98, time is T-30s before expiry -> should trigger YES Mode 1 trade
         now = int(time.time())

@@ -490,6 +490,16 @@ class UpDownEngine:
             all_green = all(float(k[4]) > float(k[1]) for k in closed_klines)
             all_red = all(float(k[4]) < float(k[1]) for k in closed_klines)
             if all_green or all_red:
+                # Gate: 65c+ contra-price required for meaningful Kelly sizing.
+                # At 54c the crowd edge is thin — 8% Kelly on $50 = $4, barely worth 1h exposure.
+                _rev_contra_price = dn_price if all_green else up_price
+                _rev_min_price = 0.65
+                if _rev_contra_price < _rev_min_price:
+                    log.info(
+                        "[REV-STREAK-GATE] %s/1h: contra price %.0fc < %.0fc min — skip",
+                        self.asset, _rev_contra_price * 100, _rev_min_price * 100,
+                    )
+            if (all_green or all_red) and _rev_contra_price >= _rev_min_price:
                 raw_dir = "DOWN" if all_green else "UP"
                 direction = apply_regime(raw_dir, regime, is_momentum=False)  # reversal — already contrarian
                 if self.invert_signal:

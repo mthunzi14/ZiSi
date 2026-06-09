@@ -128,11 +128,11 @@ class TestUpDownEngineVolatility(unittest.IsolatedAsyncioTestCase):
             
         mock_klines.return_value = klines
         mock_mkt.return_value = {
-            "up_price": 0.35, "dn_price": 0.65,
+            "up_price": 0.70, "dn_price": 0.30,  # contra=up_price(0.70) >= 0.65 gate
             "up_market": {"id": "yes_id"}, "dn_market": {"id": "no_id"},
             "event_id": "evt_123", "event_title": "Test Title", "expiry_ts": 1234567
         }
-        
+
         session = MagicMock()
         # Mock regime_status.json to return MEAN_REVERTING
         import json
@@ -140,11 +140,11 @@ class TestUpDownEngineVolatility(unittest.IsolatedAsyncioTestCase):
             "regime": "MEAN_REVERTING",
             "atr_percentile": 30.0
         })
-        
+
         with patch("pathlib.Path.exists", return_value=True), \
              patch("pathlib.Path.read_text", return_value=mock_regime_data), \
              patch("core.engine.edge_orchestrator.edge_orchestrator.get_trade_context", return_value={}):
-            
+
             signal = await engine.generate_signal(session)
             self.assertIsNotNone(signal)
             # Fading red streak -> signal direction should be UP
@@ -168,7 +168,7 @@ class TestUpDownEngineVolatility(unittest.IsolatedAsyncioTestCase):
             
         mock_klines.return_value = klines
         mock_mkt.return_value = {
-            "up_price": 0.65, "dn_price": 0.35,
+            "up_price": 0.30, "dn_price": 0.70,  # contra=dn_price(0.70) >= 0.65 gate
             "up_market": {"id": "yes_id"}, "dn_market": {"id": "no_id"},
             "event_id": "evt_123", "event_title": "Test Title", "expiry_ts": 1234567
         }
