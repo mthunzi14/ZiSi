@@ -64,6 +64,15 @@ from dataclasses import dataclass, field
 
 log = logging.getLogger("zisi.main")
 
+# Cross-asset corroboration: when a non-NCS trade fires on a lead asset,
+# shadow it onto correlated assets on the same timeframe without re-running gates.
+# BTC is the primary leader; ETH is a secondary leader for SOL.
+_CORR_MAP: dict[str, list[str]] = {
+    "BTC": ["ETH", "SOL"],
+    "ETH": ["SOL"],
+}
+_NCS_SOURCES = frozenset({"CLOSE-SNIPE", "CLOSE-SNIPE-EARLY"})
+
 
 @dataclass
 class TradingContext:
@@ -228,17 +237,19 @@ async def _validate_trade_slot(
     up_price = market["up_price"]
     dn_price = market["dn_price"]
 
-    # SIG 20¢ floor: block extreme-consensus entries where market is 80%+ against signal
-    if _entry_source not in ("FAIR_VAL", "CLOSE-SNIPE") and entry_price < 0.20:
-        log.info("[SIG-FLOOR] %s/%s: SIG %.0fc < 20c — market too extreme against signal — skip",
+    # SIG 40¢ floor: below 40¢ the crowd is >60% against the signal — momentum lag can't overcome
+    # that consensus. Raised from 20¢ after two clean-slate losses at 24.5¢ and 40¢ NO entries.
+    # CORR trades (already vetted by lead asset) and FV/NCS are exempt.
+    if _entry_source not in ("FAIR_VAL", "CLOSE-SNIPE", "CORR") and entry_price < 0.40:
+        log.info("[SIG-FLOOR] %s/%s: SIG %.0fc < 40c — crowd >60%% against signal — skip",
                  asset, timeframe, entry_price * 100)
-        context.log_skip("sig_floor_20c", asset, timeframe)
+        context.log_skip("sig_floor_40c", asset, timeframe)
         return False, {}
 
     # P5: SIG price ceiling — block buying the expensive side of an overextended market.
     # SIG/YES (UP) at >60¢ on 5m or >65¢ on 15m means market already priced it heavily;
     # edge evaporates and losses at 65¢ have confirmed this repeatedly.
-    if _entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE"):
+    if _entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE", "CORR"):
         _sig_ceil = 0.60 if timeframe == "5m" else 0.65
         if entry_price > _sig_ceil:
             log.info("[SIG-CEIL] %s/%s: SIG %.0fc > %.0fc ceiling — overextended — skip",
@@ -252,7 +263,7 @@ async def _validate_trade_slot(
     # BTC↔ETH corroboration bypass: if the correlated pair is already in a same-direction
     # same-timeframe position, the MIDGUARD score bar is dropped — both assets move together
     # and the open position is live confirmation of the edge.
-    if (_entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE", "T2_SWEEPER", "REVERSAL_STREAK")
+    if (_entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE", "T2_SWEEPER", "REVERSAL_STREAK", "CORR")
             and 0.35 < entry_price < 0.57 and score < 0.70):
         _corr_bypass = False
         _corr_pair = {"BTC": "ETH", "ETH": "BTC"}.get(asset.upper())
@@ -827,6 +838,12 @@ async def asset_loop(
             if traded:
                 context.funnel_stats["executed"] += 1
                 global_diagnostics.log_execution(execution_time_ms, 0.0, successful_hedge=True)
+                # Corroboration: shadow onto correlated assets — no gate re-check needed
+                if asset in _CORR_MAP and details.get("entry_source") not in _NCS_SOURCES:
+                    asyncio.create_task(_place_corr_trades(
+                        context, session, asset, timeframe,
+                        details["direction"], details.get("entry_source", "SIG"),
+                    ))
 
             update_runtime_tracking()
 
@@ -834,6 +851,59 @@ async def asset_loop(
             log.error("[MAIN] %s/%s loop error: %s", asset, timeframe, exc, exc_info=True)
 
         await _sleep_to_next_candle(interval_minutes, asset, timeframe, session, context)
+
+
+async def _place_corr_trades(
+    context: "TradingContext",
+    session: aiohttp.ClientSession,
+    lead_asset: str,
+    timeframe: str,
+    direction: str,
+    lead_source: str,
+) -> None:
+    """Shadow a confirmed non-NCS trade onto correlated assets (no gate re-checks)."""
+    from infrastructure.state.state_manager import get_open_positions, get_current_balance as _gcb
+    targets = _CORR_MAP.get(lead_asset.upper(), [])
+    if not targets:
+        return
+    current_balance = _gcb()
+    open_positions = get_open_positions()
+    interval_minutes = 60 if timeframe == "1h" else int(timeframe.rstrip("m"))
+
+    for corr_asset in targets:
+        engine = context.get_engine(corr_asset, timeframe)
+        if not engine:
+            continue
+        # Skip if already in a position on this asset/timeframe
+        if any(
+            corr_asset in p.get("event_title", "") and f"[{timeframe}]" in p.get("event_title", "")
+            for p in open_positions
+        ):
+            log.info("[CORR] %s/%s: open position exists — skip shadow of %s", corr_asset, timeframe, lead_asset)
+            continue
+        # Fetch fresh market for the corr asset
+        try:
+            market = await engine._fetch_market(session)
+        except Exception as _mfe:
+            log.warning("[CORR] %s/%s: market fetch error — %s", corr_asset, timeframe, _mfe)
+            continue
+        if not market:
+            continue
+        entry_price = market["up_price"] if direction == "UP" else market["dn_price"]
+        # Only shadow if market is reasonably liquid and not near extremes
+        if entry_price < 0.08 or entry_price > 0.95:
+            log.info("[CORR] %s/%s: price %.0fc extreme — skip", corr_asset, timeframe, entry_price * 100)
+            continue
+        bet_usd = engine.compute_size(0.75, entry_price, current_balance)
+        bet_usd = max(1.0, min(bet_usd, current_balance * 0.20))
+        order = _place_trade(corr_asset, timeframe, direction, market, bet_usd, entry_price, 0.75, "CORR")
+        if order:
+            log.info(
+                "[CORR] %s/%s %s | $%.2f @ %.0fc | shadow of %s/%s [%s]",
+                corr_asset, timeframe, direction, bet_usd, entry_price * 100,
+                lead_asset, timeframe, lead_source,
+            )
+            await commit_trade_slot(corr_asset, timeframe, 0.75, interval_minutes, is_dual=False, direction=direction)
 
 
 def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, score, trade_type="SINGLE") -> Optional[dict]:

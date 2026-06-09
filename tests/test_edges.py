@@ -174,7 +174,7 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
             "direction": "UP",
             "score": 0.85,
             "entry_source": "SIG",
-            "market": {"up_price": 0.30, "dn_price": 0.70},  # deep contrarian — outside 35-47c dead zone
+            "market": {"up_price": 0.42, "dn_price": 0.58},  # above 40c floor, outside MIDGUARD score gate
             "whale_aligned": True,
             "confluence_score": 2,
         }
