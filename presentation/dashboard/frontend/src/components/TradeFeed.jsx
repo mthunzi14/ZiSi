@@ -91,14 +91,15 @@ function fmtLocalDT(ts) {
 }
 
 const ENTRY_TYPE_CONFIG = {
-  'LAT-ARB':         { label: 'LAT ARB',   color: '#2b7fff' },
-  'FAIR-VAL':        { label: 'FV',        color: '#00d4a3' },
-  'REVERSAL-SNIPE':  { label: 'REV SNIPE', color: '#ff007a' },
-  'REVERSAL-STREAK': { label: 'REV STREAK',color: '#e076ff' },
-  'SIGNAL':          { label: 'SIG',       color: 'var(--color-text-muted)' },
-  'SWEEP':           { label: 'SWEEP',      color: '#eab308' },
-  'CLOSE-SNIPE':     { label: 'NCS',        color: '#e27622' },
-  'DUAL':            { label: 'DUAL',       color: '#9945ff' },
+  'LAT-ARB':           { label: 'LAT ARB',   color: '#2b7fff' },
+  'FAIR-VAL':          { label: 'FV',        color: '#00d4a3' },
+  'REVERSAL-SNIPE':    { label: 'REV SNIPE', color: '#ff007a' },
+  'REVERSAL-STREAK':   { label: 'REV STREAK',color: '#e076ff' },
+  'SIGNAL':            { label: 'SIG',       color: 'var(--color-text-muted)' },
+  'SWEEP':             { label: 'SWEEP',      color: '#eab308' },
+  'CLOSE-SNIPE':       { label: 'NCS',        color: '#e27622' },
+  'CLOSE-SNIPE-EARLY': { label: 'NCS',        color: '#e27622' },
+  'DUAL':              { label: 'DUAL',       color: '#9945ff' },
 };
 function entryTypeCfg(t) { return ENTRY_TYPE_CONFIG[t] || ENTRY_TYPE_CONFIG['SIGNAL']; }
 

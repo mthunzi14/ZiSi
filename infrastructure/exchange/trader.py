@@ -1236,8 +1236,10 @@ def check_exit_condition(
     # For short-term binary option contracts, set a deep emergency stop (-1.0) to let them mature
     _ev_title = (pos.get("event_title") or "").upper()
     _is_short_tf = "5M" in _ev_title or "15M" in _ev_title or "UPDOWN" in _ev_title
+    _trade_type = pos.get("trade_type", "SIGNAL")
+    _is_ncs_or_sweep = _trade_type in ("NCS", "SWEEP")
     effective_stop_loss = -1.0 if _is_short_tf else stop_loss
-    effective_target_price = 0.99 if _is_short_tf else target_price
+    effective_target_price = 0.99 if _is_ncs_or_sweep else target_price
 
     # Calculate expiry_time for short timeframes to check salvage exit
     expiry_time = None
