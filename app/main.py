@@ -851,11 +851,13 @@ async def asset_loop(
             if traded:
                 context.funnel_stats["executed"] += 1
                 global_diagnostics.log_execution(execution_time_ms, 0.0, successful_hedge=True)
-                # Corroboration: shadow onto correlated assets — no gate re-check needed
+                # Corroboration: shadow onto correlated assets at same size as lead trade
                 if asset in _CORR_MAP and details.get("entry_source") not in _NCS_SOURCES:
                     asyncio.create_task(_place_corr_trades(
                         context, session, asset, timeframe,
                         details["direction"], details.get("entry_source", "SIG"),
+                        lead_bet_usd=details.get("bet_usd", 0.0),
+                        lead_score=details.get("score", 0.75),
                     ))
 
             update_runtime_tracking()
@@ -873,15 +875,22 @@ async def _place_corr_trades(
     timeframe: str,
     direction: str,
     lead_source: str,
+    lead_bet_usd: float = 0.0,
+    lead_score: float = 0.75,
 ) -> None:
-    """Shadow a confirmed non-NCS trade onto correlated assets (no gate re-checks)."""
+    """Shadow a confirmed non-NCS trade onto correlated assets at the same size as the lead."""
     from infrastructure.state.state_manager import get_open_positions, get_current_balance as _gcb
-    targets = _CORR_MAP.get(lead_asset.upper(), [])
+    targets = list(_CORR_MAP.get(lead_asset.upper(), []))
+    # DOGE joins the shadow only on a very strong BTC/ETH signal (score >= 0.80)
+    if lead_asset.upper() in ("BTC", "ETH") and lead_score >= 0.80 and "DOGE" not in targets:
+        targets.append("DOGE")
     if not targets:
         return
     current_balance = _gcb()
     open_positions = get_open_positions()
     interval_minutes = 60 if timeframe == "1h" else int(timeframe.rstrip("m"))
+    # Use the lead trade's bet size — all shadows match the lead dollar-for-dollar
+    bet_usd = lead_bet_usd if lead_bet_usd > 1.0 else max(1.0, current_balance * 0.03)
 
     for corr_asset in targets:
         engine = context.get_engine(corr_asset, timeframe)
@@ -908,9 +917,7 @@ async def _place_corr_trades(
         if entry_price < 0.40 or entry_price > 0.95:
             log.info("[CORR] %s/%s: price %.0fc out of bounds (min 40c) — skip shadow", corr_asset, timeframe, entry_price * 100)
             continue
-        bet_usd = engine.compute_size(0.75, entry_price, current_balance)
-        bet_usd = max(1.0, min(bet_usd, current_balance * 0.20))
-        order = _place_trade(corr_asset, timeframe, direction, market, bet_usd, entry_price, 0.75, "CORR")
+        order = _place_trade(corr_asset, timeframe, direction, market, bet_usd, entry_price, lead_score, "CORR")
         if order:
             log.info(
                 "[CORR] %s/%s %s | $%.2f @ %.0fc | shadow of %s/%s [%s]",

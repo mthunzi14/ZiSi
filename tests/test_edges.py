@@ -133,7 +133,8 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
     @patch("app.main.request_trade_slot", return_value=(True, "slot_ok"))
     @patch("app.main.global_diagnostics.get_risk_multiplier", return_value=1.0)
     @patch("infrastructure.state.state_manager.get_open_positions", return_value=[])
-    async def test_sizing_caps_risk_control(self, mock_open, mock_risk, mock_request):
+    @patch("core.analytics.sentiment_daemon.sentiment_filter.get_size_multiplier", return_value=1.0)
+    async def test_sizing_caps_risk_control(self, mock_fng, mock_open, mock_risk, mock_request):
         from app.main import _validate_trade_slot
         
         # Mock engine
