@@ -249,12 +249,34 @@ async def _validate_trade_slot(
     # SIG mid-range quality guard (REBUILD Phase 4): the deleted dead zone let weak
     # cheap/contrarian SIG back in (26.5c NO -$4.08, 57.5c NO -$0.52). Re-protect the
     # 35-57c band — only allow SIG here on a strong score; FV carries direction at ATM.
+    # BTC↔ETH corroboration bypass: if the correlated pair is already in a same-direction
+    # same-timeframe position, the MIDGUARD score bar is dropped — both assets move together
+    # and the open position is live confirmation of the edge.
     if (_entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE", "T2_SWEEPER", "REVERSAL_STREAK")
             and 0.35 < entry_price < 0.57 and score < 0.70):
-        log.info("[SIG-MIDGUARD] %s/%s: SIG %.0fc in 35-57c with weak score %.2f < 0.70 — skip",
-                 asset, timeframe, entry_price * 100, score)
-        context.log_skip("sig_midrange_guard", asset, timeframe)
-        return False, {}
+        _corr_bypass = False
+        _corr_pair = {"BTC": "ETH", "ETH": "BTC"}.get(asset.upper())
+        if _corr_pair:
+            try:
+                from infrastructure.state.state_manager import state_manager as _sm
+                for _p in _sm.get_open_positions():
+                    _pt = _p.get("event_title", "")
+                    if (_corr_pair in _pt
+                            and f"[{timeframe}]" in _pt
+                            and _p.get("direction", "").upper() == direction.upper()):
+                        _corr_bypass = True
+                        log.info(
+                            "[SIG-CORROBORATE] %s/%s: %s open same-dir %s — MIDGUARD bypassed",
+                            asset, timeframe, _corr_pair, direction,
+                        )
+                        break
+            except Exception:
+                pass
+        if not _corr_bypass:
+            log.info("[SIG-MIDGUARD] %s/%s: SIG %.0fc in 35-57c with weak score %.2f < 0.70 — skip",
+                     asset, timeframe, entry_price * 100, score)
+            context.log_skip("sig_midrange_guard", asset, timeframe)
+            return False, {}
 
     # FV global rate limiter — max 3 FV entries per 60s.
     # Prevents the correlated macro wipeout pattern: 5 assets firing simultaneously

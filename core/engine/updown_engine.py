@@ -263,9 +263,6 @@ class UpDownEngine:
         self.last_edge_context: Optional[dict] = None
         self._slope_history:    list = []   # rolling 4 slope readings for choppy detection
         self._choppy_candles:   int  = 0    # candles remaining in choppy cooldown
-        # L2 book circuit breaker — backs off 15 min after 5 consecutive failures
-        self._l2_fail_count:    int   = 0
-        self._l2_backoff_until: float = 0.0  # epoch seconds
 
     def _get_hourly_slug(self, timestamp: int) -> str:
         from zoneinfo import ZoneInfo
@@ -1362,24 +1359,12 @@ class UpDownEngine:
             if spread <= effective_max_spread:
                 return derived_up, dn_p, spread
 
-        # Hard skip — no live book means no trade. PAPER-FALLBACK removed.
-        # This bot simulates live capital. RSI-derived fake prices produce blind bets.
-        # If Polymarket has no live book for this candle yet, we wait for the next one.
-        self._l2_fail_count += 1
-        _BACKOFF_THRESHOLD = 10  # was 5 — trigger less aggressively
-        _BACKOFF_SECS = 2 * 60  # 2 minutes (was 15 — too long, blocks NCS and FV prefetch trades)
-        if self._l2_fail_count >= _BACKOFF_THRESHOLD:
-            self._l2_backoff_until = time.time() + _BACKOFF_SECS
-            self._l2_fail_count = 0  # reset so next recovery period tries fresh
-            log.warning(
-                "[L2-CIRCUIT-BREAKER] %s/%s: %d consecutive L2 failures — backing off for 2 min (was 15 min).",
-                self.asset, self.timeframe, _BACKOFF_THRESHOLD
-            )
-        else:
-            log.warning(
-                "[LIVE-BOOK-REQUIRED] %s/%s: No valid L2 book after 4 attempts. Hard-skipping candle. (fail %d/%d)",
-                self.asset, self.timeframe, self._l2_fail_count, _BACKOFF_THRESHOLD
-            )
+        # No live L2 book — skip this candle. No backoff: retry every tick so we never
+        # miss a market that just became live (BTC/ETH open within seconds of each other).
+        log.warning(
+            "[LIVE-BOOK] %s/%s: No valid L2 book — skipping candle.",
+            self.asset, self.timeframe,
+        )
         return None
 
     async def prefetch_upcoming_market(self, session: aiohttp.ClientSession, next_boundary: int) -> None:
@@ -1479,15 +1464,6 @@ class UpDownEngine:
         start_ts = boundary - interval
 
         # Check if we have a valid pre-fetched market for the current candle start
-        # L2 circuit breaker: if backed off, skip immediately without wasting retry attempts
-        if time.time() < self._l2_backoff_until:
-            _remaining = int(self._l2_backoff_until - time.time()) // 60
-            log.info(
-                "[L2-CIRCUIT-BREAKER] %s/%s: In backoff — skipping for ~%d more min (no weekend liquidity).",
-                self.asset, self.timeframe, _remaining
-            )
-            return None
-
         if start_ts in self._prefetched_markets:
             cached_market = self._prefetched_markets[start_ts]
             up_tk = cached_market["up_market"]["id"]
@@ -1574,9 +1550,6 @@ class UpDownEngine:
                                 continue
 
                             up_price, dn_price, spread = resolved
-                            # Successful book fetch — reset the circuit breaker
-                            self._l2_fail_count = 0
-                            self._l2_backoff_until = 0.0
                             log.info(
                                 "[ENGINE] %s/%s: %s up=%.0fc dn=%.0fc spread=%.0fc",
                                 self.asset, self.timeframe, slug,
