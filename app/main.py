@@ -308,7 +308,7 @@ async def _validate_trade_slot(
     # SIGNAL dead zone: 35-57¢ has 0%WR in live data. ETH/5m 47.5¢ slipped through old <46¢ boundary.
     # Full midrange (35-70c) has no SIGNAL edge. Deep contrarian (<35c) and strong entries (>=70c) kept.
     # Session 15 data: SIG/NO at 26-27¢ were +$44 and +$28.80; SIG at 14¢ were 0/2.
-    if _entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE", "T2_SWEEPER", "REVERSAL_STREAK") and 0.35 < entry_price < 0.70:
+    if _entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE", "T2_SWEEPER", "REVERSAL_STREAK") and entry_price < 0.70:
         log.info(
             "[SIGNAL-DEAD-ZONE] %s/%s: %.0fc SIGNAL in 35-70c dead zone — 0%%WR historically — skip",
             asset, timeframe, entry_price * 100
