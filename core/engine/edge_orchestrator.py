@@ -229,6 +229,18 @@ class EdgeOrchestrator:
         except Exception as e:
             log.debug("[EDGE] Whale tracker query failed: %s", e)
 
+        # ── A2: Feed directional order-flow into the regime detector (REBUILD 2026-06-09) ──
+        # Without this, OBI stays 0.0 so the detector always sees a "balanced book" and
+        # over-labels MEAN_REVERTING (~90% of the time) — the root cause of the SIG over-fade.
+        # whale_pressure (buy_vol vs sell_vol, [-1,1]) is the available directional-flow proxy.
+        try:
+            if self._regime_detector and asset == "BTC":
+                self._regime_detector.update_context(obi=ctx.get("whale_pressure", 0.0), volume_ratio=1.0)
+                _st = self._regime_detector.get_status()
+                ctx["regime_name"] = _st.get("regime", ctx.get("regime_name", "NORMAL"))
+        except Exception as e:
+            log.debug("[EDGE] Regime OBI inject failed: %s", e)
+
         # ── L: Portfolio Heat ────────────────────────────────────────────────
         try:
             if self._portfolio_heat:

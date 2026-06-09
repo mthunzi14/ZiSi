@@ -20,6 +20,7 @@ Confidence drives the ATM entry guard (app/main.py) and confidence-tiered sizing
 where `drift` is the EXPECTED REMAINING return (signed, return-fraction units).
 At drift=0 this is identical to the previous driftless model (backtest-safe).
 """
+import os
 from statistics import NormalDist
 from typing import Optional
 
@@ -27,12 +28,15 @@ _N = NormalDist().cdf
 _EPS = 1e-9
 
 DEFAULT_VALUE_PARAMS = {
-    "edge_margin": 0.10,           # min (fair_prob - price) required to enter (breakeven buffer)
+    # REBUILD 2026-06-09: edge_margin 0.10->0.08 and min_absolute_prob 0.70->0.66 (env-tunable)
+    # to lift FV flow in choppy markets — confidence-tiered sizing + the FV-ATM-CONF guard are
+    # the quality controls now, so a lower prob floor trades small on thinner-but-real edges.
+    "edge_margin": float(os.getenv("FV_EDGE_MARGIN", "0.08")),
     "edge_target": 0.15,           # preferred edge ("+15c to profit")
     "near_certainty_prob": 0.80,   # fair_prob at/above which an entry is "near certain"
     "near_certainty_t_frac": 0.75, # only near-certainty once >= 75% of the window has elapsed
     "sigma_scale": 1.0,            # multiplies ATR-derived sigma (carried from backtest calibration)
-    "min_absolute_prob": 0.70,     # min absolute probability of winning required to enter
+    "min_absolute_prob": float(os.getenv("FV_MIN_PROB", "0.66")),  # min win-prob required to enter
 }
 
 # Fraction of recent momentum assumed to persist over the remaining window.

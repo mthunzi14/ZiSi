@@ -667,9 +667,9 @@ class UpDownEngine:
                             pass
 
                     if _entry_price_fv >= 0.50 and _entry_price_fv < 0.65:
-                        _min_edge = 0.12
+                        _min_edge = 0.10  # REBUILD: 0.12->0.10, lift mid-band FV flow
                     elif _entry_price_fv >= 0.65:
-                        _min_edge = 0.10
+                        _min_edge = 0.08  # REBUILD: 0.10->0.08
                     else:
                         _min_edge = 0.05
 
@@ -1177,8 +1177,10 @@ class UpDownEngine:
         polymarket_l2_gateway.subscribe(up_tk)
         polymarket_l2_gateway.subscribe(dn_tk)
 
-        # Always enforce live spread gate regardless of mode — this is a live simulation
-        effective_max_spread = max_spread
+        # Always enforce live spread gate regardless of mode — this is a live simulation.
+        # REBUILD: non-latency FV/SIG tolerate a wider spread (thin early-candle books are
+        # real, just illiquid) so they aren't hard-skipped; latency sweeps stay tight.
+        effective_max_spread = max_spread if is_latency_scan else max(max_spread, 0.20)
 
         up_price, dn_price = None, None
         attempts = 2 if is_latency_scan else 4
