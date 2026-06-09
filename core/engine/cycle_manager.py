@@ -1132,13 +1132,16 @@ async def start_close_sniper(session, engines):
 
                     current_balance = _smgr.get_current_balance()
 
-                    # Target 50 cents net profit per win (exit at 0.99)
+                    # REBUILD: scale NCS — the impeccable 100%-WR engine (63/63 live). Raise the
+                    # per-win profit target $0.50 -> $1.00 and tail cap $12.50 -> $20.00 (both
+                    # env-tunable); the 45%-balance cap below stays as the hard risk bound.
                     _target_exit = 0.99
                     _profit_per_share = _target_exit - snipe_price
-                    _ncs_tail_cap = float(os.getenv("NCS_TAIL_CAP", "12.50"))
-                    
+                    _ncs_profit_target = float(os.getenv("NCS_PROFIT_TARGET", "1.00"))
+                    _ncs_tail_cap = float(os.getenv("NCS_TAIL_CAP", "20.00"))
+
                     if _profit_per_share > 0.005:
-                        amount_dollars = (0.50 / _profit_per_share) * snipe_price
+                        amount_dollars = (_ncs_profit_target / _profit_per_share) * snipe_price
                     else:
                         amount_dollars = _ncs_tail_cap
                         

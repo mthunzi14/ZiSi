@@ -9,13 +9,24 @@ real latency) is the true go/no-go. Sizing/costs reuse the existing backtester p
 from dataclasses import dataclass, field
 from typing import Dict, List
 
-from core.engine.fair_value import fair_prob_up, decide_value_entry, DEFAULT_VALUE_PARAMS
+from core.engine.fair_value import (fair_prob_up, decide_value_entry, directional_drift,
+                                     DEFAULT_VALUE_PARAMS, DEFAULT_CONTINUATION)
 from tools.backtest.klines import Candle, atr
 from tools.backtest.pricing import (PricingParams, contract_price, apply_entry_slippage,
                                     net_pnl)
 from tools.backtest.simulator import SimTrade, sized_bet, pnl
 
 _ATR_HISTORY = 30  # 1m candles before a window used to estimate vol (strictly prior -> no lookahead)
+
+
+def _ema(prices, period):
+    if len(prices) < period:
+        return prices[-1] if prices else 0.0
+    mult = 2.0 / (period + 1)
+    e = prices[0]
+    for p in prices[1:]:
+        e = (p - e) * mult + e
+    return e
 
 
 @dataclass
@@ -25,6 +36,8 @@ class ValueConfig:
     start_balance: float = 100.0
     lag_min: int = 1       # market repricing lag in minutes (the edge source); swept by the runner
     window_min: int = 15   # window length in minutes (15m-first)
+    use_drift: bool = True       # REBUILD: project momentum drift into fair_prob_up (A/B vs driftless)
+    atm_min_conf: float = 0.58   # REBUILD: confidence floor for ATM (42-65c) entries (mirrors live FV-ATM-CONF)
 
 
 def _group_windows(candles: List[Candle], window_min: int):
@@ -64,13 +77,23 @@ def simulate_value(candles_1m_by_asset: Dict[str, List[Candle]],
                 lag_idx = j - cfg.lag_min
                 s_lag = window[lag_idx].close if lag_idx >= 0 else s_0  # market is lag_min behind
                 sigma = max(sigma_frac * cfg.pricing.sigma_scale, 1e-9)
-                fp_up = fair_prob_up(s_t, s_0, sigma_frac, t_min, total_min, cfg.pricing.sigma_scale)
+                # ── Momentum drift (REBUILD), strictly no-lookahead: EMA over closes up to NOW ──
+                _hist = [c.close for c in candles[max(0, start_idx + j - 19):start_idx + j + 1]]
+                _e5, _e20 = _ema(_hist, 5), _ema(_hist, 20)
+                mom = ((_e5 - _e20) / _e20) if _e20 else 0.0
+                drift = (directional_drift(mom, sigma_frac=sigma_frac, continuation=DEFAULT_CONTINUATION)
+                         if cfg.use_drift else 0.0)
+                fp_up = fair_prob_up(s_t, s_0, sigma_frac, t_min, total_min, cfg.pricing.sigma_scale, drift=drift)
                 up_q = contract_price(s_lag, s_0, sigma, t_min, total_min)
                 dn_q = round(1.0 - up_q, 4)
-                dec = decide_value_entry(fp_up, up_q, dn_q, t_min, total_min, cfg.value_params, timeframe=f"{cfg.window_min}m")
+                dec = decide_value_entry(fp_up, up_q, dn_q, t_min, total_min, cfg.value_params,
+                                         timeframe=f"{cfg.window_min}m", pct_move=mom)
                 if dec["direction"] is None:
                     continue
                 quoted = up_q if dec["direction"] == "UP" else dn_q
+                # Mirror the live FV-ATM-CONF guard: ATM (42-65c) needs genuine directional confidence.
+                if cfg.use_drift and 0.42 < quoted < 0.65 and dec.get("confidence", 0.0) < cfg.atm_min_conf:
+                    continue
                 ep = apply_entry_slippage(quoted, sigma_frac, cfg.pricing)
                 win = (dec["direction"] == "UP" and resolved_up) or \
                       (dec["direction"] == "DOWN" and not resolved_up)

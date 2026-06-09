@@ -14,13 +14,13 @@ BOOT_TIME = time.time()
 # Global entry rate limiter — prevents burst entries across all asset loops.
 # Max one new position every ENTRY_COOLDOWN_S seconds globally.
 _last_entry_ts: float = 0.0
-ENTRY_COOLDOWN_S: float = 15.0
+ENTRY_COOLDOWN_S: float = 3.0  # REBUILD: 15s dropped candle-boundary bursts; 3s gives throughput for hundreds/day
 _entry_lock: asyncio.Lock | None = None  # lazy-initialized inside the event loop
 
 # FV global rate limiter — max 3 FV entries per 60s.
 # Prevents correlated macro wipeouts where 5 assets fire simultaneously on the same bad candle.
 _fv_entry_times: list = []
-_FV_MAX_PER_60S: int = 3
+_FV_MAX_PER_60S: int = 6  # REBUILD: FV is the primary engine — allow more concurrent FV bursts
 
 def _fv_rate_ok() -> bool:
     """True if fewer than 3 FV entries have fired in the last 60 seconds."""
@@ -246,6 +246,16 @@ async def _validate_trade_slot(
             context.log_skip("sig_ceiling", asset, timeframe)
             return False, {}
 
+    # SIG mid-range quality guard (REBUILD Phase 4): the deleted dead zone let weak
+    # cheap/contrarian SIG back in (26.5c NO -$4.08, 57.5c NO -$0.52). Re-protect the
+    # 35-57c band — only allow SIG here on a strong score; FV carries direction at ATM.
+    if (_entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE", "T2_SWEEPER", "REVERSAL_STREAK")
+            and 0.35 < entry_price < 0.57 and score < 0.70):
+        log.info("[SIG-MIDGUARD] %s/%s: SIG %.0fc in 35-57c with weak score %.2f < 0.70 — skip",
+                 asset, timeframe, entry_price * 100, score)
+        context.log_skip("sig_midrange_guard", asset, timeframe)
+        return False, {}
+
     # FV global rate limiter — max 3 FV entries per 60s.
     # Prevents the correlated macro wipeout pattern: 5 assets firing simultaneously
     # on the same bad macro candle, each sized at $6-8, wiping the full session P&L.
@@ -255,7 +265,7 @@ async def _validate_trade_slot(
         context.log_skip("fv_rate_limit", asset, timeframe)
         return False, {}
 
-    # FV per-asset loss cooldown: block new FV entries for an asset for 10 min after its last FV loss.
+    # FV per-asset loss cooldown: block new FV entries for an asset for 2 min after its last FV loss.
     # Prevents consecutive same-asset FV losses when the asset trends strongly against the signal.
     # Root cause: BTC trended UP for 10+ min while FV called DOWN twice in a row (3:30-3:40 AM ET).
     if _entry_source == "FAIR_VAL":
@@ -275,9 +285,9 @@ async def _validate_trade_slot(
                                 from datetime import datetime as _dt_cd
                                 _et = _dt_cd.fromisoformat(_exit_ts.replace("Z", "+00:00"))
                                 _age_s = _time_cd.time() - _et.timestamp()
-                                if 0 < _age_s < 600:
+                                if 0 < _age_s < 120:
                                     log.info(
-                                        "[FV-COOLDOWN] %s/%s: last FV trade was a loss (pnl=%.2f, %.0fs ago) — 10min cooldown",
+                                        "[FV-COOLDOWN] %s/%s: last FV trade was a loss (pnl=%.2f, %.0fs ago) — 2min cooldown",
                                         asset, timeframe, _ct.get("realized_pnl", 0.0), _age_s,
                                     )
                                     context.log_skip("fv_loss_cooldown", asset, timeframe)
@@ -322,8 +332,9 @@ async def _validate_trade_slot(
         interval, limit = tf_map.get(timeframe, ("5m", 2))
         
         leaders_against = 0
+        leaders_confirming = 0
         leaders_checked = 0
-        
+
         for leader in ["BTC", "ETH"]:
             try:
                 from core.engine.updown_engine import _fetch_klines_async
@@ -343,10 +354,14 @@ async def _validate_trade_slot(
                             leaders_against += 1
                         elif direction in ("YES", "UP") and is_leader_dn:
                             leaders_against += 1
+                        elif direction in ("YES", "UP") and is_leader_up:
+                            leaders_confirming += 1
+                        elif direction in ("NO", "DOWN") and is_leader_dn:
+                            leaders_confirming += 1
             except Exception as e:
                 log.warning("[LEADER-GUARD] Failed to check leader %s correlation: %s", leader, e)
                 
-        # Only block if BOTH leaders are successfully checked and BOTH are against the trade
+        # Block if BOTH leaders are against the trade...
         if leaders_checked == 2 and leaders_against == 2:
             log.info(
                 "[LEADER-GUARD] %s/%s %s: blocked because BOTH leaders (BTC & ETH) are against the trade direction",
@@ -354,6 +369,16 @@ async def _validate_trade_slot(
             )
             context.log_skip("leader_corroboration_guard", asset, timeframe)
             return False, {}
+        # ...but PROPAGATE when both leaders CONFIRM (REBUILD Phase 5): Bonereaper fires the
+        # same direction across BTC/ETH/SOL/XRP/DOGE on a macro move. Boost the alt's conviction
+        # (corroboration multiplier) so sizing scales with the cross-asset signal.
+        elif leaders_checked == 2 and leaders_confirming == 2:
+            _boosted = max(float(signal.get("corroboration_multiplier", 1.0)), 1.3)
+            signal["corroboration_multiplier"] = _boosted
+            log.info(
+                "[LEADER-PROP] %s/%s %s: BOTH leaders (BTC & ETH) confirm — propagating conviction (corr×%.1f)",
+                asset, timeframe, direction, _boosted,
+            )
 
     if is_dual and (up_price + dn_price) >= 0.92:
         is_dual = False
@@ -363,9 +388,13 @@ async def _validate_trade_slot(
     # FV same-asset active dedup: block new FV entry if another FV position is already active on this asset.
     # Fixes race condition where candle-open FV signal fires before the previous candle's exit is written
     # to closed[] in positions_state.json — causing the disk-based cooldown to miss back-to-back losses.
+    # REBUILD: dedup only within the SAME timeframe — mentors (PBot-6) run 5m + 15m
+    # on the same asset concurrently, so a live 5m FV must not block a 15m FV entry.
     if _entry_source == "FAIR_VAL":
+        _tf_tag = f"[{timeframe}]"
         _active_fv_on_asset = any(
             f"[{asset}]" in p.get("event_title", "") and "FAIR_VAL" in p.get("event_title", "")
+            and _tf_tag in p.get("event_title", "")
             for p in open_positions
         )
         if _active_fv_on_asset:
@@ -400,7 +429,7 @@ async def _validate_trade_slot(
             1 for p in open_positions
             if (p.get("direction", "").upper() in ("UP", "YES")) == (direction == "UP")
         )
-        if _same_dir_count >= 3 and score < 0.82:
+        if _same_dir_count >= 4 and score < 0.75:
             log.info(
                 "[SAME-DIR-GATE] %s/%s: %d open %s + moderate FV (%.0fc) + score %.2f < 0.82 — skip",
                 asset, timeframe, _same_dir_count, direction, entry_price * 100, score,
@@ -408,39 +437,21 @@ async def _validate_trade_slot(
             context.log_skip("same_dir_quality_gate", asset, timeframe)
             return False, {}
 
-    # FV upper dead zone: 57-65¢ has 0%WR in live data. Closes the 56-58c gap between ATM-CORE and upper-dead.
-    # Any FV between 56c and 65c has no directional edge — market is too evenly split.
-    if _entry_source == "FAIR_VAL" and entry_price > 0.56 and entry_price < 0.65:
-        log.info(
-            "[FV-UPPER-DEAD] %s/%s: %.0fc FV in 52-65c dead zone — 0%%WR historically — skip",
-            asset, timeframe, entry_price * 100
-        )
-        context.log_skip("fv_upper_dead_zone", asset, timeframe)
-        return False, {}
-
-    # Hard ATM core block: 44-56¢ has 0% live WR — the FV model has no directional edge here.
-    # Deep contrarian (<44¢) and fringe (56-58¢) can pass the score gate below.
-    if _entry_source == "FAIR_VAL" and 0.44 <= entry_price <= 0.56:
-        log.info(
-            "[FV-ATM-CORE] %s/%s: %.0fc in 44-56c hard block (0%%WR zone) — skip",
-            asset, timeframe, entry_price * 100,
-        )
-        context.log_skip("fv_atm_core_block", asset, timeframe)
-        return False, {}
-
-    # FV coin-flip gate: 42-44¢ / 56-58¢ fringe zone — score gate for near-certainty
-    if _entry_source == "FAIR_VAL" and 0.42 < entry_price < 0.58:
-        _fv_arch = signal.get("fv_archetype", "moderate")
-        if _fv_arch == "near_certainty":
-            _fv_min_score = float(os.getenv("FV_COIN_FLIP_SCORE_MIN_NC", "0.82"))
-        else:
-            _fv_min_score = float(os.getenv("FV_COIN_FLIP_SCORE_MIN", "0.90"))
-        if score < _fv_min_score:
+    # ─── FV ATM confidence guard (REBUILD: replaces the old 44-65c hard dead zones) ───
+    # The CDF sweet spot 42-65c is where the mentors (esp. PBot-6) make MOST of their money —
+    # 23 of 30 of his wins sit in 46-54c. The old FV-UPPER-DEAD + FV-ATM-CORE + FV-COIN-FLIP
+    # blocks banned FV from its single highest-EV band. We now ALLOW FV across 42-65c, but
+    # only when the directional edge model (Phase 2) reports genuine confidence; otherwise
+    # skip. No blanket ban — being right at the coin-flip IS the edge.
+    if _entry_source == "FAIR_VAL" and 0.42 < entry_price < 0.65:
+        _fv_conf = float(signal.get("fv_confidence", score))
+        _fv_atm_min = float(os.getenv("FV_ATM_MIN_CONF", "0.60"))
+        if _fv_conf < _fv_atm_min:
             log.info(
-                "[FV-COIN-FLIP] %s/%s: %.0fc entry, score %.2f < %.2f (arch=%s) — 42-58c ATM zone blocked",
-                asset, timeframe, entry_price * 100, score, _fv_min_score, _fv_arch,
+                "[FV-ATM-CONF] %s/%s: %.0fc ATM, confidence %.2f < %.2f — no directional edge, skip",
+                asset, timeframe, entry_price * 100, _fv_conf, _fv_atm_min,
             )
-            context.log_skip("fv_coin_flip_gate", asset, timeframe)
+            context.log_skip("fv_atm_low_confidence", asset, timeframe)
             return False, {}
 
     # Correlation cap: max 2 simultaneous 15m positions open at any time.
@@ -470,7 +481,8 @@ async def _validate_trade_slot(
 
     _entry_source = signal.get("entry_source", "SIG")
 
-    raw_bet_usd = engine.compute_size(score, entry_price, current_balance)
+    raw_bet_usd = engine.compute_size(score, entry_price, current_balance,
+                                      confidence=(signal.get("fv_confidence") or None))
     corr_mult = signal.get("corroboration_multiplier", 1.0)
     bet_usd = raw_bet_usd * risk_multiplier * corr_mult
     if corr_mult != 1.0:

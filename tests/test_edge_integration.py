@@ -67,6 +67,7 @@ class TestEdgeIntegration(unittest.IsolatedAsyncioTestCase):
         # Mock the global singleton's get_trade_context method and mock Path.exists to bypass live regime_status.json
         with patch("core.engine.edge_orchestrator.edge_orchestrator.get_trade_context", new_callable=AsyncMock) as mock_get_context, \
              patch("pathlib.Path.exists", return_value=False), \
+             patch("core.engine.regime_filter.get_regime_mode", return_value="TREND"), \
              patch("config.FAIR_VALUE_MODE", False):
             mock_get_context.return_value = mock_ctx
 
@@ -85,7 +86,7 @@ class TestEdgeIntegration(unittest.IsolatedAsyncioTestCase):
             
             # Size should be computed and rounded successfully
             self.assertGreater(size, 0.0)
-            self.assertLessEqual(size, 20.0)  # Unified adaptive Kelly ceiling limit check (adaptive Kelly ceiling is 20.0)
+            self.assertLessEqual(size, 40.0)  # REBUILD: confidence-tiered adaptive Kelly ceiling raised to $40
 
     def test_trader_outcome_propagates_to_edge_orchestrator(self):
         # Mock positions_state path and locked file open in trader.py

@@ -45,10 +45,22 @@ def time_gate_open() -> bool:
     return True
 
 
-def apply_regime(direction: str, regime: str) -> str:
+def apply_regime(direction: str, regime: str, is_momentum: bool = True) -> str:
     """
-    Apply regime logic to a raw RSI signal direction.
-    Always trade in the direction of raw momentum (inversion disabled).
+    Regime-aware direction (REBUILD 2026-06-09).
+
+    Momentum-following signals (SIG) lose because they chase a finished move into a
+    fresh candle that mean-reverts. In a MEAN_REVERSION regime we FADE momentum (flip
+    the direction); in TREND we follow it.
+
+    is_momentum=False (fair-value and reversal signals) is returned unchanged — those
+    already encode their own directional edge and must not be double-flipped.
     """
+    if not is_momentum:
+        return direction
+    if regime == "MEAN_REVERSION":
+        faded = "DOWN" if direction == "UP" else "UP"
+        log.info("[REGIME-FADE] mean-reversion regime — fading momentum %s -> %s", direction, faded)
+        return faded
     return direction
 

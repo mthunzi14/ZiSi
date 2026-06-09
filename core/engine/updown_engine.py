@@ -350,7 +350,10 @@ class UpDownEngine:
             sigma_frac = 0.0040
             log.debug("[ETH-SIGMA] ETH sigma_frac floored to 0.0040")
 
-        # EMA-based drift calculation
+        # ── Momentum/flow DRIFT (REBUILD): give FV a real directional edge ──
+        # The old model was driftless => coin-flip at ATM, exactly the band mentor PBot-6
+        # prints in. We project a fraction of the prevailing momentum (EMA-5 vs EMA-20
+        # slope) over the remaining window, and DAMPEN it in mean-reverting/chop regimes.
         def _ema(prices, period):
             if len(prices) < period:
                 return prices[-1] if prices else 0.0
@@ -363,12 +366,19 @@ class UpDownEngine:
         closes = [float(k[4]) for k in klines]
         ema_5 = _ema(closes, 5)
         ema_20 = _ema(closes, 20)
-        drift = 0.0  # Driftless design: prevents trend-follower baiting near expiry
+        mom = ((ema_5 - ema_20) / ema_20) if ema_20 else 0.0  # signed normalized momentum
 
         regime = get_regime_mode()
+        from core.engine.fair_value import directional_drift, DEFAULT_CONTINUATION
+        _cont = DEFAULT_CONTINUATION
+        if regime in ("MEAN_REVERSION", "MEAN_REVERTING", "COMPRESSION"):
+            _cont *= 0.35  # momentum unlikely to persist in chop — dampen the projected drift
+        drift = directional_drift(mom, sigma_frac=sigma_frac, continuation=_cont)
 
         fp_up = fair_prob_up(spot, s_0, sigma_frac, elapsed_min, total_min, drift=drift)
-        dec = decide_value_entry(fp_up, up_price, dn_price, elapsed_min, total_min, regime=regime, timeframe=self.timeframe)
+        dec = decide_value_entry(fp_up, up_price, dn_price, elapsed_min, total_min,
+                                 regime=regime, timeframe=self.timeframe, pct_move=mom)
+        dec["drift"] = round(drift, 6)
         dec["fp_up"] = round(fp_up, 4)
         dec["sigma_frac"] = round(sigma_frac, 6)
         return dec
@@ -484,7 +494,7 @@ class UpDownEngine:
             all_red = all(float(k[4]) < float(k[1]) for k in closed_klines)
             if all_green or all_red:
                 raw_dir = "DOWN" if all_green else "UP"
-                direction = apply_regime(raw_dir, regime)
+                direction = apply_regime(raw_dir, regime, is_momentum=False)  # reversal — already contrarian
                 if self.invert_signal:
                     direction = "DOWN" if direction == "UP" else "UP"
                 
@@ -547,6 +557,8 @@ class UpDownEngine:
         # If we do, we bypass volume, OFI, and trend gates entirely.
         _fv = {"direction": None}
         is_fv_trade = False
+        _fv_confidence = 0.0          # REBUILD: FV directional confidence (drives ATM guard + sizing)
+        _fv_archetype = "moderate"
         try:
             from config import FAIR_VALUE_MODE
         except Exception:
@@ -693,10 +705,13 @@ class UpDownEngine:
                         _fv_m_up = sum(1 for k in _fv_m8 if float(k[4]) > float(k[1]))
                         _fv_m_dn = 8 - _fv_m_up
                         _fv_is_up = _fv["direction"] == "UP"
+                        # REBUILD: relaxed from near-block (0.25) to a moderate tilt — with the new
+                        # momentum drift FV rarely fights a strong trend, and high-conviction
+                        # counter-trend FV (fading an exhausted run) should still be allowed.
                         if (_fv_m_up >= 6 and not _fv_is_up) or (_fv_m_dn >= 6 and _fv_is_up):
-                            _min_edge = max(_min_edge, 0.25)
+                            _min_edge = _min_edge + 0.08
                         elif (_fv_m_up >= 5 and not _fv_is_up) or (_fv_m_dn >= 5 and _fv_is_up):
-                            _min_edge = max(_min_edge, 0.18)
+                            _min_edge = _min_edge + 0.04
 
                     if _fv["edge"] >= _min_edge:
                         # Peer corroboration size calculation
@@ -720,7 +735,7 @@ class UpDownEngine:
 
                         # We have a valid Fair Value trade signal! Set direction and score.
                         raw_dir = _fv["direction"]
-                        direction = apply_regime(raw_dir, regime)
+                        direction = apply_regime(raw_dir, regime, is_momentum=False)  # FV carries its own directional edge
                         if self.invert_signal:
                             direction = "DOWN" if direction == "UP" else "UP"
                         
@@ -744,6 +759,8 @@ class UpDownEngine:
                         # Set entry source and bypass momentum cascade
                         entry_source = "FAIR_VAL"
                         is_fv_trade = True
+                        _fv_confidence = float(_fv.get("confidence", 0.0))
+                        _fv_archetype = _fv.get("archetype", "moderate")
 
         if not is_fv_trade:
             # Volume gate
@@ -835,7 +852,7 @@ class UpDownEngine:
                 # Reversal-snipe gets priority in non-FV
                 entry_source = "REVERSAL_SNIPE"  # distinct label so confluence veto is bypassed
                 _corroboration_multiplier = 1.0
-                direction = apply_regime(raw_dir, regime)
+                direction = apply_regime(raw_dir, regime, is_momentum=False)  # reversal — already contrarian
                 if self.invert_signal:
                     direction = "DOWN" if direction == "UP" else "UP"
             else:
@@ -864,7 +881,7 @@ class UpDownEngine:
                     _slope = (closes[-1] - closes[-5]) / _c0
                     _TREND_GATE = 0.004
                     _ranging = abs(_slope) < _TREND_GATE
-                    if not _ranging:
+                    if not _ranging and regime != "MEAN_REVERSION":  # REBUILD: trend-confirm only in TREND (fade is intentional in MR)
                         _trend_dn = _slope < 0
                         _signal_dn = direction == "DOWN"
                         if _trend_dn != _signal_dn:
@@ -1151,6 +1168,8 @@ class UpDownEngine:
             "edge_context": edge_ctx,
             "entry_source": entry_source,
             "corroboration_multiplier": _corroboration_multiplier,
+            "fv_confidence": _fv_confidence,
+            "fv_archetype": _fv_archetype,
             "whale_aligned": _whale_aligned,
             "confluence_score": _confluence_score,
         }
@@ -1474,8 +1493,8 @@ class UpDownEngine:
 
     # ── Sizing ────────────────────────────────────────────────────────────────
 
-    def compute_size(self, score: float, price: float, balance: float) -> float:
-        """Return USD amount to bet based on AI confidence (Dynamic Kelly) scaled by regime volatility and price bands."""
+    def compute_size(self, score: float, price: float, balance: float, confidence: float = None) -> float:
+        """Return USD amount to bet, sized by directional CONFIDENCE (Dynamic Kelly) scaled by regime and asset weight."""
         # ── Edge Architecture Adaptive Kelly Sizer (Advancement D) ──
         if getattr(self, "last_edge_context", None):
             try:
@@ -1493,12 +1512,23 @@ class UpDownEngine:
                 }
                 
                 ctx = self.last_edge_context
-                # Deep contrarian (<40¢) uses 30% bankroll — Bonereaper sizes these at 13-50%.
-                # Standard entries stay at 15% to maintain discipline on ATM/NCS.
-                _is_deep_contrarian = price < 0.40
-                _bk_frac = 0.30 if _is_deep_contrarian else 0.15
-                unified_max_cap = max(5.00, min(50.00 if _is_deep_contrarian else 20.00,
-                                                5.00 + (score - 0.50) * 60.0))
+                # ── Confidence-tiered sizing (REBUILD): size by CONVICTION, not by price ──
+                # Mentors bet big on a strong read regardless of entry price (PBot-6 $194@54c,
+                # Rith $2,295@46c). confidence = FV directional confidence; falls back to score.
+                conf = confidence if confidence is not None else score
+                if conf >= 0.80:
+                    _bk_frac = 0.25
+                elif conf >= 0.70:
+                    _bk_frac = 0.18
+                elif conf >= 0.62:
+                    _bk_frac = 0.10
+                else:
+                    _bk_frac = 0.05
+                # Cheap longshots (<35c) hit ~40% — cap unless conviction is high (Rith only
+                # sizes these big with a strong read); otherwise keep them small.
+                if price < 0.35 and conf < 0.75:
+                    _bk_frac = min(_bk_frac, 0.05)
+                unified_max_cap = max(5.00, min(40.00, 5.00 + (conf - 0.50) * 80.0))
                 usd_size = sizer.calculate_adaptive(
                     signal=sig_dict,
                     market=mkt_dict,
@@ -1528,21 +1558,15 @@ class UpDownEngine:
                 # Price-Scaled Risk Sizer calibration to bypass 70¢ trap and extreme pricing risk
                 price_scalar = 1.0
                 if price > 0.65 and price <= 0.78:
-                    price_scalar = 0.40  # 60% reduction
-                    log.info("[SIZE] Price %.4f in 70¢ trap -> applying 60%% scaling (x0.40) in adaptive Kelly", price)
+                    price_scalar = 0.70  # REBUILD: softened 0.40->0.70 (confidence gate handles the 70c trap)
+                    log.info("[SIZE] Price %.4f in 70c zone -> x0.70 scaling", price)
                 elif price > 0.78:
-                    price_scalar = 0.25  # 75% reduction
-                    log.info("[SIZE] Price %.4f extremely expensive -> applying 75%% scaling (x0.25) in adaptive Kelly", price)
+                    price_scalar = 0.50  # REBUILD: softened 0.25->0.50 — mentors size near-certainty up
+                    log.info("[SIZE] Price %.4f expensive -> x0.50 scaling", price)
                 usd_size *= price_scalar
 
-                # Range-based multiplier for 50-65¢ (only when price_scalar=1.0, i.e. price<65¢)
-                # Deep contrarian (<40¢): full size — highest EV, sized proportionally above
-                # 40-50¢: full size — genuine FV edge in fringe zones
-                # 50-65¢: 65% size — ATM core blocked upstream, 50-58¢ fringe only
-                if price_scalar == 1.0:
-                    if price >= 0.50:
-                        usd_size *= 0.65
-                        log.info("[SIZE-RANGE] 50-65c entry → 65%% size: $%.2f", usd_size)
+                # REBUILD: removed the blanket 50-65c x0.65 haircut — confidence-tiered _bk_frac
+                # above already sizes ATM by conviction (mentors bet ATM big on a strong read).
 
                 # Consecutive Loss Streak Brake
                 consecutive_losses = self._recent_closed_loss_streak()
@@ -1553,9 +1577,14 @@ class UpDownEngine:
                         self.asset, self.timeframe, consecutive_losses,
                     )
 
+                # REBUILD: BTC > ETH asset weighting — user wants BTC as the heaviest asset
+                # (mentors put the biggest dollar size on BTC).
+                _asset_w = {"BTC": 1.0, "ETH": 0.85, "SOL": 0.70, "XRP": 0.65, "DOGE": 0.55}.get(self.asset, 0.70)
+                usd_size *= _asset_w
+
                 shares = round(usd_size / price) if price > 0 else 0
                 actual_cost = shares * price
-                log.info("[SIZE] Adaptive Kelly calculated actual cost: $%.2f (shares=%d)", actual_cost, shares)
+                log.info("[SIZE] Adaptive Kelly cost $%.2f (shares=%d, conf=%.2f, asset_w=%.2f)", actual_cost, shares, conf, _asset_w)
                 return actual_cost
             except Exception as e:
                 log.warning("[SIZE] Failed to compute adaptive Kelly size, falling back: %s", e)

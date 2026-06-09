@@ -9,11 +9,14 @@ class TestRegimeFilter(unittest.TestCase):
         self.assertTrue(time_gate_open())
 
     def test_apply_regime(self):
-        # Always trade in the direction of raw momentum (inversion disabled in apply_regime)
+        # REBUILD: momentum is FADED in MEAN_REVERSION, FOLLOWED in TREND.
         self.assertEqual(apply_regime("UP", "TREND"), "UP")
         self.assertEqual(apply_regime("DOWN", "TREND"), "DOWN")
-        self.assertEqual(apply_regime("UP", "MEAN_REVERSION"), "UP")
-        self.assertEqual(apply_regime("DOWN", "MEAN_REVERSION"), "DOWN")
+        self.assertEqual(apply_regime("UP", "MEAN_REVERSION"), "DOWN")
+        self.assertEqual(apply_regime("DOWN", "MEAN_REVERSION"), "UP")
+        # Fair-value / reversal signals (is_momentum=False) are never flipped:
+        self.assertEqual(apply_regime("UP", "MEAN_REVERSION", is_momentum=False), "UP")
+        self.assertEqual(apply_regime("DOWN", "TREND", is_momentum=False), "DOWN")
 
     @patch("os.path.exists")
     @patch("builtins.open", new_callable=mock_open)

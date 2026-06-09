@@ -225,6 +225,7 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         
         # Mock decide_signal to return a valid SIG signal (direction "UP")
         with patch("config.FAIR_VALUE_MODE", False), \
+             patch("core.engine.regime_filter.get_regime_mode", return_value="TREND"), \
              patch("core.engine.signal_core.decide_signal", return_value={"direction": "UP", "score": 0.85, "is_reversal": False, "blocked": False}), \
              patch("core.engine.updown_engine.UpDownEngine._fetch_market") as mock_mkt:
             
@@ -373,11 +374,13 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(allowed2, "SIG entry at 48c (above dead zone) should be allowed")
 
-        # Signal: FAIR_VAL at 43c with low score (0.80) should be blocked by FV coin-flip gate (42-58c fringe zone)
+        # REBUILD: FAIR_VAL at 43c with LOW confidence (0.50 < 0.58) is blocked by the ATM
+        # confidence guard (the old fixed coin-flip score gate was replaced by an edge-score guard).
         signal_atm_fv_low = {
             "direction": "UP",
             "score": 0.80,
             "entry_source": "FAIR_VAL",
+            "fv_confidence": 0.50,
             "market": {"up_price": 0.43, "dn_price": 0.57},
             "whale_aligned": False,
             "confluence_score": 0,
@@ -388,13 +391,14 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         allowed3, details3 = await _validate_trade_slot(
             context3, engine, "BTC", "5m", 5, signal_atm_fv_low, current_balance=200.0
         )
-        self.assertFalse(allowed3, "FAIR_VAL at 43c with score=0.80 should be blocked by coin-flip gate")
+        self.assertFalse(allowed3, "FAIR_VAL at 43c with confidence=0.50 should be blocked by the ATM confidence guard")
 
-        # Signal: FAIR_VAL at 43c with high score (0.92) should be allowed — high confidence bypasses gate
+        # REBUILD: FAIR_VAL at 43c with confidence 0.70 (>= 0.58) is allowed — genuine directional edge.
         signal_atm_fv_high = {
             "direction": "UP",
             "score": 0.92,
             "entry_source": "FAIR_VAL",
+            "fv_confidence": 0.70,
             "market": {"up_price": 0.43, "dn_price": 0.57},
             "whale_aligned": False,
             "confluence_score": 0,
@@ -405,7 +409,7 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         allowed3b, details3b = await _validate_trade_slot(
             context3b, engine, "BTC", "5m", 5, signal_atm_fv_high, current_balance=200.0
         )
-        self.assertTrue(allowed3b, "FAIR_VAL at 43c with score=0.92 should be allowed")
+        self.assertTrue(allowed3b, "FAIR_VAL at 43c with confidence=0.70 should be allowed")
 
     @patch("infrastructure.exchange.trader.place_order")
     @patch("infrastructure.state.state_manager.get_open_positions", return_value=[])
@@ -442,12 +446,13 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
             except asyncio.CancelledError:
                 pass
 
-        # Mode 1 sizing with balance=100: certainty=(0.98-0.95)/0.04=0.75
-        # base=max(100*0.06,2.50)=6.0, max_add=min(100*0.15,10.0)=10.0
-        # amount=round(6.0+0.75*10.0,2)=13.5
+        # REBUILD NCS sizing: snipe @ 98c -> profit_per_share=0.01, target $1.00 ->
+        # (1.00/0.01)*0.98 = $98, capped to min($98, tail_cap $20, 45% of $100 = $45) = $20.
         _bal = 100.0
-        _cert = (0.98 - 0.95) / 0.04
-        _expected = min(round(max(_bal * 0.06, 2.50) + _cert * min(_bal * 0.15, 10.0), 2), 12.50)
+        _snipe = 0.98
+        _pps = 0.99 - _snipe
+        _amount = (1.00 / _pps) * _snipe if _pps > 0.005 else 20.0
+        _expected = round(max(2.50, min(_amount, 20.0, _bal * 0.45)), 2)
         mock_place_order.assert_called_once_with(
             event_id="test_event_yes",
             market_id="up_token_123",
