@@ -461,11 +461,22 @@ class UpDownEngine:
         if not market:
             return None
 
+        # TTL gate: block any non-NCS entry with < 90s to candle expiry.
+        # Entering at T-36s or T-72s means the market has nearly resolved — tiny win potential,
+        # full loss exposure. NCS is exempt (it intentionally targets T-8s to T-45s).
+        import sys, os as _os_t
+        is_testing = _os_t.environ.get("ZISI_TESTING") == "True" or any("unittest" in a or "pytest" in a for a in sys.argv)
+        if not is_testing:
+            import time as _time_ttl
+            _ttl_s = market.get("expiry_ts", 0) - _time_ttl.time()
+            if _ttl_s < 90:
+                log.info("[TTL-GATE] %s/%s: %.0fs to expiry — too late to enter (need 90s+), skip",
+                         self.asset, self.timeframe, _ttl_s)
+                return None
+
         # Verify that the fetched market's start timestamp matches the current candle start timestamp
         # Prevents timeframe mismatch where we place trades on upcoming or previous candles
         # based on the current candle's indicators.
-        import sys, os as _os_t
-        is_testing = _os_t.environ.get("ZISI_TESTING") == "True" or any("unittest" in a or "pytest" in a for a in sys.argv)
 
         duration_min = market.get("duration_min")
         if duration_min is None:

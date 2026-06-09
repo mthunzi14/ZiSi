@@ -917,12 +917,18 @@ async def _place_corr_trades(
         if entry_price < 0.40 or entry_price > 0.95:
             log.info("[CORR] %s/%s: price %.0fc out of bounds (min 40c) — skip shadow", corr_asset, timeframe, entry_price * 100)
             continue
-        order = _place_trade(corr_asset, timeframe, direction, market, bet_usd, entry_price, lead_score, "CORR")
+        # Log CORR with the lead's trade type so analysis correctly attributes source
+        _lead_type_map = {
+            "FAIR_VAL": "FAIR-VAL", "SIG": "SIGNAL", "SIGNAL": "SIGNAL",
+            "REVERSAL_STREAK": "REVERSAL_STREAK", "LATENCY_ARB": "LATENCY-ARB",
+        }
+        _corr_trade_type = _lead_type_map.get(lead_source, lead_source)
+        order = _place_trade(corr_asset, timeframe, direction, market, bet_usd, entry_price, lead_score, _corr_trade_type)
         if order:
             log.info(
-                "[CORR] %s/%s %s | $%.2f @ %.0fc | shadow of %s/%s [%s]",
+                "[CORR] %s/%s %s | $%.2f @ %.0fc | shadow of %s/%s [%s] → logged as %s",
                 corr_asset, timeframe, direction, bet_usd, entry_price * 100,
-                lead_asset, timeframe, lead_source,
+                lead_asset, timeframe, lead_source, _corr_trade_type,
             )
             await commit_trade_slot(corr_asset, timeframe, 0.75, interval_minutes, is_dual=False, direction=direction)
 
