@@ -540,21 +540,6 @@ class UpDownEngine:
                     log.warning("[EDGE] Failed to query EdgeOrchestrator in 1h streak reversal: %s", e)
                     self.last_edge_context = None
 
-                # Tier 1: REV-STREAK whale veto — don't bet against strong whale momentum.
-                # Whale pressure > 0.5 in the opposite direction means smart money is aligned
-                # with the streak; fading it into a whale wall has bad expected value.
-                _rev_whale = edge_ctx.get("whale_pressure", 0.0)
-                if abs(_rev_whale) > 0.5:
-                    _whale_bullish = _rev_whale > 0
-                    _rev_is_up = direction == "UP"
-                    if _whale_bullish != _rev_is_up:
-                        log.info(
-                            "[WHALE-VETO] %s/1h REV-STREAK: whale=%.2f (%s) contradicts %s — skip",
-                            self.asset, _rev_whale,
-                            "bullish" if _whale_bullish else "bearish", direction,
-                        )
-                        return None
-
                 return {
                     "asset":        self.asset,
                     "timeframe":    self.timeframe,
@@ -1190,17 +1175,8 @@ class UpDownEngine:
             log.warning("[EDGE] Failed to query EdgeOrchestrator in generate_signal: %s", e)
             self.last_edge_context = None
 
-        # Whale-Veto: block when whale pressure strongly contradicts trade direction
-        # e.g. 11 whales buying (pressure=0.81) but we're entering DOWN → bad trade
-        _whale_pressure = edge_ctx.get("whale_pressure", 0.0) if edge_ctx else 0.0
-        if _whale_pressure > 0.90 and direction == "DOWN":  # was 0.70 — too aggressive
-            log.warning("[WHALE-VETO] %s/%s: extreme bullish whale pressure %.2f contradicts DOWN — skip",
-                        self.asset, self.timeframe, _whale_pressure)
-            return None
-        elif _whale_pressure < -0.90 and direction == "UP":  # was -0.70
-            log.warning("[WHALE-VETO] %s/%s: extreme bearish whale pressure %.2f contradicts UP — skip",
-                        self.asset, self.timeframe, abs(_whale_pressure))
-            return None
+        # Whale-Veto: REMOVED — directional accuracy > protective layers.
+        # Corroboration amplifies wins and losses equally; fix the signal, not the gate.
 
         # Confluence-Veto Gate: REMOVED to emulate Friday June 5th state
         # if entry_source != "FAIR_VAL" and not is_dual_eligible and edge_ctx and edge_ctx.get("confluence_score", 2) == 0:
