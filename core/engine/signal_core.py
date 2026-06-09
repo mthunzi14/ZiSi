@@ -189,23 +189,15 @@ def decide_signal(
     )
 
     if up_trigger:
-        # Overextension block for trend-following in MEAN_REVERTING regime
-        if (regime or "").upper() == "MEAN_REVERTING" and rsi > 60.0:
-            import logging
-            logging.getLogger("zisi.signal_core").info(
-                "[OVEREXTENDED-GATE] Blocking MEAN_REVERTING UP trade: RSI %.2f > 60.0", rsi
-            )
-            res["blocked"] = True
-            return res
+        # Overextension block REMOVED — was blocking RSI 60-80 UP signals in MEAN_REVERTING
+        # if (regime or "").upper() == "MEAN_REVERTING" and rsi > 60.0:
+        #     res["blocked"] = True
+        #     return res
 
-        # Mandatory micro-OFI direction gate for 5m to filter out false breakouts
-        if timeframe == "5m" and ofi <= 0.0:
-            import logging
-            logging.getLogger("zisi.signal_core").info(
-                "[OFI-GATE] Blocking 5m UP entry due to non-positive order book micro-OFI (OFI: %.4f <= 0.0)", ofi
-            )
-            res["blocked"] = True
-            return res
+        # Mandatory micro-OFI 5m UP gate REMOVED — was blocking 50%+ of 5m UP signals
+        # if timeframe == "5m" and ofi <= 0.0:
+        #     res["blocked"] = True
+        #     return res
 
         if ofi < -_block_magnitude(rsi, timeframe, p):
             res["blocked"] = True
@@ -216,23 +208,15 @@ def decide_signal(
         return res
 
     if dn_trigger:
-        # Overextension block for trend-following in MEAN_REVERTING regime
-        if (regime or "").upper() == "MEAN_REVERTING" and rsi < 40.0:
-            import logging
-            logging.getLogger("zisi.signal_core").info(
-                "[OVEREXTENDED-GATE] Blocking MEAN_REVERTING DOWN trade: RSI %.2f < 40.0", rsi
-            )
-            res["blocked"] = True
-            return res
+        # Overextension block REMOVED — was blocking RSI 20-40 DOWN signals in MEAN_REVERTING
+        # if (regime or "").upper() == "MEAN_REVERTING" and rsi < 40.0:
+        #     res["blocked"] = True
+        #     return res
 
-        # Mandatory micro-OFI direction gate for 5m to filter out false breakouts
-        if timeframe == "5m" and ofi >= 0.0:
-            import logging
-            logging.getLogger("zisi.signal_core").info(
-                "[OFI-GATE] Blocking 5m DOWN entry due to non-negative order book micro-OFI (OFI: %.4f >= 0.0)", ofi
-            )
-            res["blocked"] = True
-            return res
+        # Mandatory micro-OFI 5m DOWN gate REMOVED — was blocking 50%+ of 5m DOWN signals
+        # if timeframe == "5m" and ofi >= 0.0:
+        #     res["blocked"] = True
+        #     return res
 
         if ofi > _block_magnitude(rsi, timeframe, p):
             res["blocked"] = True

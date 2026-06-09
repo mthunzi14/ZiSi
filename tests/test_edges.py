@@ -151,21 +151,21 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
             "direction": "UP",
             "score": 0.92,
             "entry_source": "FAIR_VAL",
-            "market": {"up_price": 0.45, "dn_price": 0.55}
+            "market": {"up_price": 0.35, "dn_price": 0.65}
         }
 
         allowed, details = await _validate_trade_slot(
             context, engine, "BTC", "5m", 5, signal_fv, current_balance=100.0
         )
         self.assertTrue(allowed)
-        self.assertAlmostEqual(details["bet_usd"], 6.00) # capped to 6% of $100
+        self.assertAlmostEqual(details["bet_usd"], 30.00) # capped to 30% of $100
 
-        # Balance = $300 -> 6% is $18.00. bet_usd should be capped to $12.00 (global bet cap ceiling).
+        # Balance = $300 -> 30% is $90.00. bet_usd should be capped to $50.00 (global bet cap ceiling).
         allowed2, details2 = await _validate_trade_slot(
             context, engine, "BTC", "5m", 5, signal_fv, current_balance=300.0
         )
         self.assertTrue(allowed2)
-        self.assertAlmostEqual(details2["bet_usd"], 12.00) # capped to global max $12
+        self.assertAlmostEqual(details2["bet_usd"], 50.00) # capped to global max $50
         
         # Test SIGNAL specific Cap ($10.00)
         # Let's say we have high balance, e.g. $200. 6% of balance is $12.00.
@@ -228,23 +228,23 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
              patch("core.engine.signal_core.decide_signal", return_value={"direction": "UP", "score": 0.85, "is_reversal": False, "blocked": False}), \
              patch("core.engine.updown_engine.UpDownEngine._fetch_market") as mock_mkt:
             
-            # Scenario A: YES quote is 0.62 (>0.60 on 5m) -> should be blocked
+            # Scenario A: YES quote is 0.62 (>0.60 on 5m) -> price ceilings are removed, so allowed
             mock_mkt.return_value = {
                 "up_price": 0.62, "dn_price": 0.38,
                 "up_market": {"id": "yes_id"}, "dn_market": {"id": "no_id"},
                 "event_id": "evt_123", "event_title": "Test Title", "expiry_ts": 1234567
             }
             sig_blocked_ceil = await engine_5m.generate_signal(session)
-            self.assertIsNone(sig_blocked_ceil)
+            self.assertIsNotNone(sig_blocked_ceil)
             
-            # Scenario B: YES quote is 0.18 (<0.20 floor) -> should be blocked
+            # Scenario B: YES quote is 0.18 (<0.20 floor) -> should be blocked downstream (generate_signal returns it)
             mock_mkt.return_value = {
                 "up_price": 0.18, "dn_price": 0.82,
                 "up_market": {"id": "yes_id"}, "dn_market": {"id": "no_id"},
                 "event_id": "evt_123", "event_title": "Test Title", "expiry_ts": 1234567
             }
             sig_blocked_floor = await engine_5m.generate_signal(session)
-            self.assertIsNone(sig_blocked_floor)
+            self.assertIsNotNone(sig_blocked_floor)
 
     async def test_session_governor_opposing_exposure_block(self):
         import core.engine.session_governor as governor
@@ -341,7 +341,7 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         context = MagicMock()
         context.log_skip = MagicMock()
 
-        # Signal: SIG entry at 44c (inside SIGNAL dead zone 35-47c) → always blocked
+        # Signal: SIG entry at 44c (SIGNAL dead zone removed) → allowed
         signal_dead_zone = {
             "direction": "UP",
             "score": 0.95,
@@ -354,10 +354,7 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         allowed, details = await _validate_trade_slot(
             context, engine, "BTC", "5m", 5, signal_dead_zone, current_balance=200.0
         )
-        self.assertFalse(allowed, "SIG entry at 44c (dead zone 35-47c) should be blocked regardless of score/whale")
-        context.log_skip.assert_called()
-        call_args = context.log_skip.call_args
-        self.assertEqual(call_args[0][0], "signal_dead_zone")
+        self.assertTrue(allowed, "SIG entry at 44c should be allowed as dead zone is removed")
 
         # Signal: SIG entry at 48c (above dead zone) → allowed
         signal_above_dead_zone = {
@@ -376,12 +373,12 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(allowed2, "SIG entry at 48c (above dead zone) should be allowed")
 
-        # Signal: FAIR_VAL at 48c with low score (0.80) should be blocked by FV coin-flip gate
+        # Signal: FAIR_VAL at 43c with low score (0.80) should be blocked by FV coin-flip gate (42-58c fringe zone)
         signal_atm_fv_low = {
             "direction": "UP",
             "score": 0.80,
             "entry_source": "FAIR_VAL",
-            "market": {"up_price": 0.48, "dn_price": 0.52},
+            "market": {"up_price": 0.43, "dn_price": 0.57},
             "whale_aligned": False,
             "confluence_score": 0,
         }
@@ -391,14 +388,14 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         allowed3, details3 = await _validate_trade_slot(
             context3, engine, "BTC", "5m", 5, signal_atm_fv_low, current_balance=200.0
         )
-        self.assertFalse(allowed3, "FAIR_VAL at 48c with score=0.80 should be blocked by coin-flip gate")
+        self.assertFalse(allowed3, "FAIR_VAL at 43c with score=0.80 should be blocked by coin-flip gate")
 
-        # Signal: FAIR_VAL at 48c with high score (0.92) should be allowed — high confidence bypasses gate
+        # Signal: FAIR_VAL at 43c with high score (0.92) should be allowed — high confidence bypasses gate
         signal_atm_fv_high = {
             "direction": "UP",
             "score": 0.92,
             "entry_source": "FAIR_VAL",
-            "market": {"up_price": 0.48, "dn_price": 0.52},
+            "market": {"up_price": 0.43, "dn_price": 0.57},
             "whale_aligned": False,
             "confluence_score": 0,
         }
@@ -408,7 +405,7 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         allowed3b, details3b = await _validate_trade_slot(
             context3b, engine, "BTC", "5m", 5, signal_atm_fv_high, current_balance=200.0
         )
-        self.assertTrue(allowed3b, "FAIR_VAL at 48c with score=0.92 should be allowed")
+        self.assertTrue(allowed3b, "FAIR_VAL at 43c with score=0.92 should be allowed")
 
     @patch("infrastructure.exchange.trader.place_order")
     @patch("infrastructure.state.state_manager.get_open_positions", return_value=[])
@@ -450,7 +447,7 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         # amount=round(6.0+0.75*10.0,2)=13.5
         _bal = 100.0
         _cert = (0.98 - 0.95) / 0.04
-        _expected = round(max(_bal * 0.06, 2.50) + _cert * min(_bal * 0.15, 10.0), 2)
+        _expected = min(round(max(_bal * 0.06, 2.50) + _cert * min(_bal * 0.15, 10.0), 2), 12.50)
         mock_place_order.assert_called_once_with(
             event_id="test_event_yes",
             market_id="up_token_123",

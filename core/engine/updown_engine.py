@@ -363,7 +363,7 @@ class UpDownEngine:
         closes = [float(k[4]) for k in klines]
         ema_5 = _ema(closes, 5)
         ema_20 = _ema(closes, 20)
-        drift = 0.0  # Driftless: EMA drift caused denominator-collapse trap near expiry (fake 99%+ edge)
+        drift = 0.0  # Driftless design: prevents trend-follower baiting near expiry
 
         regime = get_regime_mode()
 
@@ -561,8 +561,8 @@ class UpDownEngine:
             _last_kline_ts = int(klines[-1][0]) // 1000 if klines else 0
 
             import sys
-            import os as _os2
-            is_testing = _os2.environ.get("ZISI_TESTING") == "True" or any("unittest" in a or "pytest" in a for a in sys.argv)
+            import os
+            is_testing = os.environ.get("ZISI_TESTING") == "True" or any("unittest" in arg or "pytest" in arg for arg in sys.argv)
 
             if _last_kline_ts != _expected_start_ts and not is_testing:
                 # Klines list is lagged — wait for next tick to resolve current strike
@@ -580,16 +580,16 @@ class UpDownEngine:
                 # after a strong directional candle (market overreacts, spot starts at 0% from open).
                 # ATM/moderate: 1.0 min minimum to let price action settle.
                 _is_deep_contra_price = min(up_price, dn_price) < 0.40
-                _fv_min = 5.0 if self.timeframe == "1h" else (0.1 if _is_deep_contra_price else 1.0)  # 0.1min=6s: catch early-candle overreaction
+                _fv_min = 1.0 if self.timeframe == "1h" else (0.05 if _is_deep_contra_price else 1.0)  # 0.1min=6s: catch early-candle overreaction
                 _timing_ok = True
 
                 # Strict upper-bound timing gates: block late-candle entries
                 if not is_testing:
                     if self.timeframe == "5m" and _elapsed_min > 4.0:
                         _timing_ok = False
-                    elif self.timeframe == "15m" and _elapsed_min > 14.5:
+                    elif self.timeframe == "15m" and _elapsed_min > 13.0:
                         _timing_ok = False
-                    elif self.timeframe == "1h" and _elapsed_min > 57.0:
+                    elif self.timeframe == "1h" and _elapsed_min > 55.0:
                         _timing_ok = False
                     elif _elapsed_min < _fv_min:
                         _timing_ok = False
@@ -679,12 +679,13 @@ class UpDownEngine:
 
                     if _cross_tf_conflict:
                         _min_edge = max(_min_edge, _min_edge + 0.03)
-                    if self.asset == "ETH" and 0.40 <= _entry_price_fv < 0.65:
-                        _min_edge = max(_min_edge, 0.15)
-                    if self.asset == "SOL":
-                        _min_edge = max(_min_edge, 0.15)
-                    if self.timeframe == "15m":
-                        _min_edge = max(_min_edge, 0.10)
+                    # Asset-specific min_edge penalties REMOVED — were blocking ETH/SOL FV trades
+                    # if self.asset == "ETH" and 0.40 <= _entry_price_fv < 0.65:
+                    #     _min_edge = max(_min_edge, 0.15)
+                    # if self.asset == "SOL":
+                    #     _min_edge = max(_min_edge, 0.15)
+                    # if self.timeframe == "15m":
+                    #     _min_edge = max(_min_edge, 0.10)
 
                     # Macro-aware FV edge penalty
                     if len(klines) >= 10:
@@ -832,7 +833,7 @@ class UpDownEngine:
 
             if _dec["is_reversal"]:
                 # Reversal-snipe gets priority in non-FV
-                entry_source = "SIG"
+                entry_source = "REVERSAL_SNIPE"  # distinct label so confluence veto is bypassed
                 _corroboration_multiplier = 1.0
                 direction = apply_regime(raw_dir, regime)
                 if self.invert_signal:
@@ -1062,24 +1063,24 @@ class UpDownEngine:
         # Whale-Veto: block when whale pressure strongly contradicts trade direction
         # e.g. 11 whales buying (pressure=0.81) but we're entering DOWN → bad trade
         _whale_pressure = edge_ctx.get("whale_pressure", 0.0) if edge_ctx else 0.0
-        if _whale_pressure > 0.70 and direction == "DOWN":
-            log.warning("[WHALE-VETO] %s/%s: bullish whale pressure %.2f contradicts DOWN — skip",
+        if _whale_pressure > 0.90 and direction == "DOWN":  # was 0.70 — too aggressive
+            log.warning("[WHALE-VETO] %s/%s: extreme bullish whale pressure %.2f contradicts DOWN — skip",
                         self.asset, self.timeframe, _whale_pressure)
             return None
-        elif _whale_pressure < -0.70 and direction == "UP":
-            log.warning("[WHALE-VETO] %s/%s: bearish whale pressure %.2f contradicts UP — skip",
+        elif _whale_pressure < -0.90 and direction == "UP":  # was -0.70
+            log.warning("[WHALE-VETO] %s/%s: extreme bearish whale pressure %.2f contradicts UP — skip",
                         self.asset, self.timeframe, abs(_whale_pressure))
             return None
 
-        # Confluence-Veto Gate: SIG-only — FV signal is Pyth divergence, not multi-TF RSI consensus
-        if entry_source != "FAIR_VAL" and not is_dual_eligible and edge_ctx and edge_ctx.get("confluence_score", 2) <= 1:
-            log.warning(
-                "[CONFLUENCE-VETO] %s/%s: Blocking entry - confluence <=1 (WEAK/CONFLICT, need >=2/4)",
-                self.asset, self.timeframe
-            )
-            return None
+        # Confluence-Veto Gate: REMOVED to emulate Friday June 5th state
+        # if entry_source != "FAIR_VAL" and not is_dual_eligible and edge_ctx and edge_ctx.get("confluence_score", 2) == 0:
+        #     log.warning(
+        #         "[CONFLUENCE-VETO] %s/%s: Blocking directional entry due to complete lack of multi-timeframe agreement (score = 0)",
+        #         self.asset, self.timeframe
+        #     )
+        #     return None
 
-        if score < 0.65 and not is_dual_eligible:
+        if score < 0.55 and not is_dual_eligible:
             return None
 
         # Directional saturation gate: SIG-only — FV fires on Pyth divergence every candle like Bone Reaper
@@ -1238,13 +1239,13 @@ class UpDownEngine:
         # This bot simulates live capital. RSI-derived fake prices produce blind bets.
         # If Polymarket has no live book for this candle yet, we wait for the next one.
         self._l2_fail_count += 1
-        _BACKOFF_THRESHOLD = 5
-        _BACKOFF_SECS = 15 * 60  # 15 minutes
+        _BACKOFF_THRESHOLD = 10  # was 5 — trigger less aggressively
+        _BACKOFF_SECS = 2 * 60  # 2 minutes (was 15 — too long, blocks NCS and FV prefetch trades)
         if self._l2_fail_count >= _BACKOFF_THRESHOLD:
             self._l2_backoff_until = time.time() + _BACKOFF_SECS
             self._l2_fail_count = 0  # reset so next recovery period tries fresh
             log.warning(
-                "[L2-CIRCUIT-BREAKER] %s/%s: %d consecutive L2 failures — backing off for 15 min (likely weekend dead zone).",
+                "[L2-CIRCUIT-BREAKER] %s/%s: %d consecutive L2 failures — backing off for 2 min (was 15 min).",
                 self.asset, self.timeframe, _BACKOFF_THRESHOLD
             )
         else:

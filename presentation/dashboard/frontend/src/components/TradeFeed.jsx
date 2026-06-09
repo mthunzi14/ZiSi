@@ -876,7 +876,13 @@ function OpenRow({ p }) {
         color: unrPnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)',
       }}>{unrPnl >= 0 ? '+' : ''}${unrPnl.toFixed(2)}</span>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtHoldMins(holdMin)}</span>
-      {expiry > 0 ? <CountdownTimer expiry_ts={expiry} /> : <span style={{ color: 'var(--color-text-muted)' }}>—</span>}
+      {p.status === 'RESOLVING' ? (
+        <span style={{ color: 'var(--color-accent)', fontWeight: 700, animation: 'pulse 1.5s infinite' }}>Resolving...</span>
+      ) : expiry > 0 ? (
+        <CountdownTimer expiry_ts={expiry} />
+      ) : (
+        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+      )}
     </div>
   );
 }

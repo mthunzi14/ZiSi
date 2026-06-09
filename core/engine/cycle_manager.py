@@ -866,8 +866,8 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
 
             from infrastructure.state.state_manager import get_current_balance
             balance = get_current_balance()
-            # Dynamic fractional size with a $0.50 floor to prevent disabling on small accounts
-            usd_size = max(1.50, min(balance * 0.05, 25.0)) * _snipe_size_mult  # $1.50 floor; 5% bankroll; 25 cap
+            # Dynamic fractional size with a $1.50 floor to prevent silents rejections
+            usd_size = max(1.50, min(balance * 0.005, 5.0)) * _snipe_size_mult  # $1.50 floor clears Polymarket $1 CLOB minimum
 
             market_id = market["dn_market"]["id"] if snipe_direction == "DOWN" else market["up_market"]["id"]
 
@@ -1134,14 +1134,14 @@ async def start_close_sniper(session, engines):
 
                     if snipe_mode == "CLOSE-SNIPE":
                         # Mode 1: balance-proportional terminal sizing
-                        base = max(current_balance * 0.10, 2.50)
-                        max_add = min(current_balance * 0.20, 12.50)
+                        base = max(current_balance * 0.06, 2.50)
+                        max_add = min(current_balance * 0.15, 10.0)
                         certainty = max(0.0, min(1.0, (snipe_price - 0.95) / 0.04))
                         amount_dollars = round(base + certainty * max_add, 2)
                         # Tail-risk cap: at ep > 0.90 wrong resolution costs ~89c/$
                         # Cap at $2.00 to prevent one reversal from wiping all prior wins
                         if snipe_price > 0.90:
-                            _ncs_tail_cap = float(os.getenv("NCS_TAIL_CAP", "12.50"))  # Raised: $2 cap made wins too small vs losses
+                            _ncs_tail_cap = float(os.getenv("NCS_TAIL_CAP", "12.50"))
                             if amount_dollars > _ncs_tail_cap:
                                 log.info("[NCS-TAIL-CAP] CLOSE-SNIPE %.0fc: size $%.2f -> $%.2f (tail-risk cap ep>90c)",
                                          snipe_price * 100, amount_dollars, _ncs_tail_cap)
