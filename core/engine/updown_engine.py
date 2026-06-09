@@ -647,27 +647,11 @@ class UpDownEngine:
                     if not _fv_spot_align:
                         _fv = {'direction': None, 'edge': 0.0, 'archetype': None}
 
-                # FV Archetype Gate — blocks moderate FV entries in non-RANGE/non-night regimes.
-                # RANGE is the only safe regime for moderate entries — price oscillates in a band.
-                # MEAN_REVERTING: mean reversion pulls spot back toward open, defeating both ATM and
-                # deep contrarian theses. SOL/5m 36.5¢ NO in MEAN_REVERTING is the canonical example.
-                # Deep contrarian bypasses SPOT-ALIGN gate only, not this regime gate.
-                # Applies to both 5m and 15m timeframes.
-                if _fv.get("direction") is not None:
-                    _fv_arch = _fv.get("archetype", "moderate")
-                    if _fv_arch == "moderate":
-                        from config import get_config
-                        start_utc = int(get_config("FV_NIGHT_SESSION_START_UTC", 2))
-                        end_utc = int(get_config("FV_NIGHT_SESSION_END_UTC", 9))
-                        cur_utc_hour = datetime.now(timezone.utc).hour
-                        is_night = (start_utc <= cur_utc_hour < end_utc) if start_utc < end_utc else (cur_utc_hour >= start_utc or cur_utc_hour < end_utc)
-                        is_range = (regime == "RANGE")
-                        if not is_range and not is_night:
-                            log.info(
-                                "[FV-ARCH-GATE] %s/%s: moderate FV blocked in %s regime (only RANGE/night allowed)",
-                                self.asset, self.timeframe, regime,
-                            )
-                            _fv = {"direction": None, "edge": 0.0, "archetype": None}
+                # FV Archetype Gate REMOVED (REBUILD 2026-06-09): it blocked ALL moderate FV
+                # unless regime == "RANGE" — a label get_regime_mode() NEVER emits (it returns
+                # only "TREND"/"MEAN_REVERSION") — so daytime FV was zeroed out entirely
+                # (live: FAIR-VALUE signals = 0). FV is now gated by its directional CONFIDENCE
+                # + edge thresholds (the real quality controls), not a regime archetype.
 
                 if _fv.get("direction") is not None:
                     # Apply tiered edge gate and penalties
@@ -870,8 +854,8 @@ class UpDownEngine:
                     else:
                         return None
 
-                # Apply regime
-                direction = apply_regime(raw_dir, regime)
+                # Apply regime (fade weak momentum in mean-reversion; follow strong trends)
+                direction = apply_regime(raw_dir, regime, mom=mom)
                 if self.invert_signal:
                     direction = "DOWN" if direction == "UP" else "UP"
 

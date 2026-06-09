@@ -198,27 +198,33 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         state_mgr = MagicMock()
         state_mgr.get_closed_positions.return_value = []
         
-        # Test P4: 15m Moderate FV outside RANGE/night session
+        # REBUILD: FV-ARCH-GATE REMOVED. A valid moderate FV (edge 0.15, fp 0.75) in a
+        # daytime non-RANGE regime is no longer blocked — FV is gated by directional
+        # confidence + edge now, so this must PRODUCE a FAIR_VAL signal.
+        from unittest.mock import AsyncMock
         engine = UpDownEngine("BTC", "15m", state_mgr)
-        
-        # Mock fair value entry method to return moderate archetype
         engine._fair_value_entry = MagicMock(return_value={
-            "direction": "UP", "edge": 0.15, "archetype": "moderate", "fp_up": 0.75, "sigma_frac": 0.01
+            "direction": "UP", "edge": 0.15, "archetype": "moderate", "fp_up": 0.75,
+            "sigma_frac": 0.01, "confidence": 0.72,
         })
-        
-        # Mock get_regime_mode to return "NORMAL" (not RANGE)
-        # Mock datetime hour to be 12:00 UTC (not night session 02:00-09:00 UTC)
-        with patch("core.engine.regime_filter.get_regime_mode", return_value="NORMAL"), \
-             patch("config.get_config", side_effect=lambda k, d=None: 2 if k=="FV_NIGHT_SESSION_START_UTC" else (9 if k=="FV_NIGHT_SESSION_END_UTC" else d)), \
+        _benign_ctx = {"regime_name": "MEAN_REVERTING", "whale_pressure": 0.0,
+                       "confluence_score": 2, "regime_kelly": 1.0}
+        with patch("core.engine.regime_filter.get_regime_mode", return_value="MEAN_REVERSION"), \
+             patch("core.engine.edge_orchestrator.edge_orchestrator.get_trade_context",
+                   new_callable=AsyncMock, return_value=_benign_ctx), \
+             patch("core.engine.updown_engine.UpDownEngine._fetch_market",
+                   return_value={"up_price": 0.45, "dn_price": 0.55,
+                                 "up_market": {"id": "yes_id"}, "dn_market": {"id": "no_id"},
+                                 "event_id": "evt_fv",
+                                 "event_title": "[UPDOWN][BTC][15m][FAIR_VAL] BTC Up or Down",
+                                 "expiry_ts": 1234567}), \
              patch("datetime.datetime") as mock_dt:
-            
-            mock_dt.now.return_value = datetime(2026, 6, 5, 12, 0, 0) # 12:00 UTC
+            mock_dt.now.return_value = datetime(2026, 6, 5, 12, 0, 0)
             mock_dt.fromtimestamp = datetime.fromtimestamp
-            
-            # Since regime is NORMAL and hour is 12:00 UTC, the FV signal should be discarded
             session = MagicMock()
             signal = await engine.generate_signal(session)
-            self.assertIsNone(signal)
+            self.assertIsNotNone(signal)
+            self.assertEqual(signal["entry_source"], "FAIR_VAL")
 
         # Test P5 & P6 SIGNAL Price Gates
         engine_5m = UpDownEngine("BTC", "5m", state_mgr)

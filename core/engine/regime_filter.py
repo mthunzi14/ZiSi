@@ -23,10 +23,13 @@ def get_regime_mode(timeframe: str = "5m") -> Literal["TREND", "MEAN_REVERSION"]
     Legacy labels (RANGE/NORMAL/VOLATILE/SHOCK) are still accepted for
     backward compatibility with any stale regime_status.json on disk.
     """
-    # Regimes that imply choppy / range-bound conditions → mean-reversion mode
+    # Regimes that imply genuine mean-reversion (→ fade momentum). REBUILD: COMPRESSION
+    # (low-vol squeeze precedes a breakout, not reversion) and NORMAL/unknown (the
+    # post-reset default) now map to TREND (follow), so the SIG fade only fires on a
+    # real mean-reverting label — the detector is OBI-starved and over-labels MR.
     _MEAN_REVERSION_REGIMES = {
-        "MEAN_REVERTING", "COMPRESSION",   # canonical
-        "RANGE", "NORMAL",                 # legacy aliases
+        "MEAN_REVERTING",   # canonical
+        "RANGE",            # legacy alias for genuine range/mean-reversion
     }
     try:
         if os.path.exists(_REGIME_STATUS_PATH):
@@ -45,22 +48,28 @@ def time_gate_open() -> bool:
     return True
 
 
-def apply_regime(direction: str, regime: str, is_momentum: bool = True) -> str:
+def apply_regime(direction: str, regime: str, is_momentum: bool = True, mom: float = None) -> str:
     """
     Regime-aware direction (REBUILD 2026-06-09).
 
-    Momentum-following signals (SIG) lose because they chase a finished move into a
-    fresh candle that mean-reverts. In a MEAN_REVERSION regime we FADE momentum (flip
-    the direction); in TREND we follow it.
+    Momentum-following signals (SIG) lose when they chase a finished move into a fresh
+    candle that mean-reverts. In a MEAN_REVERSION regime we FADE momentum (flip), but
+    ONLY when momentum is WEAK (genuine chop). In a strong directional move (large |mom|)
+    we FOLLOW even under a MEAN_REVERSION label — the regime detector is OBI-starved and
+    over-labels mean-reversion, so fading a real trend would put us on the wrong side.
 
-    is_momentum=False (fair-value and reversal signals) is returned unchanged — those
+    is_momentum=False (fair-value / reversal signals) is returned unchanged — those
     already encode their own directional edge and must not be double-flipped.
     """
     if not is_momentum:
         return direction
     if regime == "MEAN_REVERSION":
+        fade_max_mom = float(os.getenv("SIG_FADE_MAX_MOM", "0.0015"))
+        if mom is not None and abs(mom) >= fade_max_mom:
+            return direction  # strong trend — follow, do not fade
         faded = "DOWN" if direction == "UP" else "UP"
-        log.info("[REGIME-FADE] mean-reversion regime — fading momentum %s -> %s", direction, faded)
+        log.info("[REGIME-FADE] mean-reversion + weak momentum (mom=%.4f) — fading %s -> %s",
+                 (mom if mom is not None else 0.0), direction, faded)
         return faded
     return direction
 

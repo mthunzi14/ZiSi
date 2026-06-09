@@ -32,9 +32,10 @@ class TestRegimeFilter(unittest.TestCase):
     def test_get_regime_mode_normal(self, mock_file, mock_exists):
         mock_exists.return_value = True
         mock_file.return_value.read.return_value = json.dumps({"regime": "NORMAL"})
-        
+
         mode = get_regime_mode()
-        self.assertEqual(mode, "MEAN_REVERSION")
+        # REBUILD: NORMAL/unknown now maps to TREND (follow), not MEAN_REVERSION (fade).
+        self.assertEqual(mode, "TREND")
 
     @patch("os.path.exists")
     def test_get_regime_mode_no_file(self, mock_exists):
