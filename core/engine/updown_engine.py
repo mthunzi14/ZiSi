@@ -929,6 +929,33 @@ class UpDownEngine:
                     except Exception:
                         pass
 
+                # 15m RSI overbought/oversold gate for 5m SIG.
+                # Entering a 5m trend trade when 15m RSI > 76 (overbought) or < 24 (oversold)
+                # is buying into exhaustion — the candle that caused the large 15m RSI is already done.
+                # BTC/ETH @ 20:05 loss case: 15m RSI 80/84 → SIG entered UP → reversed -$12.
+                # Exempt: reversal signals (they explicitly bet against the exhaustion).
+                if self.timeframe == "5m" and not _dec.get("is_reversal"):
+                    try:
+                        _15m_tf = conf_up.get("timeframes", {}).get("15m", {})  # conf_up from L~833
+                        _15m_rsi_v = _15m_tf.get("rsi")
+                        if _15m_rsi_v is not None:
+                            _rsi_ob = float(os.getenv("SIG_15M_RSI_OB", "76"))
+                            _rsi_os = float(os.getenv("SIG_15M_RSI_OS", "24"))
+                            if direction == "UP" and _15m_rsi_v > _rsi_ob:
+                                log.info(
+                                    "[SIG-15M-RSI] %s/5m: UP blocked — 15m RSI=%.1f > %.0f (overbought exhaustion)",
+                                    self.asset, _15m_rsi_v, _rsi_ob,
+                                )
+                                return None
+                            elif direction == "DOWN" and _15m_rsi_v < _rsi_os:
+                                log.info(
+                                    "[SIG-15M-RSI] %s/5m: DOWN blocked — 15m RSI=%.1f < %.0f (oversold exhaustion)",
+                                    self.asset, _15m_rsi_v, _rsi_os,
+                                )
+                                return None
+                    except (NameError, AttributeError, KeyError):
+                        pass  # fail-open: no confluence data → don't block
+
                 # Tier 3: SIG 5m late-entry gate — don't enter weak signals with < 90s remaining.
                 # At T-90s (3.5 min elapsed), the edge is already priced in; remaining upside minimal.
                 import os as _os_sig, sys as _sys_sig
