@@ -209,7 +209,10 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         })
         _benign_ctx = {"regime_name": "MEAN_REVERTING", "whale_pressure": 0.0,
                        "confluence_score": 2, "regime_kelly": 1.0}
-        with patch("core.engine.regime_filter.get_regime_mode", return_value="MEAN_REVERSION"), \
+        import json as _json
+        _regime_json = _json.dumps({"regime": "MEAN_REVERTING", "atr_percentile": 30.0})
+        with patch("pathlib.Path.exists", return_value=True), \
+             patch("pathlib.Path.read_text", return_value=_regime_json), \
              patch("core.engine.edge_orchestrator.edge_orchestrator.get_trade_context",
                    new_callable=AsyncMock, return_value=_benign_ctx), \
              patch("core.engine.updown_engine.UpDownEngine._fetch_market",
@@ -230,8 +233,13 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         engine_5m = UpDownEngine("BTC", "5m", state_mgr)
         
         # Mock decide_signal to return a valid SIG signal (direction "UP")
+        _trend_ctx = {"regime_name": "TRENDING", "whale_pressure": 0.0,
+                      "confluence_score": 2, "regime_kelly": 1.0}
         with patch("config.FAIR_VALUE_MODE", False), \
-             patch("core.engine.regime_filter.get_regime_mode", return_value="TREND"), \
+             patch("pathlib.Path.exists", return_value=True), \
+             patch("pathlib.Path.read_text", return_value=_json.dumps({"regime": "TRENDING", "atr_percentile": 30.0})), \
+             patch("core.engine.edge_orchestrator.edge_orchestrator.get_trade_context",
+                   new_callable=AsyncMock, return_value=_trend_ctx), \
              patch("core.engine.signal_core.decide_signal", return_value={"direction": "UP", "score": 0.85, "is_reversal": False, "blocked": False}), \
              patch("core.engine.updown_engine.UpDownEngine._fetch_market") as mock_mkt:
             

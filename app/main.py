@@ -504,13 +504,16 @@ async def _validate_trade_slot(
     # skip. No blanket ban — being right at the coin-flip IS the edge.
     if _entry_source == "FAIR_VAL" and 0.42 < entry_price < 0.65:
         _fv_conf = float(signal.get("fv_confidence", score))
-        # Tier 2D: 15m/1h FV is the primary engine per Punisher ("5m is noise").
-        # 15m/1h have 7-55 min of remaining resolution time — lower confidence bar.
-        # 5m gets the standard threshold (less time = need more conviction).
+        # 42-57c is near coin-flip territory — fv_confidence is often null so score is used as
+        # fallback, but score gets boosted by sentiment/edge and overstates true FV directional
+        # confidence. Two losses at 47.5c and 56.5c came from this zone. Require 0.70 here.
+        # 57-65c has shown consistent FV edge (4 wins vs 1 loss) — keep at 0.60.
         if timeframe in ("15m", "1h"):
-            _fv_atm_min = float(os.getenv("FV_ATM_MIN_CONF_15M", "0.55"))
+            _fv_atm_min = 0.55
+        elif entry_price < 0.57:
+            _fv_atm_min = 0.70  # near-ATM 5m: need real conviction, not score-boosted proxy
         else:
-            _fv_atm_min = float(os.getenv("FV_ATM_MIN_CONF", "0.60"))
+            _fv_atm_min = 0.60
         if _fv_conf < _fv_atm_min:
             log.info(
                 "[FV-ATM-CONF] %s/%s: %.0fc ATM, confidence %.2f < %.2f — no directional edge, skip",
@@ -899,9 +902,10 @@ async def _place_corr_trades(
         if not market:
             continue
         entry_price = market["up_price"] if direction == "UP" else market["dn_price"]
-        # Only shadow if market is reasonably liquid and not near extremes
-        if entry_price < 0.08 or entry_price > 0.95:
-            log.info("[CORR] %s/%s: price %.0fc extreme — skip", corr_asset, timeframe, entry_price * 100)
+        # Only shadow if market is reasonably liquid, not at extremes, and crowd isn't >60% against.
+        # ETH/SOL CORR at 38.5c lost -$5.25/-$1.12: crowd was 61.5% against direction — no gate caught it.
+        if entry_price < 0.40 or entry_price > 0.95:
+            log.info("[CORR] %s/%s: price %.0fc out of bounds (min 40c) — skip shadow", corr_asset, timeframe, entry_price * 100)
             continue
         bet_usd = engine.compute_size(0.75, entry_price, current_balance)
         bet_usd = max(1.0, min(bet_usd, current_balance * 0.20))
