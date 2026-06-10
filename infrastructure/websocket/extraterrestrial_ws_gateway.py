@@ -39,7 +39,7 @@ class ExtraterrestrialWSGateway:
     async def _send_sub(self, token_id: str):
         try:
             msg = {
-                "type": "subscribe",
+                "type": "market",
                 "assets_ids": [token_id],
                 "custom_feature_enabled": True
             }
@@ -69,7 +69,7 @@ class ExtraterrestrialWSGateway:
                 await asyncio.sleep(60)
                 if not ws.closed and self.subscriptions:
                     await ws.send_json({
-                        "type": "subscribe",
+                        "type": "market",
                         "assets_ids": list(self.subscriptions),
                         "custom_feature_enabled": True,
                     })
@@ -90,7 +90,7 @@ class ExtraterrestrialWSGateway:
 
                     if self.subscriptions:
                         msg = {
-                            "type": "subscribe",
+                            "type": "market",
                             "assets_ids": list(self.subscriptions),
                             "custom_feature_enabled": True
                         }
@@ -130,67 +130,88 @@ class ExtraterrestrialWSGateway:
             return 0.0
         return data.get("obi", 0.0)
 
+    def _update_cache_bid_ask(self, asset_id: str, bid: float, ask: float):
+        entry = self.l2_cache.get(asset_id, {
+            "bid": 0.0, "ask": 0.0, "ts": 0.0, "bids": [], "asks": [], "obi": 0.0
+        })
+        entry["bid"] = bid
+        entry["ask"] = ask
+        entry["ts"] = time.time()
+        self.l2_cache[asset_id] = entry
+        if self._on_tick:
+            mid = (bid + ask) / 2
+            self._on_tick(asset_id, entry["ts"], mid)
+
     def _process_message(self, data: dict):
+        event_type = data.get("event_type", "")
+
+        # price_change: most frequent event — asset_id is nested inside price_changes[]
+        if event_type == "price_change":
+            for change in data.get("price_changes", []):
+                aid = change.get("asset_id")
+                if not aid:
+                    continue
+                best_bid = change.get("best_bid")
+                best_ask = change.get("best_ask")
+                if best_bid is not None and best_ask is not None:
+                    try:
+                        self._update_cache_bid_ask(aid, float(best_bid), float(best_ask))
+                    except (ValueError, TypeError):
+                        pass
+            return
+
         asset_id = data.get("asset_id") or data.get("token_id")
         if not asset_id:
             return
 
+        # best_bid_ask: direct best_bid/best_ask fields at top level
+        if event_type == "best_bid_ask":
+            best_bid = data.get("best_bid")
+            best_ask = data.get("best_ask")
+            if best_bid is not None and best_ask is not None:
+                try:
+                    self._update_cache_bid_ask(asset_id, float(best_bid), float(best_ask))
+                except (ValueError, TypeError):
+                    pass
+            return
+
         bids = data.get("bids", [])
         asks = data.get("asks", [])
-        
+
+        # last_trade_price: single price field, no book levels
         if "price" in data and not bids and not asks:
-            p = float(data["price"])
-            self.l2_cache[asset_id] = {
-                "bid": p,
-                "ask": p,
-                "ts": time.time(),
-                "bids": [],
-                "asks": [],
-                "obi": 0.0
-            }
+            try:
+                p = float(data["price"])
+                self.l2_cache[asset_id] = {
+                    "bid": p, "ask": p, "ts": time.time(), "bids": [], "asks": [], "obi": 0.0
+                }
+            except (ValueError, TypeError):
+                pass
             return
-            
+
+        # book: full snapshot with bids/asks arrays
         cache_entry = self.l2_cache.get(asset_id, {
-            "bid": 0.0,
-            "ask": 0.0,
-            "ts": 0.0,
-            "bids": [],
-            "asks": [],
-            "obi": 0.0
+            "bid": 0.0, "ask": 0.0, "ts": 0.0, "bids": [], "asks": [], "obi": 0.0
         })
-        
+
         if bids:
             cache_entry["bids"] = bids
         if asks:
             cache_entry["asks"] = asks
-            
+
         bb = max([float(b.get("price", 0)) for b in cache_entry["bids"]]) if cache_entry["bids"] else cache_entry.get("bid", 0.0)
         ba = min([float(a.get("price", 0)) for a in cache_entry["asks"]]) if cache_entry["asks"] else cache_entry.get("ask", 0.0)
-        
-        # Calculate OBI across top 5 bid/ask levels
-        sum_bid_qty = 0.0
-        sum_ask_qty = 0.0
-        
-        for b in cache_entry["bids"][:5]:
-            qty = float(b.get("size") or b.get("qty") or b.get("amount") or 0.0)
-            sum_bid_qty += qty
-            
-        for a in cache_entry["asks"][:5]:
-            qty = float(a.get("size") or a.get("qty") or a.get("amount") or 0.0)
-            sum_ask_qty += qty
-            
+
+        sum_bid_qty = sum(float(b.get("size") or b.get("qty") or b.get("amount") or 0.0) for b in cache_entry["bids"][:5])
+        sum_ask_qty = sum(float(a.get("size") or a.get("qty") or a.get("amount") or 0.0) for a in cache_entry["asks"][:5])
+
         obi = 0.0
         if (sum_bid_qty + sum_ask_qty) > 0.0:
             obi = (sum_bid_qty - sum_ask_qty) / (sum_bid_qty + sum_ask_qty)
-            
-        cache_entry.update({
-            "bid": bb,
-            "ask": ba,
-            "ts": time.time(),
-            "obi": obi
-        })
+
+        cache_entry.update({"bid": bb, "ask": ba, "ts": time.time(), "obi": obi})
         self.l2_cache[asset_id] = cache_entry
-        
+
         if self._on_tick:
             mid, _ = self.get_price(asset_id)
             if mid:
