@@ -26,7 +26,7 @@ _btc_bucket_trades: dict[str, dict] = {}
 _lat_arb_in_flight: set[tuple[str, str]] = set()
 _lat_arb_cooldowns: dict[tuple[str, str], float] = {}
 
-MAX_TRADES_PER_CANDLE_BUCKET = 2
+MAX_TRADES_PER_CANDLE_BUCKET = 5  # Bonereaper-mode: up to 5 simultaneous entries per candle
 BTC_ASSET = "BTC"
 
 

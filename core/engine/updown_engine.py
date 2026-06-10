@@ -1412,13 +1412,18 @@ class UpDownEngine:
             if spread <= effective_max_spread:
                 return derived_up, dn_p, spread
 
-        # No live L2 book — skip this candle. No backoff: retry every tick so we never
-        # miss a market that just became live (BTC/ETH open within seconds of each other).
+        # No live L2 book and REST fallback also failed.
+        # ── SOFT LIVE-BOOK FALLBACK (Bonereaper-mode) ──────────────────────────────────
+        # Instead of hard-skipping (which generated 458 skips per 15-min in June 10 forensic),
+        # return a neutral 0.50/0.50 mid-price so the indicator/signal engine can still
+        # evaluate direction and entry. Price confirmation logic (FV edge, score threshold)
+        # will still gate the trade — we just no longer block at the book-fetch stage.
         log.warning(
-            "[LIVE-BOOK] %s/%s: No valid L2 book — skipping candle.",
+            "[LIVE-BOOK] %s/%s: No valid L2 book (WS+REST failed) — using neutral fallback 0.50/0.50; "
+            "signal logic will still decide entry.",
             self.asset, self.timeframe,
         )
-        return None
+        return 0.50, 0.50, 0.10  # neutral mid; wide spread (0.10) accepted by non-latency gate
 
     async def prefetch_upcoming_market(self, session: aiohttp.ClientSession, next_boundary: int) -> None:
         """Prefetch token IDs for the upcoming market 20s before start and warm WebSocket."""
@@ -1813,7 +1818,14 @@ class UpDownEngine:
             if not path.exists():
                 return 0
             data = json.loads(path.read_text(encoding="utf-8"))
-            closed = data.get("closed", [])[-n:][::-1]  # most recent n trades, newest first
+            # ── PER-ASSET STREAK FIX (Bonereaper-mode) ──────────────────────────────────
+            # Filter closed trades to THIS asset only before computing the streak.
+            # Previously the streak was global across all assets — meaning 5 BTC DOWN wins
+            # would block XRP/ETH/SOL DOWN signals even though they are independent markets.
+            # Bonereaper enters each asset fresh on each candle with no cross-asset bias.
+            all_closed = data.get("closed", [])
+            asset_closed = [t for t in all_closed if t.get("asset", "").upper() == self.asset.upper()]
+            closed = asset_closed[-n:][::-1]  # most recent n trades for THIS asset, newest first
         except Exception:
             return 0
         signal_up = direction == "UP"
