@@ -1103,6 +1103,9 @@ async def main() -> None:
     ingest = BinanceWebSocketIngest(symbols=ASSETS)
     ingest.start()
 
+    from infrastructure.websocket.polymarket_rtds_ingest import polymarket_rtds_ingest
+    polymarket_rtds_ingest.start()
+
     # ── Pyth Hermes Real-Time SSE Price Stream Service Integration ──────────
     # Starts Pyth Hermes streaming as a persistent background daemon, bypassing rate limits.
     # Enables global in-memory sub-0.1ms oracle spot price caching.
@@ -1181,6 +1184,11 @@ async def main() -> None:
         # await pyth_service.stop()
         log.info("[MAIN] Halting HFT WebSocket ingest daemon...")
         ingest.stop()
+        try:
+            from infrastructure.websocket.polymarket_rtds_ingest import polymarket_rtds_ingest
+            polymarket_rtds_ingest.stop()
+        except Exception as e:
+            log.warning("[MAIN] Failed to stop Polymarket RTDS ingest: %s", e)
         log.info(
             "[MAIN] Funnel: evaluated=%d signals=%d executed=%d skipped=%d",
             context.funnel_stats["windows_evaluated"],

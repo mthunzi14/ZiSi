@@ -193,18 +193,26 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 return
             ws_price, _, _ = book_details
 
+            # Fetch Chainlink WebSocket Price
+            from infrastructure.websocket.polymarket_rtds_ingest import get_chainlink_price, get_chainlink_price_age, get_chainlink_candle_open
+            cl_details = await get_chainlink_price(asset)
+            cl_fresh = False
+            if cl_details:
+                cl_now, cl_ts = cl_details
+                if time.time() - cl_ts <= 5.0:
+                    cl_fresh = True
+
             # T-5s / T-2s freshness gate: near-certainty requires very fresh oracle
+            active_feed_age = await get_chainlink_price_age(asset) if cl_fresh else await get_book_age(asset)
             if t_minus == 5:
-                ws_age = await get_book_age(asset)
-                if ws_age > 3.0:
-                    log.info("[T5-SCANNER] %s/%s: Binance WebSocket stale (%.1fs > 3s) — skip",
-                             asset, timeframe, ws_age)
+                if active_feed_age > 3.0:
+                    log.info("[T5-SCANNER] %s/%s: Active oracle WebSocket stale (%.1fs > 3s) — skip",
+                             asset, timeframe, active_feed_age)
                     return
             elif t_minus == 2:
-                ws_age = await get_book_age(asset)
-                if ws_age > 2.0:
-                    log.info("[T2-SWEEPER] %s/%s: Binance WebSocket stale (%.1fs > 2s) — skip",
-                             asset, timeframe, ws_age)
+                if active_feed_age > 2.0:
+                    log.info("[T2-SWEEPER] %s/%s: Active oracle WebSocket stale (%.1fs > 2s) — skip",
+                             asset, timeframe, active_feed_age)
                     return
 
             # 2. Fetch candle open price (klines[-1][1])
@@ -216,11 +224,24 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 log.warning("[LATENCY-ARB] Insufficient klines for %s/%s", asset, timeframe)
                 return
                 
-            open_price = float(klines[-1][1])
-            # FEED CONSISTENCY (2026-06-10): resolution is the Binance candle close, so the
-            # move must be measured Binance-vs-Binance. Using live Binance WebSocket price here
-            # completely avoids Pyth basis bias and stale cache delays.
-            spot_now = ws_price
+            if cl_fresh:
+                spot_now = cl_now
+                _interval_sec = interval_minutes * 60
+                _candle_start = int(time.time() // _interval_sec) * _interval_sec
+                cl_open = await get_chainlink_candle_open(asset, _interval_sec, _candle_start)
+                if cl_open is not None:
+                    open_price = cl_open
+                else:
+                    _basis = ws_price - cl_now
+                    open_price = float(klines[-1][1]) - _basis
+                log.info("[PRICE-SOURCE] %s/%s: Using authoritative Chainlink price (Spot=%.4f, Open=%.4f)",
+                         asset, timeframe, spot_now, open_price)
+            else:
+                spot_now = ws_price
+                open_price = float(klines[-1][1])
+                log.info("[PRICE-SOURCE] %s/%s: Chainlink stale/unavailable — using Binance spot fallback (Spot=%.4f, Open=%.4f)",
+                         asset, timeframe, spot_now, open_price)
+
             pct_move = (spot_now - open_price) / open_price if open_price > 0 else 0.0
 
             # Fast ATR-sigma for threshold scaling (uses same logic as line 403)
@@ -807,6 +828,15 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
                 return
             ws_price, _, _ = book_details
 
+            # Fetch Chainlink WebSocket Price
+            from infrastructure.websocket.polymarket_rtds_ingest import get_chainlink_price, get_chainlink_candle_open
+            cl_details = await get_chainlink_price(asset)
+            cl_fresh = False
+            if cl_details:
+                cl_now, cl_ts = cl_details
+                if time.time() - cl_ts <= 5.0:
+                    cl_fresh = True
+
             from core.engine.updown_engine import _fetch_klines_async
             tf_map = {"5m": ("5m", 30), "15m": ("15m", 30), "1h": ("1h", 30)}
             interval, limit = tf_map.get(timeframe, ("5m", 30))
@@ -814,11 +844,24 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             if len(klines) < 2:
                 return
 
-            open_price = float(klines[-1][1])
-            # FEED CONSISTENCY (2026-06-10): resolution is the Binance candle close, so the
-            # move must be measured Binance-vs-Binance. Using live Binance WebSocket price here
-            # completely avoids Pyth basis bias and stale cache delays.
-            spot_now = ws_price
+            if cl_fresh:
+                spot_now = cl_now
+                _interval_sec = interval_minutes * 60
+                _candle_start = int(time.time() // _interval_sec) * _interval_sec
+                cl_open = await get_chainlink_candle_open(asset, _interval_sec, _candle_start)
+                if cl_open is not None:
+                    open_price = cl_open
+                else:
+                    _basis = ws_price - cl_now
+                    open_price = float(klines[-1][1]) - _basis
+                log.info("[PRICE-SOURCE] %s/%s: Using authoritative Chainlink price for snipe (Spot=%.4f, Open=%.4f)",
+                         asset, timeframe, spot_now, open_price)
+            else:
+                spot_now = ws_price
+                open_price = float(klines[-1][1])
+                log.info("[PRICE-SOURCE] %s/%s: Chainlink stale/unavailable — using Binance spot fallback for snipe (Spot=%.4f, Open=%.4f)",
+                         asset, timeframe, spot_now, open_price)
+
             pct_move = (spot_now - open_price) / open_price if open_price > 0 else 0.0
 
             market = await engine._fetch_market(session, is_latency_scan=True)

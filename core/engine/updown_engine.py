@@ -326,13 +326,13 @@ class UpDownEngine:
 
     # ── Fair-value entry helper ───────────────────────────────────────────────
 
-    def _fair_value_entry(self, klines, spot, up_price, dn_price, elapsed_min):
+    def _fair_value_entry(self, klines, spot, up_price, dn_price, elapsed_min, custom_strike=None):
         """Fair-value (spot-distance) margin decision at the REAL live quotes.
         Returns decide_value_entry's dict plus fp_up/sigma_frac for logging."""
         from core.engine.fair_value import fair_prob_up, decide_value_entry
         from core.engine.regime_filter import get_regime_mode
         try:
-            s_0 = float(klines[-1][1])          # current window open = strike
+            s_0 = custom_strike if custom_strike is not None else float(klines[-1][1])          # current window open = strike
         except (IndexError, ValueError, TypeError):
             return {"direction": None, "edge": 0.0, "archetype": None, "fp_up": 0.5, "sigma_frac": 0.0}
         total_min = 60.0 if self.timeframe == "1h" else float(int(self.timeframe.rstrip("m")))
@@ -644,7 +644,34 @@ class UpDownEngine:
                         _timing_ok = False
 
             if _timing_ok:
-                _fv = self._fair_value_entry(klines, closes[-1], up_price, dn_price, _elapsed_min)
+                from infrastructure.websocket.polymarket_rtds_ingest import get_chainlink_price, get_chainlink_candle_open
+                cl_details = await get_chainlink_price(self.asset)
+                cl_fresh = False
+                if cl_details:
+                    cl_now, cl_ts = cl_details
+                    if time.time() - cl_ts <= 5.0:
+                        cl_fresh = True
+
+                _fv_spot = closes[-1]
+                _custom_strike = None
+                if cl_fresh:
+                    _fv_spot = cl_now
+                    _total_min = 60.0 if self.timeframe == "1h" else float(int(self.timeframe.rstrip("m")))
+                    _interval_sec = int(_total_min * 60)
+                    _candle_start = int(time.time() // _interval_sec) * _interval_sec
+                    _cl_open = await get_chainlink_candle_open(self.asset, _interval_sec, _candle_start)
+                    if _cl_open is not None:
+                        _custom_strike = _cl_open
+                    else:
+                        _basis = closes[-1] - cl_now
+                        _custom_strike = float(klines[-1][1]) - _basis
+                    log.info("[PRICE-SOURCE] %s/%s: Using authoritative Chainlink price (Spot=%.4f, Strike=%.4f)",
+                             self.asset, self.timeframe, _fv_spot, _custom_strike)
+                else:
+                    log.info("[PRICE-SOURCE] %s/%s: Chainlink stale/unavailable — using Binance spot fallback (Spot=%.4f, Strike=%.4f)",
+                             self.asset, self.timeframe, closes[-1], float(klines[-1][1]))
+
+                _fv = self._fair_value_entry(klines, _fv_spot, up_price, dn_price, _elapsed_min, custom_strike=_custom_strike)
 
                 if _fv.get('direction') is not None:
                     # FV spot-direction alignment gate
@@ -653,8 +680,8 @@ class UpDownEngine:
                     # 0.25%+ against the FV call, the edge has been arbitraged away.
                     _fv_spot_align = True
                     try:
-                        _candle_open = float(klines[-1][1])
-                        _spot_now = closes[-1]  # Binance live close — same feed as strike & resolution
+                        _candle_open = _custom_strike if _custom_strike is not None else float(klines[-1][1])
+                        _spot_now = _fv_spot
                         _spot_pct = (_spot_now - _candle_open) / _candle_open if _candle_open > 0 else 0.0
                         _ALIGN_THRESH = 0.0050  # 0.50% — ATM directional-conflict gate
                         # Deep contrarian (<40c) BYPASSES this gate. A cheap contract exists
