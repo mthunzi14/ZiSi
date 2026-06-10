@@ -218,7 +218,11 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 return
                 
             open_price = float(klines[-1][1])
-            pct_move = (pyth_price - open_price) / open_price
+            # FEED CONSISTENCY (2026-06-10): resolution is the Binance candle close, so the
+            # move must be measured Binance-vs-Binance. Pyth sits -3..-5 bps below Binance,
+            # which made DOWN snipes trigger far easier than UP ones.
+            spot_now = float(klines[-1][4])
+            pct_move = (spot_now - open_price) / open_price
 
             # Fast ATR-sigma for threshold scaling (uses same logic as line 403)
             try:
@@ -310,8 +314,8 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                         log.info("[CONFLICT-SKIP] %s/5m: %s conflicts with open 15m %s", asset, direction, "UP" if _pos_up else "DOWN")
                         return
 
-            log.info("[LATENCY-ARB] Potential %s move detected for %s/%s (move: %.4f%%, Pyth: %.4f, Open: %.4f)",
-                     direction, asset, timeframe, pct_move * 100, pyth_price, open_price)
+            log.info("[LATENCY-ARB] Potential %s move detected for %s/%s (move: %.4f%%, Spot: %.4f, Open: %.4f)",
+                     direction, asset, timeframe, pct_move * 100, spot_now, open_price)
 
             # CVD + OBI + 1m alignment gate (skip for T-2s sweeper — already near-certain)
             if t_minus != 2:
@@ -416,7 +420,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 elapsed_min = max(0.1, min(elapsed_min, float(interval_minutes) - 0.1))
 
                 from core.engine.fair_value import fair_prob_up as _fair_prob_up
-                p_up = _fair_prob_up(pyth_price, open_price, sigma_frac, elapsed_min, float(interval_minutes))
+                p_up = _fair_prob_up(spot_now, open_price, sigma_frac, elapsed_min, float(interval_minutes))
                 implied_prob = p_up if direction == "UP" else (1.0 - p_up)
                 implied_prob = max(0.55, implied_prob)  # floor: never treat a weak move as near-certain
                     
@@ -811,7 +815,10 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
                 return
 
             open_price = float(klines[-1][1])
-            pct_move = (pyth_price - open_price) / open_price if open_price > 0 else 0.0
+            # FEED CONSISTENCY (2026-06-10): Binance-vs-Binance — Pyth's -3..-5 bps basis was
+            # 40% of the 10 bps snipe trigger, so DOWN snipes fired on phantom moves.
+            spot_now = float(klines[-1][4])
+            pct_move = (spot_now - open_price) / open_price if open_price > 0 else 0.0
 
             market = await engine._fetch_market(session, is_latency_scan=True)
             if not market:
@@ -1192,9 +1199,7 @@ async def start_close_sniper(session, engines):
                     # Observed: -$19.50 and -$20.16 on flat-candle entries (the two largest NCS losses).
                     if snipe_dir and snipe_price is not None and snipe_price >= 0.90:
                         try:
-                            from core.pyth_oracle_service import GLOBAL_ORACLE_CACHE
-                            _pyth_now = GLOBAL_ORACLE_CACHE.get(asset, {}).get("price", 0.0)
-                            if _pyth_now > 0.0 and hasattr(engine, "klines") and engine.klines and len(engine.klines) >= 15:
+                            if hasattr(engine, "klines") and engine.klines and len(engine.klines) >= 15:
                                 _kl = engine.klines
                                 _highs = [float(k[2]) for k in _kl[-15:]]
                                 _lows  = [float(k[3]) for k in _kl[-15:]]
@@ -1207,7 +1212,8 @@ async def start_close_sniper(session, engines):
                                 ]
                                 _atr14 = sum(_trs[-13:]) / max(1, len(_trs[-13:]))
                                 _c_open = float(_kl[-1][1])
-                                _move   = abs(_pyth_now - _c_open)
+                                # FEED CONSISTENCY (2026-06-10): Binance close, not Pyth
+                                _move   = abs(_cls[-1] - _c_open)
                                 _min_move = 0.15 * _atr14
                                 if _atr14 > 0 and _move < _min_move:
                                     log.info(

@@ -381,13 +381,14 @@ async def _validate_trade_slot(
         for leader in ["BTC", "ETH"]:
             try:
                 from core.engine.updown_engine import _fetch_klines_async
-                from core.pyth_oracle_service import GLOBAL_ORACLE_CACHE
-                
+
                 leader_klines = await _fetch_klines_async(session, leader, interval, limit)
                 if leader_klines:
                     leader_open = float(leader_klines[-1][1])
-                    leader_spot = GLOBAL_ORACLE_CACHE.get(leader, {}).get("price", 0.0)
-                    
+                    # FEED CONSISTENCY (2026-06-10): Binance close, not Pyth — Pyth's -3..-5 bps
+                    # basis made leaders read "down", blocking alt UP trades asymmetrically.
+                    leader_spot = float(leader_klines[-1][4])
+
                     if leader_spot > 0:
                         leaders_checked += 1
                         is_leader_up = leader_spot > leader_open

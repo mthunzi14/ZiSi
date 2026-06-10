@@ -427,15 +427,11 @@ class UpDownEngine:
 
         closes = [float(k[4]) for k in klines]
 
-        # Pyth Hermes Real-time Price Integration
-        try:
-            from core.pyth_oracle_service import GLOBAL_ORACLE_CACHE
-            pyth_price = GLOBAL_ORACLE_CACHE.get(self.asset, {}).get("price", 0.0)
-            if pyth_price > 0.0:
-                closes[-1] = pyth_price
-                log.debug("[ENGINE] %s/%s overwrote last close with Pyth price: %.4f", self.asset, self.timeframe, pyth_price)
-        except Exception as pyth_err:
-            log.debug("[ENGINE] Failed to read Pyth price from cache: %s", pyth_err)
+        # FEED CONSISTENCY (2026-06-10): closes[-1] must stay Binance. The strike
+        # (klines[-1][1]) and resolution (Binance candle close) are both Binance, but
+        # Pyth prints a persistent -3..-5 bps basis below Binance. Overwriting the live
+        # close with Pyth injected a phantom down-move into every directional read:
+        # fair_prob_up averaged 0.42 and 77% of all FV signals fired DOWN.
 
         # Recalculate market regime dynamically using BTC candle closes
         if self.asset == "BTC":
@@ -635,7 +631,7 @@ class UpDownEngine:
                     _fv_spot_align = True
                     try:
                         _candle_open = float(klines[-1][1])
-                        _spot_now = closes[-1]  # Pyth-overwritten if available
+                        _spot_now = closes[-1]  # Binance live close — same feed as strike & resolution
                         _spot_pct = (_spot_now - _candle_open) / _candle_open if _candle_open > 0 else 0.0
                         _ALIGN_THRESH = 0.0050  # 0.50% — ATM directional-conflict gate
                         # Deep contrarian (<40c) BYPASSES this gate. A cheap contract exists
