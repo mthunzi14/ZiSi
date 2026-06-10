@@ -65,7 +65,7 @@ class ExtraterrestrialWSGateway:
                 self._session = aiohttp.ClientSession(headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 })
-                async with self._session.ws_connect(self.feed_url, heartbeat=10.0) as ws:
+                async with self._session.ws_connect(self.feed_url, heartbeat=60.0) as ws:
                     self._ws = ws
                     log.info("[GOD-WS] Connected to Polymarket CLOB WebSocket")
                     

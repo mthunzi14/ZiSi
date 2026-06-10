@@ -963,6 +963,8 @@ class UpDownEngine:
                 # window's open->close, so the current window must confirm the direction —
                 # regardless of score (the 01:45 five-asset cascade lead scored 0.86 and bypassed
                 # the old guard). Reversal snipes stay exempt (contrarian by design).
+                # Threshold lowered 0.15x→0.10x to admit near-miss confirmations (57-63% WR
+                # still positive edge over ATM 50c entry price).
                 if not _dec.get("is_reversal"):
                     try:
                         _co = float(klines[-1][1])
@@ -973,7 +975,7 @@ class UpDownEngine:
                             if _wo > 0:
                                 _wrets.append(abs(float(_k[4]) - _wo) / _wo)
                         _vol_unit = (sum(_wrets) / len(_wrets)) if _wrets else 0.0
-                        _confirm_min = 0.15 * _vol_unit
+                        _confirm_min = 0.10 * _vol_unit
                         _aligned = (_intra > 0) if direction == "UP" else (_intra < 0)
                         if not _aligned or abs(_intra) < _confirm_min:
                             log.info(
