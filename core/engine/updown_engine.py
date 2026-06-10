@@ -1395,10 +1395,11 @@ class UpDownEngine:
         """Prefetch token IDs for the upcoming market 20s before start and warm WebSocket."""
         coin_lower = self.asset.lower()
         dur_min = 60 if self.timeframe == "1h" else (5 if self.timeframe == "5m" else 15)
+        expiry_boundary = next_boundary + (dur_min * 60)
         if self.timeframe == "1h":
-            slug = self._get_hourly_slug(next_boundary)
+            slug = self._get_hourly_slug(expiry_boundary)
         else:
-            slug = f"{coin_lower}-updown-{dur_min}m-{next_boundary}"
+            slug = f"{coin_lower}-updown-{dur_min}m-{expiry_boundary}"
         
         gamma_url = "https://gamma-api.polymarket.com/events"
         try:
@@ -1512,14 +1513,15 @@ class UpDownEngine:
         try:
             for offset in offsets:
                 offset_ts = start_ts + (offset * interval)
-                if offset_ts + interval <= now_ts:
+                expiry_ts = offset_ts + interval
+                if expiry_ts <= now_ts:
                     # Skip expired markets to prevent calling _resolve_l2_prices on them
                     # which always fails and triggers the L2 circuit breaker backoff.
                     continue
                 if self.timeframe == "1h":
-                    slug = self._get_hourly_slug(offset_ts)
+                    slug = self._get_hourly_slug(expiry_ts)
                 else:
-                    slug = f"{coin_lower}-updown-{dur_min}m-{offset_ts}"
+                    slug = f"{coin_lower}-updown-{dur_min}m-{expiry_ts}"
 
                 async with session.get(gamma_url, params={"slug": slug}, timeout=5) as r:
                     if r.status != 200:

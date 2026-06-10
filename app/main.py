@@ -198,12 +198,12 @@ async def _evaluate_market_signals(
         candle_start = (int(now_ts) // (interval_minutes * 60)) * (interval_minutes * 60)
         elapsed = now_ts - candle_start
         
-        # ── DEEP FIX: 15-SECOND CANDLE OPEN BOUNDARY LIMIT ──
+        # ── DEEP FIX: 30-SECOND CANDLE OPEN BOUNDARY LIMIT ──
         # Prevent any mid-candle/late signal generation and entry.
         # This completely eliminates the momentum-chasing late entry trap.
-        if elapsed > 15.0:
+        if elapsed > 30.0:
             log.info(
-                "[MAIN] %s/%s: Signal evaluation retry window closed (elapsed=%.1fs > 15.0s) — skip",
+                "[MAIN] %s/%s: Signal evaluation retry window closed (elapsed=%.1fs > 30.0s) — skip",
                 asset, timeframe, elapsed
             )
             return None
