@@ -175,11 +175,39 @@ const S = {
 };
 
 function PanelCard({ title, sub, children, style = {} }) {
+  const [open, setOpen] = useState(false);
   return (
-    <div className="card" style={{ ...S.card, ...style }}>
-      <div style={S.title}>{title}</div>
-      {sub && <div style={S.sub}>{sub}</div>}
-      {children}
+    <div
+      className="card"
+      style={{
+        ...S.card,
+        paddingBottom: open ? S.card.padding : '14px',
+        cursor: 'default',
+        transition: 'box-shadow 0.2s, border-color 0.2s',
+        ...style,
+      }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={S.title}>{title}</div>
+        <span style={{ fontSize: 8, color: open ? 'var(--color-accent)' : '#3f3f46', fontWeight: 700, letterSpacing: '0.06em', transition: 'color 0.2s' }}>
+          {open ? '▴ COLLAPSE' : '▾ HOVER TO EXPAND'}
+        </span>
+      </div>
+      {sub && (
+        <div style={{ ...S.sub, marginBottom: open ? '16px' : 0, maxHeight: open ? '40px' : '20px', overflow: 'hidden', transition: 'margin 0.25s, max-height 0.25s' }}>
+          {sub}
+        </div>
+      )}
+      <div style={{
+        maxHeight: open ? '420px' : '0px',
+        overflow: 'hidden',
+        transition: 'max-height 0.35s cubic-bezier(0.4,0,0.2,1)',
+        willChange: 'max-height',
+      }}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -414,8 +442,17 @@ function LogViewer() {
   const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [error, setError] = useState(null);
-  
+  const [collapsed, setCollapsed] = useState(false);
+  const [logSizes, setLogSizes] = useState(null);
+
   const terminalEndRef = useRef(null);
+
+  useEffect(() => {
+    const load = () => fetch('/api/bot-logs/sizes').then(r => r.json()).then(setLogSizes).catch(() => {});
+    load();
+    const id = setInterval(load, 30000);
+    return () => clearInterval(id);
+  }, []);
 
   const fetchLogs = useCallback(async () => {
     setLoading(true);
@@ -473,45 +510,94 @@ function LogViewer() {
     }
   }, [logLines]);
 
+  const sizeColor = logSizes
+    ? logSizes.totalMb > 50 ? '#ef4444' : logSizes.totalMb > 20 ? '#f59e0b' : '#10b981'
+    : '#52525b';
+  const sizePct = logSizes ? Math.min(100, (logSizes.totalMb / 100) * 100) : 0;
+
   return (
     <div className="card" style={{ padding: '16px 20px', marginTop: '20px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
-        <div>
-          <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '15px', color: 'var(--color-obsidian)', letterSpacing: '-0.02em', margin: 0 }}>
-            Live System Log Terminal
-          </h3>
-          <div style={{ fontSize: '10px', color: 'var(--color-iron)', marginTop: '2px' }}>
-            Inspect real-time operations, signals, gates, and trade ledgers
+      {/* Header row — always visible */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div>
+            <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '15px', color: 'var(--color-obsidian)', letterSpacing: '-0.02em', margin: 0 }}>
+              Live System Log Terminal
+            </h3>
+            <div style={{ fontSize: '10px', color: 'var(--color-iron)', marginTop: '2px' }}>
+              Inspect real-time operations, signals, gates, and trade ledgers
+            </div>
           </div>
+          {/* Expand / Collapse toggle */}
+          <button
+            onClick={() => setCollapsed(c => !c)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              background: collapsed ? 'rgba(0,203,214,0.1)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${collapsed ? 'rgba(0,203,214,0.35)' : 'rgba(255,255,255,0.08)'}`,
+              borderRadius: 8, padding: '5px 11px', cursor: 'pointer',
+              fontSize: 10, fontWeight: 700,
+              color: collapsed ? '#00cbd6' : '#a1a1aa',
+              transition: 'all 0.2s',
+            }}
+          >
+            <span style={{ display: 'inline-block', transform: collapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.25s' }}>▾</span>
+            {collapsed ? 'Expand' : 'Collapse'}
+          </button>
         </div>
-        
+
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <button 
-            onClick={fetchLogs} 
-            className="btn btn-secondary" 
+          {/* Log size indicator */}
+          {logSizes && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8, padding: '5px 12px' }}>
+              <div>
+                <div style={{ fontSize: 8, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>VPS Log Storage</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ width: 60, height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${sizePct}%`, background: sizeColor, borderRadius: 2, transition: 'width 0.5s' }} />
+                  </div>
+                  <span style={{ fontFamily: 'monospace', fontSize: 10, fontWeight: 700, color: sizeColor }}>{logSizes.totalMb} MB</span>
+                  <span style={{ fontSize: 9, color: sizeColor, fontWeight: 600 }}>{logSizes.recommendation}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={fetchLogs}
+            className="btn btn-secondary"
             style={{ fontSize: '11px', padding: '6px 12px' }}
             disabled={loading}
           >
             {loading ? 'Refreshing...' : 'Refresh'}
           </button>
-          
-          <button 
-            onClick={handleClearLogs} 
-            className="btn" 
-            style={{ 
-              fontSize: '11px', 
-              padding: '6px 12px', 
-              background: 'rgba(239, 68, 68, 0.1)', 
-              color: '#ef4444', 
+
+          <button
+            onClick={handleClearLogs}
+            className="btn"
+            style={{
+              fontSize: '11px',
+              padding: '6px 12px',
+              background: 'rgba(239, 68, 68, 0.1)',
+              color: '#ef4444',
               border: '1px solid rgba(239, 68, 68, 0.2)',
               borderRadius: '6px',
               cursor: 'pointer'
             }}
           >
-            Clear Log Files
+            Clear Logs
           </button>
         </div>
       </div>
+
+      {/* Collapsible body */}
+      <div style={{
+        maxHeight: collapsed ? '0px' : '900px',
+        overflow: 'hidden',
+        transition: 'max-height 0.4s cubic-bezier(0.4,0,0.2,1)',
+        willChange: 'max-height',
+      }}>
+      <div style={{ marginTop: '14px' }}>
 
       {/* Control Bar */}
       <div style={{ 
@@ -611,11 +697,11 @@ function LogViewer() {
       </div>
 
       {/* Terminal View */}
-      <div style={{ 
-        background: '#0c0c0e', 
-        border: '1px solid #1f1f23', 
-        borderRadius: '8px', 
-        padding: '16px', 
+      <div style={{
+        background: '#0c0c0e',
+        border: '1px solid #1f1f23',
+        borderRadius: '8px',
+        padding: '16px',
         height: '480px',
         overflowY: 'auto',
         fontFamily: 'var(--font-mono)',
@@ -623,14 +709,14 @@ function LogViewer() {
         lineHeight: '1.6',
         color: '#e2e8f0',
         boxShadow: 'inset 0 4px 12px rgba(0,0,0,0.5)',
-        position: 'relative'
+        position: 'relative',
       }}>
         {error && (
           <div style={{ color: '#ef4444', display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
             Error loading logs: {error}
           </div>
         )}
-        
+
         {!error && logLines.length === 0 && (
           <div style={{ color: 'var(--color-iron)', display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
             {loading ? 'Fetching log lines...' : 'No matching log entries found.'}
@@ -640,7 +726,6 @@ function LogViewer() {
         {!error && logLines.length > 0 && (
           <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
             {logLines.map((line, idx) => {
-              // Color highlight logic
               let color = '#cbd5e1';
               if (line.includes('[ERROR]') || line.includes('❌') || line.includes('LOSS') || line.includes('STOP_HIT') || line.includes('MARKET_EXPIRED')) color = '#f87171';
               else if (line.includes('[WIN]') || line.includes('✅') || line.includes('TARGET_HIT') || line.includes('[TRADE OPENED]')) color = '#34d399';
@@ -649,7 +734,6 @@ function LogViewer() {
               else if (line.includes('[FV') || line.includes('FAIR_VAL') || line.includes('[LAT-ARB]') || line.includes('[NCS]')) color = '#38bdf8';
               else if (line.includes('[SIG') || line.includes('SIGNAL') || line.includes('[ENGINE]')) color = '#94a3b8';
               else if (line.includes('[INFO]')) color = '#e2e8f0';
-              
               return (
                 <div key={idx} style={{ color, paddingBottom: '4px', borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
                   {line}
@@ -660,6 +744,8 @@ function LogViewer() {
           </div>
         )}
       </div>
+      </div>{/* end collapsible body inner */}
+      </div>{/* end collapsible body */}
     </div>
   );
 }

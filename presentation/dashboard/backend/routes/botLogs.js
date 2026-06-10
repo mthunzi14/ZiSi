@@ -82,6 +82,35 @@ router.get('/', (req, res) => {
   res.json({ lines: [], error: 'No log file found' });
 });
 
+// GET /api/bot-logs/sizes - Returns file sizes (MB) for all log files so dashboard can show storage indicator
+router.get('/sizes', (req, res) => {
+  const LOG_FILES = {
+    'Bot Console':        path.join(BOT_ROOT, 'zisi_bot_console.log'),
+    'PM2 Out':            '/root/.pm2/logs/zisi-dashboard-out.log',
+    'PM2 Error':          '/root/.pm2/logs/zisi-dashboard-error.log',
+    'Signal Evaluations': path.join(BOT_ROOT, 'signal_evaluations.jsonl'),
+    'Gate Log':           path.join(BOT_ROOT, 'gate_log.jsonl'),
+  };
+  const files = {};
+  let totalBytes = 0;
+  for (const [name, filePath] of Object.entries(LOG_FILES)) {
+    try {
+      const stat = fs.existsSync(filePath) ? fs.statSync(filePath) : null;
+      const bytes = stat ? stat.size : 0;
+      files[name] = { bytes, mb: Math.round(bytes / 1024 / 1024 * 100) / 100 };
+      totalBytes += bytes;
+    } catch {
+      files[name] = { bytes: 0, mb: 0 };
+    }
+  }
+  const totalMb = Math.round(totalBytes / 1024 / 1024 * 100) / 100;
+  const recommendation = totalBytes > 100 * 1024 * 1024 ? 'Critical — clear now'
+    : totalBytes > 50 * 1024 * 1024 ? 'High — clear soon'
+    : totalBytes > 20 * 1024 * 1024 ? 'Moderate — monitor'
+    : 'OK';
+  res.json({ files, totalMb, recommendation });
+});
+
 // POST /api/bot-logs/clear - Truncates bot and PM2 log files to free up VPS space
 router.post('/clear', (req, res) => {
   try {

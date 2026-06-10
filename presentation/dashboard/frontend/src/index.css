@@ -575,6 +575,8 @@ html, body {
 .t-page-slide[data-page="1"] .t-page[data-page-id="1"],
 .t-page-slide[data-page="2"] .t-page[data-page-id="2"],
 .t-page-slide[data-page="3"] .t-page[data-page-id="3"] {
+  position: relative;
+  inset: auto;
   opacity: 1;
   pointer-events: auto;
   transform: translateX(0);
@@ -586,6 +588,13 @@ html, body {
   .t-page-slide .t-page { transition: none !important; }
 }
 
+
+/* ── 120fps GPU compositing hints ───────────────────────────────────────── */
+.t-page { contain: layout style; }
+.glass-panel, .card { will-change: auto; }
+.border-beam-card { will-change: transform; }
+.sidebar { transform: translateZ(0); }
+.nav-item { will-change: background-color, color; }
 
 /* Transitions.dev — Icon swap */
 
