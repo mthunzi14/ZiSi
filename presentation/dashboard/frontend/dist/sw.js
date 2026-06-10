@@ -1,4 +1,4 @@
-const CACHE = 'zisi-v3';
+const CACHE = 'zisi-v4';
 const STATIC = ['/', '/index.html', '/manifest.json', '/zisi_icon_v3.png'];
 
 self.addEventListener('install', e => {
