@@ -66,7 +66,7 @@ class ExtraterrestrialWSGateway:
         the only guaranteed way to reset the idle timer."""
         try:
             while not ws.closed:
-                await asyncio.sleep(60)
+                await asyncio.sleep(45)
                 if not ws.closed and self.subscriptions:
                     await ws.send_json({
                         "type": "market",
