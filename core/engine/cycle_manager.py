@@ -185,27 +185,26 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
         _strict_cvd_obi = (timeframe == "5m" and t_minus == 15) or (asset == "SOL" and t_minus == 15)
 
         try:
-            # 1. Fetch Pyth Price
-            from core.pyth_oracle_service import GLOBAL_ORACLE_CACHE
-            pyth_price = GLOBAL_ORACLE_CACHE.get(asset, {}).get("price", 0.0)
-            if pyth_price <= 0.0:
-                log.warning("[LATENCY-ARB] No Pyth price available for %s", asset)
+            # 1. Fetch Binance WebSocket Price
+            from infrastructure.websocket.spot_websocket_ingest import get_book_details, get_book_age
+            book_details = await get_book_details(asset)
+            if not book_details:
+                log.warning("[LATENCY-ARB] No Binance WebSocket price available for %s", asset)
                 return
+            ws_price, _, _ = book_details
 
             # T-5s / T-2s freshness gate: near-certainty requires very fresh oracle
             if t_minus == 5:
-                pyth_ts = GLOBAL_ORACLE_CACHE.get(asset, {}).get("timestamp", 0.0)
-                pyth_age = time.time() - pyth_ts
-                if pyth_age > 3.0:
-                    log.info("[T5-SCANNER] %s/%s: Pyth stale (%.1fs > 3s) — skip",
-                             asset, timeframe, pyth_age)
+                ws_age = await get_book_age(asset)
+                if ws_age > 3.0:
+                    log.info("[T5-SCANNER] %s/%s: Binance WebSocket stale (%.1fs > 3s) — skip",
+                             asset, timeframe, ws_age)
                     return
             elif t_minus == 2:
-                pyth_ts = GLOBAL_ORACLE_CACHE.get(asset, {}).get("timestamp", 0.0)
-                pyth_age = time.time() - pyth_ts
-                if pyth_age > 2.0:
-                    log.info("[T2-SWEEPER] %s/%s: Pyth stale (%.1fs > 2s) — skip",
-                             asset, timeframe, pyth_age)
+                ws_age = await get_book_age(asset)
+                if ws_age > 2.0:
+                    log.info("[T2-SWEEPER] %s/%s: Binance WebSocket stale (%.1fs > 2s) — skip",
+                             asset, timeframe, ws_age)
                     return
 
             # 2. Fetch candle open price (klines[-1][1])
@@ -219,10 +218,10 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 
             open_price = float(klines[-1][1])
             # FEED CONSISTENCY (2026-06-10): resolution is the Binance candle close, so the
-            # move must be measured Binance-vs-Binance. Pyth sits -3..-5 bps below Binance,
-            # which made DOWN snipes trigger far easier than UP ones.
-            spot_now = float(klines[-1][4])
-            pct_move = (spot_now - open_price) / open_price
+            # move must be measured Binance-vs-Binance. Using live Binance WebSocket price here
+            # completely avoids Pyth basis bias and stale cache delays.
+            spot_now = ws_price
+            pct_move = (spot_now - open_price) / open_price if open_price > 0 else 0.0
 
             # Fast ATR-sigma for threshold scaling (uses same logic as line 403)
             try:
@@ -802,10 +801,11 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
         timeframe = engine.timeframe
         interval_minutes = 60 if timeframe == "1h" else int(timeframe.rstrip("m"))
         try:
-            from core.pyth_oracle_service import GLOBAL_ORACLE_CACHE
-            pyth_price = GLOBAL_ORACLE_CACHE.get(asset, {}).get("price", 0.0)
-            if pyth_price <= 0.0:
+            from infrastructure.websocket.spot_websocket_ingest import get_book_details
+            book_details = await get_book_details(asset)
+            if not book_details:
                 return
+            ws_price, _, _ = book_details
 
             from core.engine.updown_engine import _fetch_klines_async
             tf_map = {"5m": ("5m", 30), "15m": ("15m", 30), "1h": ("1h", 30)}
@@ -815,9 +815,10 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
                 return
 
             open_price = float(klines[-1][1])
-            # FEED CONSISTENCY (2026-06-10): Binance-vs-Binance — Pyth's -3..-5 bps basis was
-            # 40% of the 10 bps snipe trigger, so DOWN snipes fired on phantom moves.
-            spot_now = float(klines[-1][4])
+            # FEED CONSISTENCY (2026-06-10): resolution is the Binance candle close, so the
+            # move must be measured Binance-vs-Binance. Using live Binance WebSocket price here
+            # completely avoids Pyth basis bias and stale cache delays.
+            spot_now = ws_price
             pct_move = (spot_now - open_price) / open_price if open_price > 0 else 0.0
 
             market = await engine._fetch_market(session, is_latency_scan=True)
@@ -1214,10 +1215,10 @@ async def start_close_sniper(session, engines):
                                 _c_open = float(_kl[-1][1])
                                 # FEED CONSISTENCY (2026-06-10): Binance close, not Pyth
                                 _move   = abs(_cls[-1] - _c_open)
-                                _min_move = 0.15 * _atr14
+                                _min_move = 0.25 * _atr14
                                 if _atr14 > 0 and _move < _min_move:
                                     log.info(
-                                        "[NCS-PROXIMITY] %s/%s: %.0fc but |spot-open|=%.2f < 0.15×ATR=%.2f — flat candle — skip",
+                                        "[NCS-PROXIMITY] %s/%s: %.0fc but |spot-open|=%.2f < 0.25×ATR=%.2f — flat candle — skip",
                                         asset, timeframe, snipe_price * 100, _move, _min_move,
                                     )
                                     snipe_dir = None

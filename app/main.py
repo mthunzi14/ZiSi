@@ -198,6 +198,16 @@ async def _evaluate_market_signals(
         candle_start = (int(now_ts) // (interval_minutes * 60)) * (interval_minutes * 60)
         elapsed = now_ts - candle_start
         
+        # ── DEEP FIX: 15-SECOND CANDLE OPEN BOUNDARY LIMIT ──
+        # Prevent any mid-candle/late signal generation and entry.
+        # This completely eliminates the momentum-chasing late entry trap.
+        if elapsed > 15.0:
+            log.info(
+                "[MAIN] %s/%s: Signal evaluation retry window closed (elapsed=%.1fs > 15.0s) — skip",
+                asset, timeframe, elapsed
+            )
+            return None
+
         signal = await engine.generate_signal(session)
         if signal is not None:
             break
@@ -238,6 +248,23 @@ async def _validate_trade_slot(
     up_price = market["up_price"]
     dn_price = market["dn_price"]
 
+    # ── FV CORRELATED EXPOSURE CAP ──
+    if _entry_source == "FAIR_VAL":
+        try:
+            from infrastructure.state.state_manager import get_open_positions as _get_open_positions
+            _fv_same_dir_open = sum(
+                1 for p in _get_open_positions()
+                if p.get("entry_type") == "FAIR-VAL"
+                and ((p.get("direction") in ("YES","UP")) == (direction == "UP"))
+            )
+            if _fv_same_dir_open >= 2:
+                log.info("[FV-CORR-CAP] %s/%s: already %d open FV %s positions — skip to avoid correlated exposure",
+                         asset, timeframe, _fv_same_dir_open, direction)
+                context.log_skip("fv_correlated_cap", asset, timeframe)
+                return False, {}
+        except Exception as _corr_err:
+            log.error("[FV-CORR-CAP] Error checking correlated exposure: %s", _corr_err)
+
     # SIG 40¢ floor: below 40¢ the crowd is >60% against the signal — momentum lag can't overcome
     # that consensus. Raised from 20¢ after two clean-slate losses at 24.5¢ and 40¢ NO entries.
     # CORR trades (already vetted by lead asset) and FV/NCS are exempt.
@@ -270,8 +297,8 @@ async def _validate_trade_slot(
         _corr_pair = {"BTC": "ETH", "ETH": "BTC"}.get(asset.upper())
         if _corr_pair:
             try:
-                from infrastructure.state.state_manager import state_manager as _sm
-                for _p in _sm.get_open_positions():
+                from infrastructure.state.state_manager import get_open_positions as _get_open_positions
+                for _p in _get_open_positions():
                     _pt = _p.get("event_title", "")
                     if (_corr_pair in _pt
                             and f"[{timeframe}]" in _pt
@@ -1079,9 +1106,9 @@ async def main() -> None:
     # ── Pyth Hermes Real-Time SSE Price Stream Service Integration ──────────
     # Starts Pyth Hermes streaming as a persistent background daemon, bypassing rate limits.
     # Enables global in-memory sub-0.1ms oracle spot price caching.
-    from core.pyth_oracle_service import PythOracleService
-    pyth_service = PythOracleService()
-    await pyth_service.start()
+    # from core.pyth_oracle_service import PythOracleService
+    # pyth_service = PythOracleService()
+    # await pyth_service.start()
 
     try:
         # Robust TCP connection pooling configuration
@@ -1151,7 +1178,7 @@ async def main() -> None:
             log.info("[MAIN] Launching %d asyncio tasks (Dynamic asset loops + reconciliation + arbitrage scanner)", len(tasks))
             await asyncio.gather(*tasks)
     finally:
-        await pyth_service.stop()
+        # await pyth_service.stop()
         log.info("[MAIN] Halting HFT WebSocket ingest daemon...")
         ingest.stop()
         log.info(

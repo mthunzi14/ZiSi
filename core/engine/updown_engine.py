@@ -547,6 +547,28 @@ class UpDownEngine:
                     log.warning("[EDGE] Failed to query EdgeOrchestrator in 1h streak reversal: %s", e)
                     self.last_edge_context = None
 
+                _streak_whale = edge_ctx.get("whale_pressure", 0.0) if edge_ctx else 0.0
+                if abs(_streak_whale) >= 0.85:
+                    _whale_contradicts = (
+                        (_streak_whale < 0 and direction == "UP") or   # Bears contradict UP
+                        (_streak_whale > 0 and direction == "DOWN")    # Bulls contradict DOWN
+                    )
+                    if _whale_contradicts:
+                        log.warning(
+                            "[STREAK-WHALE-VETO] %s/1h: whale pressure %.2f contradicts %s — skipping streak reversal",
+                            self.asset, _streak_whale, direction
+                        )
+                        return None
+
+                if edge_ctx:
+                    whale_pressure = edge_ctx.get('whale_pressure', 0.0)
+                    whale_is_up = whale_pressure >= 0.0
+                    _whale_aligned = (whale_is_up == (direction == 'UP'))
+                    _confluence_score = edge_ctx.get('confluence_score', 0)
+                else:
+                    _whale_aligned = True
+                    _confluence_score = 2
+
                 return {
                     "asset":        self.asset,
                     "timeframe":    self.timeframe,
@@ -561,8 +583,9 @@ class UpDownEngine:
                     "edge_context": edge_ctx,
                     "entry_source": "REVERSAL_STREAK",
                     "corroboration_multiplier": 1.0,
-                    "whale_aligned": True,   # default allow for streak-reversal path
-                    "confluence_score": 2,   # default allow for streak-reversal path
+                    "whale_aligned": _whale_aligned,
+                    "confluence_score": _confluence_score,
+                    "is_reversal": True,
                 }
 
 

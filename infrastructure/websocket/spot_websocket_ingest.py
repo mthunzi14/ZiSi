@@ -139,6 +139,13 @@ def _has_cvd_data(symbol: str) -> bool:
     return len(book.get("trades_history", [])) > 0
 
 
+async def get_book_age(symbol: str) -> float:
+    """Return the time in seconds since the last bookTicker update for this symbol."""
+    async with _market_books_lock:
+        book = _market_books.get(symbol.upper())
+        return time.time() - book.get("timestamp", 0.0) if book else 999.0
+
+
 # ---------------------------------------------------------------------------
 # Ingest daemon
 # ---------------------------------------------------------------------------
@@ -191,6 +198,7 @@ class BinanceWebSocketIngest:
                                         "ofi_value": 0.0,
                                         "binance_obi": 0.0,
                                         "trades_history": [],
+                                        "timestamp": 0.0,
                                         "m1_candle": {
                                             "open": 0.0, "high": 0.0, "low": 0.0,
                                             "close": 0.0, "cvd": 0.0, "open_time": 0.0,
@@ -274,6 +282,7 @@ class BinanceWebSocketIngest:
                 old["bid_qty"] = new_bid_qty
                 old["ask_price"] = new_ask
                 old["ask_qty"] = new_ask_qty
+                old["timestamp"] = time.time()
 
         if new_bid > 0 and old_bid > 0:
             _pct = (new_bid - old_bid) / old_bid
