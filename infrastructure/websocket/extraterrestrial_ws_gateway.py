@@ -59,16 +59,28 @@ class ExtraterrestrialWSGateway:
             return round((b + a) / 2, 4), round(a - b, 4)
         return a or b or None, None
 
+    async def _ping_loop(self, ws) -> None:
+        """Send application-level JSON pings every 30s to keep the connection alive."""
+        try:
+            while not ws.closed:
+                await asyncio.sleep(30)
+                if not ws.closed:
+                    await ws.send_json({"type": "ping"})
+        except Exception:
+            pass
+
     async def _ws_loop(self):
         while self.is_active:
             try:
                 self._session = aiohttp.ClientSession(headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 })
-                async with self._session.ws_connect(self.feed_url, heartbeat=60.0) as ws:
+                # No heartbeat= param — Polymarket CLOB doesn't respond to WS-level PING frames,
+                # causing aiohttp to drop the connection. We use application-level JSON pings instead.
+                async with self._session.ws_connect(self.feed_url) as ws:
                     self._ws = ws
                     log.info("[GOD-WS] Connected to Polymarket CLOB WebSocket")
-                    
+
                     if self.subscriptions:
                         msg = {
                             "type": "subscribe",
@@ -76,26 +88,30 @@ class ExtraterrestrialWSGateway:
                             "custom_feature_enabled": True
                         }
                         await ws.send_json(msg)
-                    
-                    async for msg in ws:
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            try:
-                                data = json.loads(msg.data)
-                                if isinstance(data, list):
-                                    for item in data:
-                                        self._process_message(item)
-                                else:
-                                    self._process_message(data)
-                            except json.JSONDecodeError:
-                                pass
-                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                            break
+
+                    ping_task = asyncio.create_task(self._ping_loop(ws))
+                    try:
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                try:
+                                    data = json.loads(msg.data)
+                                    if isinstance(data, list):
+                                        for item in data:
+                                            self._process_message(item)
+                                    else:
+                                        self._process_message(data)
+                                except json.JSONDecodeError:
+                                    pass
+                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                break
+                    finally:
+                        ping_task.cancel()
             except Exception as e:
                 log.error(f"[GOD-WS] Connection error: {e}")
-            
+
             if self._session:
                 await self._session.close()
-                
+
             if self.is_active:
                 log.warning("[GOD-WS] Disconnected. Reconnecting in 3 seconds...")
                 await asyncio.sleep(3)
