@@ -81,6 +81,8 @@ diagnostics_state.json
 macro_context.json
 markov_state.json
 pyth_prices.json
+chainlink_prices.json
+sentiment_state.json
 metrics_*.json
 trade_journal_export.csv
 zisi_bot_console.log
