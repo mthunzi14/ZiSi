@@ -905,24 +905,32 @@ class UpDownEngine:
                 if self.invert_signal:
                     direction = "DOWN" if direction == "UP" else "UP"
 
-                # Tier 3: SIG last-candle trap guard — prevents entering after candle has already
-                # moved against the signal direction. "Getting caught in traps" is almost always
-                # a prior candle that went the wrong way and the signal is still stale.
-                # Exempt: reversals (prior candle IS expected to be opposite), MEAN_REVERSION fades.
-                if (not _dec.get("is_reversal")
-                        and regime != "MEAN_REVERSION"
-                        and score_base < 0.75
-                        and self.timeframe in ("5m", "15m")
-                        and len(klines) >= 2):
+                # SIG-CONFIRM gate (2026-06-10) — replaces the prior-candle trap guard.
+                # 60-day study (BTC/ETH/SOL, 5m+15m): prior-candle continuation runs 45-49%
+                # (NEGATIVE edge, worst after big prior moves — exactly when RSI/mom triggers
+                # fire), while the current window's own early move predicts its close at 61-69%
+                # once it reaches >= 0.15x the mean window range. A SIG bet pays only on THIS
+                # window's open->close, so the current window must confirm the direction —
+                # regardless of score (the 01:45 five-asset cascade lead scored 0.86 and bypassed
+                # the old guard). Reversal snipes stay exempt (contrarian by design).
+                if not _dec.get("is_reversal"):
                     try:
-                        _trap_prev = klines[-2]
-                        _trap_prev_bull = float(_trap_prev[4]) >= float(_trap_prev[1])
-                        _trap_sig_bull = direction == "UP"
-                        if _trap_prev_bull != _trap_sig_bull:
+                        _co = float(klines[-1][1])
+                        _intra = (closes[-1] - _co) / _co if _co > 0 else 0.0
+                        _wrets = []
+                        for _k in klines[-15:-1]:
+                            _wo = float(_k[1])
+                            if _wo > 0:
+                                _wrets.append(abs(float(_k[4]) - _wo) / _wo)
+                        _vol_unit = (sum(_wrets) / len(_wrets)) if _wrets else 0.0
+                        _confirm_min = 0.15 * _vol_unit
+                        _aligned = (_intra > 0) if direction == "UP" else (_intra < 0)
+                        if not _aligned or abs(_intra) < _confirm_min:
                             log.info(
-                                "[SIG-TRAP-GATE] %s/%s: SIG %s (score=%.2f) but prior candle %s — trap risk — skip",
-                                self.asset, self.timeframe, direction, score_base,
-                                "UP" if _trap_prev_bull else "DN",
+                                "[SIG-CONFIRM] %s/%s: %s unconfirmed by current window "
+                                "(intra=%+.4f%% vs required ±%.4f%%) — skip",
+                                self.asset, self.timeframe, direction,
+                                _intra * 100, _confirm_min * 100,
                             )
                             return None
                     except Exception:
