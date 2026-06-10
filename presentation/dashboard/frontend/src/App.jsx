@@ -89,7 +89,7 @@ export default function App() {
       } catch { /* offline */ }
     };
     poll();
-    const id = setInterval(poll, 15000);
+    const id = setInterval(poll, 3000);
     return () => clearInterval(id);
   }, []);
 

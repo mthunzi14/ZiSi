@@ -65,6 +65,7 @@ class PolymarketRTDSIngest:
             self.running = True
             self._task = asyncio.create_task(self._socket_loop())
             self._disk_task = asyncio.create_task(self._write_cache_to_disk_loop())
+            self._binance_task = asyncio.create_task(self._binance_poll_loop())
             log.info("[RTDS-WS] Ingest daemon started -> %s", self.ws_url)
 
     def stop(self):
@@ -73,7 +74,15 @@ class PolymarketRTDSIngest:
             self._task.cancel()
         if hasattr(self, "_disk_task") and self._disk_task:
             self._disk_task.cancel()
+        if hasattr(self, "_binance_task") and self._binance_task:
+            self._binance_task.cancel()
         log.info("[RTDS-WS] Ingest daemon stopped.")
+
+    async def _binance_poll_loop(self):
+        """Poll Binance REST every 3 seconds as price backstop — ensures cards stay green even without RTDS."""
+        while self.running:
+            await asyncio.sleep(3)
+            await self._refresh_from_binance()
 
     async def _write_cache_to_disk_loop(self):
         """Periodically dump the global price cache to a JSON file for the Node backend to ingest."""
@@ -99,6 +108,8 @@ class PolymarketRTDSIngest:
             await asyncio.sleep(0.5)
 
     async def _socket_loop(self):
+        backoff = 10.0  # start at 10s, not 3s — avoids Cloudflare rate-limit hammering
+        connected_once = False
         while self.running:
             try:
                 log.info("[RTDS-WS] Connecting to %s...", self.ws_url)
@@ -106,8 +117,9 @@ class PolymarketRTDSIngest:
                 async with aiohttp.ClientSession(connector=connector) as session:
                     async with session.ws_connect(self.ws_url, heartbeat=10.0) as ws:
                         log.info("[RTDS-WS] Connected to Polymarket RTDS")
-                        
-                        # Subscribe to crypto_prices_chainlink
+                        backoff = 10.0  # reset on successful connect
+                        connected_once = True
+
                         sub_msg = {
                             "action": "subscribe",
                             "subscriptions": [
@@ -120,10 +132,9 @@ class PolymarketRTDSIngest:
                         }
                         await ws.send_json(sub_msg)
                         log.info("[RTDS-WS] Subscribed to topic: crypto_prices_chainlink")
-                        
-                        # Start periodic PING sender task
+
                         ping_task = asyncio.create_task(self._ping_sender(ws))
-                        
+
                         try:
                             async for msg in ws:
                                 if msg.type == aiohttp.WSMsgType.TEXT:
@@ -144,8 +155,12 @@ class PolymarketRTDSIngest:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                log.error("[RTDS-WS] WebSocket connection exception: %r — reconnecting in 3s", e)
-                await asyncio.sleep(3)
+                log.error("[RTDS-WS] WebSocket connection exception: %r — reconnecting in %.0fs", e, backoff)
+                # Exponential backoff: 10s → 20s → 40s → 80s → capped at 120s
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 120.0)
+                # While backing off, keep chainlink_prices.json fresh via Binance REST
+                await self._refresh_from_binance()
 
     async def _ping_sender(self, ws):
         """Send PING text frame every 5 seconds to keep connection alive."""
@@ -158,6 +173,32 @@ class PolymarketRTDSIngest:
             pass
         except Exception as e:
             log.warning("[RTDS-WS] Failed to send PING: %s", e)
+
+    async def _refresh_from_binance(self):
+        """Fetch spot prices from Binance REST as fallback when RTDS WS is down."""
+        SYMBOLS = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "XRP": "XRPUSDT", "DOGE": "DOGEUSDT"}
+        try:
+            connector = aiohttp.TCPConnector(enable_cleanup_closed=True)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                url = "https://api.binance.com/api/v3/ticker/price?symbols=" + \
+                      "[" + ",".join(f'%22{v}%22' for v in SYMBOLS.values()) + "]"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status != 200:
+                        return
+                    data = await resp.json()
+                    now = time.time()
+                    sym_to_asset = {v: k for k, v in SYMBOLS.items()}
+                    async with _price_lock:
+                        for item in data:
+                            asset = sym_to_asset.get(item.get("symbol"))
+                            if not asset:
+                                continue
+                            price = float(item.get("price", 0))
+                            if price > 0:
+                                _chainlink_prices[asset] = {"price": price, "timestamp": now}
+                    log.info("[RTDS-WS] Binance REST fallback: updated %d prices", len(data))
+        except Exception as e:
+            log.debug("[RTDS-WS] Binance fallback failed: %s", e)
 
     async def _process_message(self, data: dict):
         topic = data.get("topic")

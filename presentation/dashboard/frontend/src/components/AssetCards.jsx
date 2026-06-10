@@ -39,7 +39,7 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
   const clData    = state?.chainlinkPrices?.[asset] || state?.pythPrices?.[asset];
   const clPrice   = clData?.price;
   const clAge     = clData?.timestamp ? Math.max(0, Math.floor(Date.now() / 1000) - clData.timestamp) : null;
-  const fresh     = clAge !== null && clAge < 5;
+  const fresh     = clAge !== null && clAge < 15;
 
   useEffect(() => {
     if (serverSecs !== null && serverSecs !== undefined) setLocalSecs(serverSecs);

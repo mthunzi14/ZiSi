@@ -408,11 +408,11 @@ const Analytics = memo(function Analytics({ closed = [] }) {
 // ── LogViewer Component ───────────────────────────────────────────────────────
 function LogViewer() {
   const [logType, setLogType] = useState('bot');
-  const [lines, setLines] = useState(100);
+  const [lines, setLines] = useState(200);
   const [filterText, setFilterText] = useState('');
   const [logLines, setLogLines] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [error, setError] = useState(null);
   
   const terminalEndRef = useRef(null);
@@ -543,11 +543,11 @@ function LogViewer() {
               outline: 'none'
             }}
           >
-            <option value="bot">Bot Console Logs (zisi_bot_console.log)</option>
+            <option value="bot">Bot Console (zisi_bot_console.log)</option>
             <option value="signals">Signal Evaluations (signal_evaluations.jsonl)</option>
-            <option value="gates">Gate Cooldown Logs (gate_log.jsonl)</option>
-            <option value="positions">Raw Trades (positions_state.json)</option>
-            <option value="account">Raw Account State (account_state.json)</option>
+            <option value="gates">Gate Log (gate_log.jsonl)</option>
+            <option value="positions">Positions State (positions_state.json)</option>
+            <option value="account">Account State (account_state.json)</option>
           </select>
         </div>
 
@@ -616,7 +616,7 @@ function LogViewer() {
         border: '1px solid #1f1f23', 
         borderRadius: '8px', 
         padding: '16px', 
-        height: '350px', 
+        height: '480px',
         overflowY: 'auto',
         fontFamily: 'var(--font-mono)',
         fontSize: '11px',
@@ -641,12 +641,14 @@ function LogViewer() {
           <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
             {logLines.map((line, idx) => {
               // Color highlight logic
-              let color = '#e2e8f0';
-              if (line.includes('[ERROR]') || line.includes('error') || line.includes('FAIL') || line.includes('[LOSS]') || line.includes('Stop Hit') || line.includes('MARKET EXPIRED')) color = '#f87171'; // red
-              else if (line.includes('[WIN]') || line.includes('Target Hit') || line.includes('won=True') || line.includes('TARGET_HIT')) color = '#34d399'; // green
-              else if (line.includes('[WARNING]') || line.includes('warn') || line.includes('[COOLDOWN]') || line.includes('cooldown')) color = '#fbbf24'; // yellow
-              else if (line.includes('[INFO]') || line.includes('[GOD-WS]') || line.includes('[CLOB FETCH]')) color = '#60a5fa'; // blue
-              else if (line.includes('[SIG') || line.includes('[FV') || line.includes('[NCS')) color = '#c084fc'; // purple
+              let color = '#cbd5e1';
+              if (line.includes('[ERROR]') || line.includes('❌') || line.includes('LOSS') || line.includes('STOP_HIT') || line.includes('MARKET_EXPIRED')) color = '#f87171';
+              else if (line.includes('[WIN]') || line.includes('✅') || line.includes('TARGET_HIT') || line.includes('[TRADE OPENED]')) color = '#34d399';
+              else if (line.includes('[WARNING]') || line.includes('WARN') || line.includes('reconnecting') || line.includes('stale')) color = '#fbbf24';
+              else if (line.includes('[TRADE') || line.includes('PAPER') || line.includes('BUY YES') || line.includes('BUY NO') || line.includes('[EXIT]')) color = '#a78bfa';
+              else if (line.includes('[FV') || line.includes('FAIR_VAL') || line.includes('[LAT-ARB]') || line.includes('[NCS]')) color = '#38bdf8';
+              else if (line.includes('[SIG') || line.includes('SIGNAL') || line.includes('[ENGINE]')) color = '#94a3b8';
+              else if (line.includes('[INFO]')) color = '#e2e8f0';
               
               return (
                 <div key={idx} style={{ color, paddingBottom: '4px', borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
