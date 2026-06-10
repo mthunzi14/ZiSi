@@ -60,12 +60,19 @@ class ExtraterrestrialWSGateway:
         return a or b or None, None
 
     async def _ping_loop(self, ws) -> None:
-        """Send application-level JSON pings every 30s to keep the connection alive."""
+        """Resend subscribe message every 60s as keepalive.
+        Polymarket's CLOB WS has an ~80s server-side idle timeout and ignores
+        WebSocket-protocol PINGs and unknown message types. Re-subscribing is
+        the only guaranteed way to reset the idle timer."""
         try:
             while not ws.closed:
-                await asyncio.sleep(30)
-                if not ws.closed:
-                    await ws.send_json({"type": "ping"})
+                await asyncio.sleep(60)
+                if not ws.closed and self.subscriptions:
+                    await ws.send_json({
+                        "type": "subscribe",
+                        "assets_ids": list(self.subscriptions),
+                        "custom_feature_enabled": True,
+                    })
         except Exception:
             pass
 
