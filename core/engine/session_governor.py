@@ -226,6 +226,12 @@ async def request_trade_slot(
             if existing["timeframe"] == timeframe:
                 return False, "btc_duplicate_candle"
 
+        # Pre-commit inside the lock: reserve the slot before releasing.
+        # Without this, concurrent async tasks all read the same (uncommitted) slot count,
+        # pass the cap check simultaneously, and fire correlated bets in the same candle.
+        _candle_slots.setdefault(bucket, []).append(
+            {"asset": asset, "timeframe": timeframe, "score": score, "_pre": True}
+        )
         return True, "ok"
 
 
@@ -255,9 +261,14 @@ async def commit_trade_slot(
             }
         _asset_last_bucket[asset] = bucket
         if not is_dual:
-            _candle_slots.setdefault(bucket, []).append(
-                {"asset": asset, "timeframe": timeframe, "score": score}
-            )
+            # Promote the pre-committed entry (added atomically in request_trade_slot) to committed.
+            entries = _candle_slots.setdefault(bucket, [])
+            for i, e in enumerate(entries):
+                if e.get("asset") == asset and e.get("timeframe") == timeframe and e.get("_pre"):
+                    entries[i] = {"asset": asset, "timeframe": timeframe, "score": score}
+                    break
+            else:
+                entries.append({"asset": asset, "timeframe": timeframe, "score": score})
 
 
 async def prune_old_buckets(max_age_seconds: int = 3600) -> None:
@@ -280,8 +291,13 @@ async def prune_old_buckets(max_age_seconds: int = 3600) -> None:
 
 
 async def cancel_trade_slot(asset: str, timeframe: str) -> None:
-    """Discard (asset, timeframe) from in-flight tracker if placement failed."""
+    """Discard (asset, timeframe) from in-flight tracker and remove pre-committed slot on failure."""
     asset = asset.upper()
     async with _lock:
         _lat_arb_in_flight.discard((asset, timeframe))
+        for bkt_key, entries in list(_candle_slots.items()):
+            _candle_slots[bkt_key] = [
+                e for e in entries
+                if not (e.get("asset") == asset and e.get("timeframe") == timeframe and e.get("_pre"))
+            ]
 

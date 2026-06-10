@@ -51,7 +51,7 @@ from core.risk.risk_manager import entry_price_gate, check_daily_loss_halt, chec
 from core.engine.reconciliation import reconciliation_loop
 from core.engine.regime_filter import time_gate_open
 from core.engine.session_governor import (
-    request_trade_slot, commit_trade_slot, has_open_asset_exposure,
+    request_trade_slot, commit_trade_slot, cancel_trade_slot, has_open_asset_exposure,
 )
 from infrastructure.state import state_manager
 from infrastructure.state.diagnostics import global_diagnostics
@@ -785,6 +785,8 @@ async def _execute_order_flow(
         if order:
             traded = True
             await commit_trade_slot(asset, timeframe, score, interval_minutes, is_dual=False, direction=direction)
+        else:
+            await cancel_trade_slot(asset, timeframe)
 
     return traded
 
