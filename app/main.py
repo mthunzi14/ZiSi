@@ -887,6 +887,43 @@ async def _place_corr_trades(
         targets.append("DOGE")
     if not targets:
         return
+
+    # CORR-MAGNITUDE gate (2026-06-10): cross-asset correlation is conditional on the
+    # lead making a LARGE move. 30-day study (BTC lead vs ETH/SOL/XRP/DOGE, 5m+15m):
+    # P(alt window closes in lead's direction) is 53-55% (coin flip) when the lead's
+    # displacement is < 0.25x its mean window range, 60-66% at 0.25-0.50x, and only
+    # clears typical shadow entry prices (~55-62c) with margin at >= 0.50x (69-79%,
+    # rising to 88%+ above 1x). Shadows on small lead moves are uncorrelated coin
+    # flips — the 06:47 cascade shadows (ETH/XRP) closed AGAINST a winning BTC lead.
+    try:
+        from core.engine.updown_engine import _fetch_klines_async
+        _interval = "1h" if timeframe == "1h" else timeframe
+        _lk = await _fetch_klines_async(session, lead_asset, _interval, 30)
+        _lo = float(_lk[-1][1])
+        _lc = float(_lk[-1][4])
+        _intra = (_lc - _lo) / _lo if _lo > 0 else 0.0
+        _rets = []
+        for _k in _lk[-15:-1]:
+            _ko = float(_k[1])
+            if _ko > 0:
+                _rets.append(abs(float(_k[4]) - _ko) / _ko)
+        _vol_unit = (sum(_rets) / len(_rets)) if _rets else 0.0
+        _ratio = (abs(_intra) / _vol_unit) if _vol_unit > 0 else 0.0
+        _aligned = (_intra > 0) if direction == "UP" else (_intra < 0)
+        if not _aligned or _ratio < 0.50:
+            log.info(
+                "[CORR-MAGNITUDE] %s/%s lead %s move %+.4f%% = %.2fx window range "
+                "(need aligned and >= 0.50x) — no shadows this window",
+                lead_asset, timeframe, direction, _intra * 100, _ratio,
+            )
+            return
+        log.info(
+            "[CORR-MAGNITUDE] %s/%s lead %s move %+.4f%% = %.2fx window range — shadows enabled",
+            lead_asset, timeframe, direction, _intra * 100, _ratio,
+        )
+    except Exception as _cme:
+        log.warning("[CORR-MAGNITUDE] %s/%s: check failed (%s) — proceeding with shadows",
+                    lead_asset, timeframe, _cme)
     current_balance = _gcb()
     open_positions = get_open_positions()
     interval_minutes = 60 if timeframe == "1h" else int(timeframe.rstrip("m"))
