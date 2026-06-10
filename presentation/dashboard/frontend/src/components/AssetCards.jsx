@@ -36,10 +36,10 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
   const [localSecs, setLocalSecs] = useState(null);
   const [hovered, setHovered] = useState(false);
 
-  const pythData  = state?.pythPrices?.[asset];
-  const pythPrice = pythData?.price;
-  const pythAge   = pythData?.timestamp ? Math.max(0, Math.floor(Date.now() / 1000) - pythData.timestamp) : null;
-  const fresh     = pythAge !== null && pythAge < 5;
+  const clData    = state?.chainlinkPrices?.[asset] || state?.pythPrices?.[asset];
+  const clPrice   = clData?.price;
+  const clAge     = clData?.timestamp ? Math.max(0, Math.floor(Date.now() / 1000) - clData.timestamp) : null;
+  const fresh     = clAge !== null && clAge < 5;
 
   useEffect(() => {
     if (serverSecs !== null && serverSecs !== undefined) setLocalSecs(serverSecs);
@@ -95,7 +95,7 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
         }}>{tier}</span>
       </div>
 
-      {/* Pyth price */}
+      {/* Chainlink price */}
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 1 }}>
           <span style={{
@@ -105,10 +105,10 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
             boxShadow: fresh ? '0 0 4px #10b981' : 'none',
             animation: fresh ? 'alertPulse 2s infinite' : 'none',
           }} />
-          <span style={{ fontSize: 7, color: '#3f3f46', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Pyth oracle</span>
+          <span style={{ fontSize: 7, color: '#3f3f46', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Chainlink oracle</span>
         </div>
         <span style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 800, color: 'var(--color-text-primary)' }}>
-          {fmtPrice(pythPrice)}
+          {fmtPrice(clPrice)}
         </span>
       </div>
 

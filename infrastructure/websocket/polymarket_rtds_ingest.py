@@ -8,6 +8,7 @@ import asyncio
 import logging
 import json
 import time
+import os
 import aiohttp
 from typing import Dict, Optional, Tuple
 
@@ -57,18 +58,45 @@ class PolymarketRTDSIngest:
         self.ws_url = ws_url
         self.running = False
         self._task: Optional[asyncio.Task] = None
+        self._disk_task: Optional[asyncio.Task] = None
 
     def start(self):
         if not self.running:
             self.running = True
             self._task = asyncio.create_task(self._socket_loop())
+            self._disk_task = asyncio.create_task(self._write_cache_to_disk_loop())
             log.info("[RTDS-WS] Ingest daemon started -> %s", self.ws_url)
 
     def stop(self):
         self.running = False
         if self._task:
             self._task.cancel()
-            log.info("[RTDS-WS] Ingest daemon stopped.")
+        if hasattr(self, "_disk_task") and self._disk_task:
+            self._disk_task.cancel()
+        log.info("[RTDS-WS] Ingest daemon stopped.")
+
+    async def _write_cache_to_disk_loop(self):
+        """Periodically dump the global price cache to a JSON file for the Node backend to ingest."""
+        while self.running:
+            try:
+                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                async with _price_lock:
+                    cache_copy = dict(_chainlink_prices)
+                
+                cl_temp = os.path.join(base_dir, "chainlink_prices.json.tmp")
+                cl_target = os.path.join(base_dir, "chainlink_prices.json")
+                with open(cl_temp, "w") as f:
+                    json.dump(cache_copy, f, indent=2)
+                os.replace(cl_temp, cl_target)
+                
+                pyth_temp = os.path.join(base_dir, "pyth_prices.json.tmp")
+                pyth_target = os.path.join(base_dir, "pyth_prices.json")
+                with open(pyth_temp, "w") as f:
+                    json.dump(cache_copy, f, indent=2)
+                os.replace(pyth_temp, pyth_target)
+            except Exception as e:
+                log.debug("[RTDS-WS] Failed to dump prices to disk: %s", e)
+            await asyncio.sleep(0.5)
 
     async def _socket_loop(self):
         while self.running:

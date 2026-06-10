@@ -407,17 +407,21 @@ router.get('/', (req, res) => {
 
     let pythPrices = {};
     try {
+      const clFile = path.join(__dirname, '../../../../chainlink_prices.json');
       const pythFile = path.join(__dirname, '../../../../pyth_prices.json');
-      if (fs.existsSync(pythFile)) {
+      if (fs.existsSync(clFile)) {
+        pythPrices = JSON.parse(fs.readFileSync(clFile, 'utf-8'));
+      } else if (fs.existsSync(pythFile)) {
         pythPrices = JSON.parse(fs.readFileSync(pythFile, 'utf-8'));
       }
     } catch (pythErr) {
-      console.warn('[HEALTH] Failed to parse pyth_prices.json:', pythErr.message);
+      console.warn('[HEALTH] Failed to parse prices file:', pythErr.message);
     }
 
     res.json({
       status,
       pythPrices,
+      chainlinkPrices: pythPrices,
       running: status === 'running',
       balance,
       account_balance: balance,
