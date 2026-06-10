@@ -1,5 +1,5 @@
 // Analytics.jsx — Trader-facing performance breakdown (6 panels)
-import { useMemo, memo } from 'react';
+import { useMemo, memo, useState, useEffect, useRef, useCallback } from 'react';
 import {
   BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip,
@@ -398,8 +398,268 @@ const Analytics = memo(function Analytics({ closed = [] }) {
         )}
       </PanelCard>
 
+      {/* Live System Log Terminal */}
+      <LogViewer />
+
     </div>
   );
 });
+
+// ── LogViewer Component ───────────────────────────────────────────────────────
+function LogViewer() {
+  const [logType, setLogType] = useState('bot');
+  const [lines, setLines] = useState(100);
+  const [filterText, setFilterText] = useState('');
+  const [logLines, setLogLines] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [error, setError] = useState(null);
+  
+  const terminalEndRef = useRef(null);
+
+  const fetchLogs = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const url = `/api/bot-logs?file=${logType}&lines=${lines}&filter=${encodeURIComponent(filterText)}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      const data = await res.json();
+      if (data.error) {
+        setError(data.error);
+        setLogLines([]);
+      } else {
+        setLogLines(data.lines || []);
+      }
+    } catch (err) {
+      setError(err.message);
+      setLogLines([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [logType, lines, filterText]);
+
+  useEffect(() => {
+    fetchLogs();
+  }, [fetchLogs]);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = setInterval(() => {
+      fetchLogs();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [autoRefresh, fetchLogs]);
+
+  const handleClearLogs = async () => {
+    if (!window.confirm("Are you sure you want to clear the PM2 and console log files? This will truncate the log files on the VPS to free up space. (The file sizes will reset to 0)")) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/bot-logs/clear', { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      const data = await res.json();
+      alert(data.message || "Logs cleared");
+      fetchLogs();
+    } catch (err) {
+      alert(`Error clearing logs: ${err.message}`);
+    }
+  };
+
+  // Auto-scroll to bottom of logs when new logs load
+  useEffect(() => {
+    if (terminalEndRef.current) {
+      terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logLines]);
+
+  return (
+    <div className="card" style={{ padding: '16px 20px', marginTop: '20px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
+        <div>
+          <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '15px', color: 'var(--color-obsidian)', letterSpacing: '-0.02em', margin: 0 }}>
+            Live System Log Terminal
+          </h3>
+          <div style={{ fontSize: '10px', color: 'var(--color-iron)', marginTop: '2px' }}>
+            Inspect real-time operations, signals, gates, and trade ledgers
+          </div>
+        </div>
+        
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <button 
+            onClick={fetchLogs} 
+            className="btn btn-secondary" 
+            style={{ fontSize: '11px', padding: '6px 12px' }}
+            disabled={loading}
+          >
+            {loading ? 'Refreshing...' : 'Refresh'}
+          </button>
+          
+          <button 
+            onClick={handleClearLogs} 
+            className="btn" 
+            style={{ 
+              fontSize: '11px', 
+              padding: '6px 12px', 
+              background: 'rgba(239, 68, 68, 0.1)', 
+              color: '#ef4444', 
+              border: '1px solid rgba(239, 68, 68, 0.2)',
+              borderRadius: '6px',
+              cursor: 'pointer'
+            }}
+          >
+            Clear Log Files
+          </button>
+        </div>
+      </div>
+
+      {/* Control Bar */}
+      <div style={{ 
+        display: 'flex', 
+        gap: '12px', 
+        alignItems: 'center', 
+        marginBottom: '12px', 
+        flexWrap: 'wrap',
+        background: 'var(--color-cream-deep)',
+        padding: '10px 14px',
+        borderRadius: '8px',
+        border: '1px solid var(--color-border-subtle)',
+        fontSize: '12px'
+      }}>
+        {/* Log Type Selector */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <label style={{ fontSize: '10px', color: 'var(--color-iron)', fontWeight: 600 }}>Log File Source</label>
+          <select 
+            value={logType} 
+            onChange={(e) => setLogType(e.target.value)}
+            style={{ 
+              padding: '6px 10px', 
+              borderRadius: '6px', 
+              border: '1px solid var(--color-border)', 
+              background: '#ffffff',
+              color: 'var(--color-obsidian)',
+              fontWeight: 600,
+              fontSize: '12px',
+              outline: 'none'
+            }}
+          >
+            <option value="bot">Bot Console Logs (zisi_bot_console.log)</option>
+            <option value="signals">Signal Evaluations (signal_evaluations.jsonl)</option>
+            <option value="gates">Gate Cooldown Logs (gate_log.jsonl)</option>
+            <option value="positions">Raw Trades (positions_state.json)</option>
+            <option value="account">Raw Account State (account_state.json)</option>
+          </select>
+        </div>
+
+        {/* Lines count */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <label style={{ fontSize: '10px', color: 'var(--color-iron)', fontWeight: 600 }}>Lines</label>
+          <select 
+            value={lines} 
+            onChange={(e) => setLines(Number(e.target.value))}
+            style={{ 
+              padding: '6px 10px', 
+              borderRadius: '6px', 
+              border: '1px solid var(--color-border)', 
+              background: '#ffffff',
+              color: 'var(--color-obsidian)',
+              fontWeight: 600,
+              fontSize: '12px',
+              outline: 'none'
+            }}
+          >
+            <option value={50}>50 lines</option>
+            <option value={100}>100 lines</option>
+            <option value={200}>200 lines</option>
+            <option value={500}>500 lines</option>
+          </select>
+        </div>
+
+        {/* Filter */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '150px' }}>
+          <label style={{ fontSize: '10px', color: 'var(--color-iron)', fontWeight: 600 }}>Grep / Filter Content</label>
+          <input 
+            type="text" 
+            placeholder="Search text (case-insensitive)..." 
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+            style={{ 
+              padding: '6px 10px', 
+              borderRadius: '6px', 
+              border: '1px solid var(--color-border)', 
+              background: '#ffffff',
+              color: 'var(--color-obsidian)',
+              fontSize: '12px',
+              outline: 'none'
+            }}
+          />
+        </div>
+
+        {/* Auto Refresh */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '16px' }}>
+          <input 
+            type="checkbox" 
+            id="autoRefresh"
+            checked={autoRefresh}
+            onChange={(e) => setAutoRefresh(e.target.checked)}
+            style={{ cursor: 'pointer' }}
+          />
+          <label htmlFor="autoRefresh" style={{ fontWeight: 600, color: autoRefresh ? 'var(--color-accent)' : 'var(--color-obsidian)', cursor: 'pointer', userSelect: 'none' }}>
+            Auto-refresh (3s)
+          </label>
+        </div>
+      </div>
+
+      {/* Terminal View */}
+      <div style={{ 
+        background: '#0c0c0e', 
+        border: '1px solid #1f1f23', 
+        borderRadius: '8px', 
+        padding: '16px', 
+        height: '350px', 
+        overflowY: 'auto',
+        fontFamily: 'var(--font-mono)',
+        fontSize: '11px',
+        lineHeight: '1.6',
+        color: '#e2e8f0',
+        boxShadow: 'inset 0 4px 12px rgba(0,0,0,0.5)',
+        position: 'relative'
+      }}>
+        {error && (
+          <div style={{ color: '#ef4444', display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+            Error loading logs: {error}
+          </div>
+        )}
+        
+        {!error && logLines.length === 0 && (
+          <div style={{ color: 'var(--color-iron)', display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+            {loading ? 'Fetching log lines...' : 'No matching log entries found.'}
+          </div>
+        )}
+
+        {!error && logLines.length > 0 && (
+          <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+            {logLines.map((line, idx) => {
+              // Color highlight logic
+              let color = '#e2e8f0';
+              if (line.includes('[ERROR]') || line.includes('error') || line.includes('FAIL') || line.includes('[LOSS]') || line.includes('Stop Hit') || line.includes('MARKET EXPIRED')) color = '#f87171'; // red
+              else if (line.includes('[WIN]') || line.includes('Target Hit') || line.includes('won=True') || line.includes('TARGET_HIT')) color = '#34d399'; // green
+              else if (line.includes('[WARNING]') || line.includes('warn') || line.includes('[COOLDOWN]') || line.includes('cooldown')) color = '#fbbf24'; // yellow
+              else if (line.includes('[INFO]') || line.includes('[GOD-WS]') || line.includes('[CLOB FETCH]')) color = '#60a5fa'; // blue
+              else if (line.includes('[SIG') || line.includes('[FV') || line.includes('[NCS')) color = '#c084fc'; // purple
+              
+              return (
+                <div key={idx} style={{ color, paddingBottom: '4px', borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
+                  {line}
+                </div>
+              );
+            })}
+            <div ref={terminalEndRef} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default Analytics;

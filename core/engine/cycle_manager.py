@@ -398,24 +398,13 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                     
                 already_entered = False
                 for pos in open_positions:
-                    if pos.get("event_id") == market["event_id"]:
+                    if pos.get("event_id") == market["event_id"] and pos.get("entry_type") == "LAT-ARB":
                         already_entered = True
                         break
                         
                 if already_entered:
                     log.info("[LATENCY-ARB] Already entered market for %s/%s in this candle, skipping.", asset, timeframe)
                     return
-
-                # Global market-level dedup: prevents FV engine + LAT-ARB race condition entering same market
-                global _ACTIVE_MARKET_IDS
-                _event_id = market.get("event_id", "")
-                if _event_id and _event_id in _ACTIVE_MARKET_IDS:
-                    log.info("[MARKET-DEDUP] %s/%s: market %s already being entered — skip duplicate",
-                             asset, timeframe, _event_id[:12])
-                    return
-                if _event_id:
-                    _ACTIVE_MARKET_IDS.add(_event_id)
-                    asyncio.create_task(_expire_market_lock(_event_id))
 
                 # Same-direction exposure cap: max 5 open positions in same direction
                 signal_is_up = direction == "UP"
@@ -898,20 +887,10 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             if not snipe_direction:
                 return
 
-            # Market-level dedup: prevents simultaneous reversal snipe + LAT-ARB on same market
-            global _ACTIVE_MARKET_IDS
-            _snipe_event_id = market.get("event_id", "")
-            if _snipe_event_id and _snipe_event_id in _ACTIVE_MARKET_IDS:
-                log.info("[REVERSAL-SNIPE] %s/%s market already being entered — skip", asset, timeframe)
-                return
-            if _snipe_event_id:
-                _ACTIVE_MARKET_IDS.add(_snipe_event_id)
-                asyncio.create_task(_expire_market_lock(_snipe_event_id))
-
-            # Skip if already in this market
+            # Skip if already in this market for REVERSAL-SNIPE
             import infrastructure.state.state_manager as state_mgr
             for pos in state_mgr.get_open_positions():
-                if pos.get("event_id") == market["event_id"]:
+                if pos.get("event_id") == market["event_id"] and pos.get("entry_type") == "REVERSAL-SNIPE":
                     return
 
             # Abort if candle already closed
@@ -1075,7 +1054,7 @@ async def start_close_sniper(session, engines):
             now_ts = int(time.time())
             import infrastructure.state.state_manager as state_mgr
             open_positions = state_mgr.get_open_positions()
-            open_event_ids = {p.get("event_id") for p in open_positions if p.get("event_id")}
+            open_event_ids = {p.get("event_id") for p in open_positions if p.get("event_id") and p.get("entry_type") in ("CLOSE-SNIPE", "CLOSE-SNIPE-EARLY")}
 
             for key, engine in engines.items():
                 asset = engine.asset

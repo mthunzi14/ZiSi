@@ -58,6 +58,10 @@ router.get('/', (req, res) => {
     candidates = [path.join(BOT_ROOT, 'infrastructure', 'exchange', 'positions_state.json')];
   } else if (fileParam === 'account') {
     candidates = [path.join(BOT_ROOT, 'account_state.json')];
+  } else if (fileParam === 'signals') {
+    candidates = [path.join(BOT_ROOT, 'signal_evaluations.jsonl')];
+  } else if (fileParam === 'gates') {
+    candidates = [path.join(BOT_ROOT, 'gate_log.jsonl')];
   }
 
   for (const logPath of candidates) {

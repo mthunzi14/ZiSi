@@ -317,56 +317,7 @@ async def _validate_trade_slot(
             context.log_skip("sig_midrange_guard", asset, timeframe)
             return False, {}
 
-    # FV global rate limiter — max 3 FV entries per 60s.
-    # Prevents the correlated macro wipeout pattern: 5 assets firing simultaneously
-    # on the same bad macro candle, each sized at $6-8, wiping the full session P&L.
-    if _entry_source == "FAIR_VAL" and not _fv_rate_ok():
-        log.info("[FV-RATE] %s/%s: %d FV entries in last 60s — global rate cap, skip",
-                 asset, timeframe, _FV_MAX_PER_60S)
-        context.log_skip("fv_rate_limit", asset, timeframe)
-        return False, {}
-
-    # FV directional cooldown: block FV re-entry in the same direction on the same asset for 10 min
-    # after ANY FV trade closes (win or loss). Prevents consecutive same-candle doubles like:
-    # BTC FV DOWN @ 60.5c (WIN) → BTC FV DOWN @ 56.5c (LOSS 5 min later) — the loss wiped the win.
-    # Loss cooldown (2 min) only blocked same-direction LOSSES; this covers wins too.
-    if _entry_source == "FAIR_VAL":
-        import json as _json_cd
-        import time as _time_cd
-        from pathlib import Path as _path_cd
-        try:
-            _ps_path = _path_cd(__file__).parent.parent / "infrastructure" / "exchange" / "positions_state.json"
-            if _ps_path.exists():
-                _ps_data = _json_cd.loads(_ps_path.read_text(encoding="utf-8"))
-                for _ct in reversed(_ps_data.get("closed", [])[-30:]):
-                    _et_title = _ct.get("event_title", "")
-                    _ct_dir = _ct.get("direction", "").upper()
-                    _same_dir = (
-                        (_ct_dir in ("YES", "UP")) == (direction == "UP")
-                        or (_ct_dir in ("NO", "DOWN")) == (direction == "DOWN")
-                    )
-                    if f"[{asset}]" in _et_title and "FAIR_VAL" in _et_title and _same_dir:
-                        _exit_ts = _ct.get("exit_time", "")
-                        _pnl = _ct.get("realized_pnl", 0.0)
-                        try:
-                            from datetime import datetime as _dt_cd
-                            _et = _dt_cd.fromisoformat(_exit_ts.replace("Z", "+00:00"))
-                            _age_s = _time_cd.time() - _et.timestamp()
-                            _cooldown = 120 if _pnl < 0 else 600  # 2 min after loss, 10 min after win
-                            if 0 < _age_s < _cooldown:
-                                log.info(
-                                    "[FV-COOLDOWN] %s/%s: FV %s %s %.0fs ago (pnl=%.2f) — %ds cooldown",
-                                    asset, timeframe, direction,
-                                    "LOSS" if _pnl < 0 else "WIN",
-                                    _age_s, _pnl, _cooldown,
-                                )
-                                context.log_skip("fv_dir_cooldown", asset, timeframe)
-                                return False, {}
-                        except Exception:
-                            pass
-                        break  # most recent same-direction FV for this asset — stop
-        except Exception:
-            pass
+    # FV global rate limiter and directional cooldown removed as requested by user.
 
     is_dual = signal.get("is_dual_eligible") or UpDownEngine.should_dual_enter(up_price, dn_price)
 

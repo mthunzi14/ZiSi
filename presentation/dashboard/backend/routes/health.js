@@ -536,6 +536,7 @@ router.get('/stream', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
   _sseClients.add(res);
@@ -554,7 +555,7 @@ function broadcastSSE(eventObj) {
 }
 
 const _priceCache = new Map();
-const PRICE_CACHE_TTL_MS = 2500;
+const PRICE_CACHE_TTL_MS = 1000;
 
 async function _fetchClobPrice(marketId) {
   if (!marketId || marketId === 'test_market_abc') return null;
@@ -632,7 +633,7 @@ async function pollPositions() {
   } catch (err) {
     console.error('[SSE ERROR] Position update failed:', err.message);
   } finally {
-    setTimeout(pollPositions, 2000);
+    setTimeout(pollPositions, 1000);
   }
 }
 pollPositions();
