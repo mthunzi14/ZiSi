@@ -888,8 +888,8 @@ def _resolve_updown_by_binance_candle(pos: dict) -> Optional[float]:
         if not interval_s:
             return None
 
-        # The candle that resolved this market opened at (expiry_ts - interval_s)
-        candle_open_ms = int((expiry_ts - interval_s) * 1000)
+        # The candle that resolved this market opened at expiry_ts
+        candle_open_ms = int(expiry_ts * 1000)
 
         resp = requests.get(
             "https://api.binance.com/api/v3/klines",
@@ -984,7 +984,8 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         # Evaluate expired status
         _expiry_ts = pos.get("expiry_ts")
         if is_updown and _expiry_ts:
-            is_expired = now.timestamp() >= float(_expiry_ts)
+            # Polymarket contract resolves after the interval finishes (expiry_ts + interval_s)
+            is_expired = now.timestamp() >= (float(_expiry_ts) + (effective_max_minutes * 60))
         else:
             is_expired = age_minutes >= effective_max_minutes
 
