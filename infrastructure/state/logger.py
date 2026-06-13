@@ -7,11 +7,22 @@ import json
 import logging
 import smtplib
 import time
-from datetime import datetime, timezone
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
+
+def sast_converter(*args, **kwargs):
+    if len(args) > 1:
+        timestamp = args[1]
+    elif args:
+        timestamp = args[0]
+    else:
+        timestamp = time.time()
+    dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    sast_dt = dt.astimezone(timezone(timedelta(hours=2)))
+    return sast_dt.timetuple()
+
+logging.Formatter.converter = sast_converter
 
 from config import load_config
 
@@ -165,7 +176,11 @@ def _json_default(obj):
 
 
 def _log_locally(data: dict) -> None:
-    """Fallback: append JSON line to local file."""
+    """Fallback: append JSON line to local file, or route to stdout logger under ZERO_DISK_LOGGING."""
+    cfg = load_config()
+    if cfg.get("ZERO_DISK_LOGGING", False):
+        logging.getLogger("zisi.local_trades").info(data)
+        return
     try:
         with _LOCAL_LOG.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(data, default=_json_default) + "\n")
@@ -579,11 +594,15 @@ def log_signal_evaluation(signal_data: dict, matched_event: Optional[dict], conf
         "reason_missed": reason_missed,
     }
 
-    try:
-        with _SIGNAL_EVAL_LOG.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(evaluation) + "\n")
-    except Exception as exc:
-        log.error("Signal evaluation log write failed: %s", exc)
+    cfg = load_config()
+    if cfg.get("ZERO_DISK_LOGGING", False):
+        logging.getLogger("zisi.signal_evaluations").info(evaluation)
+    else:
+        try:
+            with _SIGNAL_EVAL_LOG.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(evaluation) + "\n")
+        except Exception as exc:
+            log.error("Signal evaluation log write failed: %s", exc)
 
     log.info(
         "[SIGNAL-EVAL] %s | score=%.2f | type=%s | conf=%.2f",
@@ -631,13 +650,48 @@ def calculate_hypothetical_pnl() -> dict:
     }
 
 
+class JSONFormatter(logging.Formatter):
+    """Formats log records as single-line JSON items for network piping."""
+    def format(self, record: logging.LogRecord) -> str:
+        message = record.getMessage()
+        log_entry = {
+            "timestamp": round(record.created, 4),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": message
+        }
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+            
+        if isinstance(record.msg, dict):
+            log_entry["data"] = record.msg
+            if "message" in record.msg:
+                log_entry["message"] = record.msg["message"]
+        elif message.startswith("{") and message.endswith("}"):
+            try:
+                log_entry["data"] = json.loads(message)
+            except Exception:
+                pass
+        return json.dumps(log_entry, default=str)
+
+
 def setup_file_logging(level: str = "INFO") -> logging.Logger:
     """Configure the 'zisi' logger with a file handler and a console handler.
 
-    Sets propagate=False so the root logger (configured separately via
-    basicConfig) does not produce duplicate console lines.
+    If ZERO_DISK_LOGGING is True, disables the file handler and uses a
+    custom JSONFormatter for the console stream to output single-line JSON items.
     """
-    log_path = Path(__file__).parents[2] / "zisi_bot_console.log"
+    cfg = load_config()
+    zero_disk = cfg.get("ZERO_DISK_LOGGING", False)
+
+    # Reconfigure stdout/stderr if zero disk logging is active to prevent CPU stalling
+    if zero_disk:
+        import sys
+        try:
+            sys.stdout.reconfigure(line_buffering=True)
+            sys.stderr.reconfigure(line_buffering=True)
+        except Exception:
+            pass
 
     numeric_level = getattr(logging, level.upper(), logging.INFO)
 
@@ -645,22 +699,26 @@ def setup_file_logging(level: str = "INFO") -> logging.Logger:
     logger.setLevel(logging.DEBUG)
     logger.propagate = False  # prevent double-printing via root logger
 
-    formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)-5s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    file_handler = logging.FileHandler(str(log_path), mode="a", encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(numeric_level)
-    console_handler.setFormatter(formatter)
+    if zero_disk:
+        formatter = JSONFormatter()
+    else:
+        formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)-5s] %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
 
     # Avoid adding duplicate handlers if called more than once
     if not logger.handlers:
-        logger.addHandler(file_handler)
+        if not zero_disk:
+            log_path = Path(__file__).parents[2] / "zisi_bot_console.log"
+            file_handler = logging.FileHandler(str(log_path), mode="a", encoding="utf-8")
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(numeric_level)
+        console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
     return logger

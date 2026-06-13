@@ -1399,7 +1399,7 @@ class UpDownEngine:
         from config import get_config
 
         if not polymarket_l2_gateway.is_active:
-            await polymarket_l2_gateway.start_gateway()
+            polymarket_l2_gateway.start_gateway()
 
         polymarket_l2_gateway.subscribe(up_tk)
         polymarket_l2_gateway.subscribe(dn_tk)
@@ -1535,7 +1535,7 @@ class UpDownEngine:
                             # Warm the WebSocket cache!
                             from infrastructure.websocket.extraterrestrial_ws_gateway import polymarket_l2_gateway
                             if not polymarket_l2_gateway.is_active:
-                                await polymarket_l2_gateway.start_gateway()
+                                polymarket_l2_gateway.start_gateway()
                             polymarket_l2_gateway.subscribe(up_tk)
                             polymarket_l2_gateway.subscribe(dn_tk)
                             
