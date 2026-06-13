@@ -10,8 +10,14 @@ import aiohttp
 from datetime import datetime, timezone
 from typing import Optional
 
-from infrastructure.state.technical_cache import TechnicalDataCache
-from infrastructure.websocket.spot_websocket_ingest import get_current_ofi
+try:
+    from core.engine.technical_cache import TechnicalDataCache  # type: ignore
+except ImportError:
+    TechnicalDataCache = None  # type: ignore
+try:
+    from core.engine.spot_websocket_ingest import get_current_ofi
+except ImportError:
+    def get_current_ofi(*a, **kw): return 0.0  # type: ignore
 
 log = logging.getLogger("zisi.engine")
 
@@ -49,7 +55,7 @@ def _write_gate_event(asset: str, timeframe: str, gate: str, direction: str, rea
         import json
         from pathlib import Path
         if _GATE_LOG_PATH is None:
-            _GATE_LOG_PATH = Path(__file__).parent.parent.parent / "gate_log.jsonl"
+            _GATE_LOG_PATH = Path(__file__).parent.parent.parent / "data" / "gate_log.jsonl"
         entry = {
             "ts": time.time(),
             "asset": asset,
@@ -648,7 +654,7 @@ class UpDownEngine:
                         _timing_ok = False
 
             if _timing_ok:
-                from infrastructure.websocket.polymarket_rtds_ingest import get_chainlink_price, get_chainlink_candle_open
+                from core.engine.polymarket_rtds_ingest import get_chainlink_price, get_chainlink_candle_open
                 cl_details = await get_chainlink_price(self.asset)
                 cl_fresh = False
                 if cl_details:
@@ -830,7 +836,7 @@ class UpDownEngine:
                                  up_price if raw_dir == "UP" else dn_price, _fv["edge"], _fv["archetype"])
 
                         try:
-                            from infrastructure.state.fair_value_log import log_fair_value_entry
+                            from core.engine.logger import log_fair_value_entry  # type: ignore
                             log_fair_value_entry({
                                 "asset": self.asset, "timeframe": self.timeframe, "direction": raw_dir,
                                 "fp_up": _fv["fp_up"], "quote": (up_price if raw_dir == "UP" else dn_price),
@@ -1149,7 +1155,7 @@ class UpDownEngine:
         # Polymarket CLOB OBI (Proposal 1)
         clob_obi = 0.0
         try:
-            from infrastructure.websocket.extraterrestrial_ws_gateway import polymarket_l2_gateway
+            from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
             up_tk = market.get("up_market", {}).get("id")
             dn_tk = market.get("dn_market", {}).get("id")
             if direction == "UP" and up_tk:
@@ -1395,7 +1401,7 @@ class UpDownEngine:
         is_latency_scan: bool = False,
     ) -> Optional[tuple[float, float, float]]:
         """Return (up_price, dn_price, spread) or None if book invalid."""
-        from infrastructure.websocket.extraterrestrial_ws_gateway import polymarket_l2_gateway
+        from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
         from config import get_config
 
         if not polymarket_l2_gateway.is_active:
@@ -1533,7 +1539,7 @@ class UpDownEngine:
                             dn_tk = clob_token_ids[dn_idx]
                             
                             # Warm the WebSocket cache!
-                            from infrastructure.websocket.extraterrestrial_ws_gateway import polymarket_l2_gateway
+                            from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
                             if not polymarket_l2_gateway.is_active:
                                 polymarket_l2_gateway.start_gateway()
                             polymarket_l2_gateway.subscribe(up_tk)
@@ -1866,7 +1872,7 @@ class UpDownEngine:
         try:
             import json
             from pathlib import Path
-            path = Path(__file__).parent.parent.parent / "infrastructure" / "exchange" / "positions_state.json"
+            path = Path(__file__).parent.parent.parent / "data" / "positions_state.json"
             if not path.exists():
                 return 0
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -1896,7 +1902,7 @@ class UpDownEngine:
         try:
             import json, time as _time
             from pathlib import Path
-            path = Path(__file__).parent.parent.parent / "infrastructure" / "exchange" / "positions_state.json"
+            path = Path(__file__).parent.parent.parent / "data" / "positions_state.json"
             if not path.exists():
                 return 0
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -1921,7 +1927,7 @@ class UpDownEngine:
             import json, time as _time
             from datetime import datetime, timezone
             from pathlib import Path
-            path = Path(__file__).parent.parent.parent / "infrastructure" / "exchange" / "positions_state.json"
+            path = Path(__file__).parent.parent.parent / "data" / "positions_state.json"
             if not path.exists():
                 return False
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -1960,7 +1966,7 @@ class UpDownEngine:
             try:
                 import json
                 from pathlib import Path
-                path = Path(__file__).parent.parent.parent / "infrastructure" / "exchange" / "positions_state.json"
+                path = Path(__file__).parent.parent.parent / "data" / "positions_state.json"
                 if path.exists():
                     data = json.loads(path.read_text(encoding="utf-8"))
                     closed = data.get("closed", [])[:n]

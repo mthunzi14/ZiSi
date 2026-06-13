@@ -51,11 +51,21 @@ RECONCILE_INTERVAL: int = 15
 
 # Position limits
 MAX_OPEN_PER_ASSET: int = 2
-MAX_TOTAL_OPEN: int = 6
+MAX_TOTAL_OPEN: int = 8
 
 # Fair-value (Type-1) primary entry. When True, a spot-distance mispricing that
 # clears EDGE_MARGIN fires an entry at the real L2 quote BEFORE the momentum cascade.
 FAIR_VALUE_MODE: bool = True
+
+# ── Strategy-Specific Overlays (Sprint 12 / Mentor Emulation) ──────────────────
+OVERLAY_C_ENABLED: bool = True
+OVERLAY_C_SPEC_BUDGET_PCT: float = 0.01          # 1.0% of total balance
+OVERLAY_C_MAX_UNDERDOG_PRICE: float = 0.20        # contracts priced <= 20c
+
+OVERLAY_B_ENABLED: bool = True
+OVERLAY_B_FREEZE_MIDPOINTS: bool = True           # freeze 40c-60c contracts during breakout
+OVERLAY_B_TREND_ALIGNMENT_THRESHOLD: int = 4      # requires 4/4 alignment across timeframes
+OVERLAY_B_ADX_THRESHOLD: float = 25.0             # ADX threshold for breakout strength
 
 # ── Backward-compat aliases (old modules still import these) ─────────────────
 PEAK_TRADING_HOURS_UTC    = TIME_GATE_UTC  # replaced by TIME_GATE_UTC in new code
@@ -63,6 +73,8 @@ PEAK_KELLY_MULTIPLIER     = 1.0
 OFF_PEAK_KELLY_MULTIPLIER = 0.5
 
 # ── Load .env ─────────────────────────────────────────────────────────────────
+# __file__ resolves to the project root when config.py lives there, so
+# this will correctly find /root/ZiSi/.env on the VPS.
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(_ENV_PATH)
 
@@ -80,6 +92,26 @@ _REQUIRED_KEYS = [
 _SECRET_KEYS = {
     "GMAIL_APP_PASSWORD",
 }
+
+
+_cached_balance: float = 50.0
+_last_balance_check: float = 0.0
+_BALANCE_CACHE_TTL_SEC: float = 5.0
+
+def _get_cached_account_balance() -> float:
+    global _cached_balance, _last_balance_check
+    import time
+    now = time.time()
+    if now - _last_balance_check > _BALANCE_CACHE_TTL_SEC:
+        try:
+            # PATCHED: import from new canonical location (core.engine) —
+            # the old infrastructure.state namespace has been removed.
+            from core.engine.state_manager import get_current_balance
+            _cached_balance = get_current_balance()
+            _last_balance_check = now
+        except Exception:
+            pass
+    return _cached_balance
 
 
 def load_config() -> dict:
@@ -122,7 +154,7 @@ def load_config() -> dict:
         "BOT_MODE": os.getenv("BOT_MODE", "paper_trading"),
 
         # Risk management — balance loaded from account_state.json, not .env
-        "ACCOUNT_BALANCE": (lambda: __import__("infrastructure.state.state_manager", fromlist=["get_current_balance"]).get_current_balance())(),
+        "ACCOUNT_BALANCE": _get_cached_account_balance(),
         "RISK_PER_TRADE_PERCENT": float(os.getenv("RISK_PER_TRADE_PERCENT", "2")),
         "MAX_SIMULTANEOUS_TRADES": int(os.getenv("MAX_SIMULTANEOUS_TRADES", "6")),
         "MIN_EVENT_LIQUIDITY_USD": float(os.getenv("MIN_EVENT_LIQUIDITY_USD", "500")),
@@ -130,6 +162,7 @@ def load_config() -> dict:
         # Logging
         "LOG_TO_DRIVE": os.getenv("LOG_TO_DRIVE", "true").lower() == "true",
         "LOG_TO_CONSOLE": os.getenv("LOG_TO_CONSOLE", "true").lower() == "true",
+        "ZERO_DISK_LOGGING": os.getenv("ZERO_DISK_LOGGING", "false").lower() == "true",
         "DAILY_REPORT_TIME": os.getenv("DAILY_REPORT_TIME", "09:00"),
         "DAILY_REPORT_EMAIL": os.getenv("DAILY_REPORT_EMAIL", "true").lower() == "true",
 
@@ -165,6 +198,15 @@ def load_config() -> dict:
         "MAX_TOTAL_OPEN": MAX_TOTAL_OPEN,
         "FV_NIGHT_SESSION_START_UTC": int(os.getenv("FV_NIGHT_SESSION_START_UTC", "2")),
         "FV_NIGHT_SESSION_END_UTC": int(os.getenv("FV_NIGHT_SESSION_END_UTC", "9")),
+
+        # Overlays
+        "OVERLAY_C_ENABLED": os.getenv("OVERLAY_C_ENABLED", "true").lower() == "true",
+        "OVERLAY_C_SPEC_BUDGET_PCT": float(os.getenv("OVERLAY_C_SPEC_BUDGET_PCT", "0.01")),
+        "OVERLAY_C_MAX_UNDERDOG_PRICE": float(os.getenv("OVERLAY_C_MAX_UNDERDOG_PRICE", "0.20")),
+        "OVERLAY_B_ENABLED": os.getenv("OVERLAY_B_ENABLED", "true").lower() == "true",
+        "OVERLAY_B_FREEZE_MIDPOINTS": os.getenv("OVERLAY_B_FREEZE_MIDPOINTS", "true").lower() == "true",
+        "OVERLAY_B_TREND_ALIGNMENT_THRESHOLD": int(os.getenv("OVERLAY_B_TREND_ALIGNMENT_THRESHOLD", "4")),
+        "OVERLAY_B_ADX_THRESHOLD": float(os.getenv("OVERLAY_B_ADX_THRESHOLD", "25.0")),
     }
 
     # Check required keys

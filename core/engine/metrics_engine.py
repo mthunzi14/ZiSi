@@ -393,6 +393,11 @@ def save_metrics_to_file(metrics: dict, date: Optional[str] = None) -> Path:
     filepath = _METRICS_DIR / f"metrics_{date}.json"
     record   = {"timestamp": datetime.now(timezone.utc).isoformat(), **metrics}
 
+    import os
+    if os.getenv("ZERO_DISK_LOGGING", "false").lower() == "true":
+        logging.getLogger("zisi.metrics_snapshot").info(record)
+        return filepath
+
     try:
         with filepath.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")

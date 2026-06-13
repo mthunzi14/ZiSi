@@ -19,7 +19,7 @@ import os
 import time
 from datetime import datetime, timezone
 from typing import Dict, Optional
-from infrastructure.state.state_manager import GLOBAL_POSITIONS_LOCK
+from core.engine.state_manager import GLOBAL_POSITIONS_LOCK
 
 log = logging.getLogger("zisi.position_sizer")
 
@@ -139,70 +139,97 @@ class PositionSizer:
             log.info("[KELLY] Cycle capital limit reached ($%.2f/$%.2f)", self._capital_used, self.max_cycle_capital)
             return 0.0
 
-        # Step 1: Determine base win probability from signal type
-        signal_type = signal.get("signal_type", "TYPE_B_LOW")
-        base_win_rate = _BASE_WIN_RATES.get(signal_type, 0.52)
-
-        # Step 2: Apply confluence boost (from Multi-TF analysis)
-        adjusted_wr = min(0.90, base_win_rate + confluence_boost)
-
-        # Step 3: Apply sentiment modifier (from Volatility Surface)
-        adjusted_wr = min(0.90, adjusted_wr + sentiment_modifier)
-
-        # Step 4: Apply rolling win-rate adjustment (existing feature)
+        trigger = signal.get("trigger", "") or signal.get("entry_source", "") or ""
+        trigger_upper = str(trigger).upper()
+        entry_price = signal.get("entry_price", 0.45)
         _assets = signal.get("affected_cryptos", [])
         _asset = _assets[0].upper() if _assets else ""
-        wr_mult = get_rolling_wr_multiplier(_asset) if _asset else 1.0
-        adjusted_wr = min(0.90, adjusted_wr * wr_mult)
 
-        # Step 5: Compute payout ratio from entry price
-        entry_price = signal.get("entry_price", 0.45)
-        if entry_price > 0 and entry_price < 1:
-            payout_ratio = (1.0 - entry_price) / entry_price  # e.g., 45c entry → 55c profit / 45c risk ≈ 1.22
+        # Map to Strategy Pillar
+        if trigger_upper in ["REV_SNIPE", "REV_STREAK", "SWEEP", "NCS"]:
+            pillar = "CORE_SNIPER"
+        elif trigger_upper in ["SIG", "MEAN_REV", "ASIAN_SESSION"]:
+            pillar = "ASYMMETRIC_BARBELL"
+        elif trigger_upper in ["LAT_ARB", "LAT_RAW"]:
+            pillar = "LATENCY_ARBITRAGE"
         else:
-            payout_ratio = _DEFAULT_PAYOUT_RATIO
+            pillar = "CORE_SNIPER"
 
-        # Step 6: Half-Kelly formula
-        # f* = (b*p - q) / b, then take half
-        p = adjusted_wr
-        q = 1.0 - p
-        b = payout_ratio
+        if pillar == "ASYMMETRIC_BARBELL" and entry_price <= 0.20:
+            raw_usd = self.account_balance * 0.01
+            log.info(
+                "[KELLY-PILLAR-2] Flat 1.0%% allocation for underdog (price=%.2fc): $%.2f",
+                entry_price * 100, raw_usd
+            )
+        else:
+            # Step 1: Determine base win probability from signal type
+            signal_type = signal.get("signal_type", "TYPE_B_LOW")
+            base_win_rate = _BASE_WIN_RATES.get(signal_type, 0.52)
 
-        if b <= 0:
-            return _MIN_POSITION_USD
+            # Step 2: Apply confluence boost (from Multi-TF analysis)
+            adjusted_wr = min(0.90, base_win_rate + confluence_boost)
 
-        full_kelly = (b * p - q) / b
-        half_kelly = full_kelly / 2.0
+            # Step 3: Apply sentiment modifier (from Volatility Surface)
+            adjusted_wr = min(0.90, adjusted_wr + sentiment_modifier)
 
-        if half_kelly <= 0:
-            log.info("[KELLY] Negative Kelly (%.4f) — edge insufficient, using minimum", full_kelly)
-            half_kelly = 0.005  # Minimum fraction
+            # Step 4: Apply rolling win-rate adjustment
+            wr_mult = get_rolling_wr_multiplier(_asset) if _asset else 1.0
+            adjusted_wr = min(0.90, adjusted_wr * wr_mult)
 
-        # Step 7: Apply all multipliers
-        # Regime Kelly (A): scales with market volatility state
-        # Antifragile (M): scales with recent performance
-        # Heat (L): dampens for correlated exposure
-        # Whale (J): boosts/dampens based on whale activity
-        combined_mult = regime_kelly * antifragile_mult * heat_mult * whale_mult
+            # Step 5: Compute payout ratio from entry price
+            if entry_price > 0 and entry_price < 1:
+                payout_ratio = (1.0 - entry_price) / entry_price
+            else:
+                payout_ratio = _DEFAULT_PAYOUT_RATIO
 
-        # Step 8: Calculate raw USD size
-        raw_usd = half_kelly * self.account_balance * combined_mult
+            p = adjusted_wr
+            q = 1.0 - p
+            b = payout_ratio
 
-        # Step 9: Apply expiry multiplier (existing)
-        exp_mult = _expiry_multiplier(market)
-        raw_usd *= exp_mult
+            if b <= 0:
+                full_kelly = 0.0
+            else:
+                full_kelly = (b * p - q) / b
 
-        # Step 10: Apply category weight (existing)
-        raw_usd *= category_weight
+            # Apply Kelly fraction by Strategy Pillar
+            if pillar == "CORE_SNIPER":
+                kelly_fraction = full_kelly * 0.25
+                log.info("[KELLY-PILLAR-1] Quarter-Kelly (full=%.4f, fraction=%.4f)", full_kelly, kelly_fraction)
+            elif pillar == "ASYMMETRIC_BARBELL":
+                # Entry price > 0.20 -> Half-Kelly
+                kelly_fraction = full_kelly * 0.50
+                log.info("[KELLY-PILLAR-2] Half-Kelly (full=%.4f, fraction=%.4f)", full_kelly, kelly_fraction)
+            elif pillar == "LATENCY_ARBITRAGE":
+                # Full Kelly scaled by target asset beta scaling factors
+                beta_factor = {"BTC": 1.0, "ETH": 1.0, "SOL": 0.75, "XRP": 0.50, "DOGE": 0.50}.get(_asset, 1.0)
+                kelly_fraction = full_kelly * beta_factor
+                log.info("[KELLY-PILLAR-3] Full Kelly scaled by beta %.2fx (full=%.4f, fraction=%.4f)", beta_factor, full_kelly, kelly_fraction)
+            else:
+                kelly_fraction = full_kelly * 0.25
 
-        # Step 10.5: Streak Dampener (Sprint 5 / Engine 2.0 Mitigation)
-        # Scales down trade sizes after 5 consecutive wins:
-        # Size = Kelly Size * (0.90) ** max(0, ConsecWins - 5)
-        consec_wins = get_consecutive_wins()
-        if consec_wins >= 5:
-            damp_factor = (0.90) ** max(0, consec_wins - 5)
-            log.info("[KELLY-STREAK] Active streak of %d wins (>=5) -> scaling size down by %.4f (Original raw_usd: $%.2f)", consec_wins, damp_factor, raw_usd)
-            raw_usd *= damp_factor
+            if kelly_fraction <= 0:
+                log.info("[KELLY] Negative or zero Kelly fraction (%.4f) - Edge insufficient. Terminating size computation.", kelly_fraction)
+                return 0.0
+
+            # Step 7: Apply all multipliers
+            combined_mult = regime_kelly * antifragile_mult * heat_mult * whale_mult
+
+            # Step 8: Calculate raw USD size
+            raw_usd = kelly_fraction * self.account_balance * combined_mult
+
+            # Step 9: Apply expiry multiplier (existing)
+            exp_mult = _expiry_multiplier(market)
+            raw_usd *= exp_mult
+
+            # Step 10: Apply category weight (existing)
+            raw_usd *= category_weight
+
+            # Step 10.5: Streak Dampener
+            consec_wins = get_consecutive_wins()
+            if consec_wins >= 5:
+                damp_factor = (0.90) ** max(0, consec_wins - 5)
+                log.info("[KELLY-STREAK] Active streak of %d wins (>=5) -> scaling size down by %.4f (Original raw_usd: $%.2f)", consec_wins, damp_factor, raw_usd)
+                raw_usd *= damp_factor
 
         # Step 11: Enforce guards
         # Bounds may be overridden by the caller so a single canonical sizer
@@ -230,11 +257,14 @@ class PositionSizer:
         self._trades += 1
 
         log.info(
-            "[KELLY] %s | WR=%.1f%% payout=%.2f half_kelly=%.4f | "
-            "regime×%.2f anti×%.2f heat×%.2f whale×%.2f exp×%.2f | "
-            "→ $%.2f | cycle=$%.2f/%d trades",
-            signal_type, adjusted_wr * 100, payout_ratio, half_kelly,
-            regime_kelly, antifragile_mult, heat_mult, whale_mult, exp_mult,
+            "[KELLY] Trigger=%s | WR=%.1f%% payout=%.2f kelly_fraction=%.4f | "
+            "regime*%.2f anti*%.2f heat*%.2f whale*%.2f | "
+            "-> $%.2f | cycle=$%.2f/%d trades",
+            trigger if trigger else "Kelly", 
+            adjusted_wr * 100 if 'adjusted_wr' in locals() else 0.0,
+            payout_ratio if 'payout_ratio' in locals() else 0.0,
+            kelly_fraction if 'kelly_fraction' in locals() else 0.0,
+            regime_kelly, antifragile_mult, heat_mult, whale_mult,
             size, self._capital_used, self._trades,
         )
         return round(size, 2)
@@ -281,7 +311,7 @@ def get_consecutive_wins() -> int:
     Reads closed trades from positions_state.json and checks realized_pnl.
     """
     try:
-        pf = os.path.join(os.path.dirname(__file__), "..", "..", "infrastructure", "exchange", "positions_state.json")
+        pf = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "positions_state.json")
         pf = os.path.normpath(pf)
         if not os.path.exists(pf):
             return 0
@@ -318,7 +348,7 @@ def get_rolling_wr_multiplier(asset: str) -> float:
     if cached and now - cached[0] < _WR_CACHE_TTL:
         return cached[1]
     try:
-        pf = os.path.join(os.path.dirname(__file__), "..", "..", "infrastructure", "exchange", "positions_state.json")
+        pf = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "positions_state.json")
         pf = os.path.normpath(pf)
         with GLOBAL_POSITIONS_LOCK:
             with open(pf, "r", encoding="utf-8") as f:
@@ -368,3 +398,55 @@ def _expiry_multiplier(market: Dict) -> float:
         return 1.0
     except Exception:
         return 1.0
+
+
+def calculate_exit_targets(
+    entry_price: float,
+    position_size_dollars: float,
+    direction: str = "UP",
+) -> dict:
+    """
+    Calculate take-profit and stop-loss price levels dynamically based on entry cost.
+    For BOTH 'UP' and 'DN' (DOWN/NO) contract tokens, profit targets must appreciate toward 99¢
+    and stop losses must drop toward 1¢.
+    """
+    from config import load_config
+    cfg = load_config()
+    target_mult = cfg["POSITION_TARGET_MULTIPLIER"]       # e.g. 1.30
+    
+    # Price-Dependent Dynamic Stop Loss: tighter stops on expensive contracts
+    if entry_price > 0.65:
+        stop_mult = 0.90  # 10% stop loss
+    else:
+        stop_mult = 0.85  # standard 15% stop loss (x0.85)
+
+    profit_margin_delta = entry_price * (target_mult - 1.0)
+    risk_loss_delta = entry_price * (1.0 - stop_mult)
+    
+    target_price = entry_price + profit_margin_delta
+    stop_price = entry_price - risk_loss_delta
+
+    target_price = round(target_price, 6)
+    stop_price = round(stop_price, 6)
+
+    # Polymarket shares = position_size / entry_price
+    shares = position_size_dollars / entry_price if entry_price > 0 else 0
+
+    profit_at_target = round(shares * (target_price - entry_price), 2)
+    loss_at_stop     = round(shares * (stop_price - entry_price), 2)   # negative
+
+    risk_reward = (
+        round(profit_at_target / abs(loss_at_stop), 4)
+        if loss_at_stop != 0 else 0.0
+    )
+
+    result = {
+        "entry_price":      entry_price,
+        "target_price":     target_price,
+        "stop_loss":        stop_price,
+        "profit_at_target": profit_at_target,
+        "loss_at_stop":     loss_at_stop,
+        "risk_reward_ratio": risk_reward,
+    }
+    return result
+

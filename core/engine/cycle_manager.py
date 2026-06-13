@@ -186,7 +186,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
 
         try:
             # 1. Fetch Binance WebSocket Price
-            from infrastructure.websocket.spot_websocket_ingest import get_book_details, get_book_age
+            from core.engine.spot_websocket_ingest import get_book_details, get_book_age
             book_details = await get_book_details(asset)
             if not book_details:
                 log.warning("[LATENCY-ARB] No Binance WebSocket price available for %s", asset)
@@ -194,7 +194,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             ws_price, _, _ = book_details
 
             # Fetch Chainlink WebSocket Price
-            from infrastructure.websocket.polymarket_rtds_ingest import get_chainlink_price, get_chainlink_price_age, get_chainlink_candle_open
+            from core.engine.polymarket_rtds_ingest import get_chainlink_price, get_chainlink_price_age, get_chainlink_candle_open
             cl_details = await get_chainlink_price(asset)
             cl_fresh = False
             if cl_details:
@@ -255,7 +255,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             except Exception:
                 sigma_frac = 0.004  # fallback: 0.4% is a conservative floor
 
-            import infrastructure.state.state_manager as state_mgr
+            import core.engine.state_manager as state_mgr
             open_positions = state_mgr.get_open_positions()
 
             if t_minus == 2:
@@ -321,7 +321,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 pass
 
             if timeframe == "5m" and asset in ("BTC", "ETH") and t_minus == 15:
-                import infrastructure.state.state_manager as _sm_cf
+                import core.engine.state_manager as _sm_cf
                 for _pos in _sm_cf.get_open_positions():
                     _ptitle = _pos.get("event_title", "")
                     if "[" + asset + "]" not in _ptitle:
@@ -339,7 +339,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
 
             # CVD + OBI + 1m alignment gate (skip for T-2s sweeper — already near-certain)
             if t_minus != 2:
-                from infrastructure.websocket.spot_websocket_ingest import (
+                from core.engine.spot_websocket_ingest import (
                     get_cvd_metrics, get_binance_obi, get_m1_candle_alignment, _has_cvd_data
                 )
                 # Thresholds: strict for 5m/SOL T-15s (previously disabled assets),
@@ -492,7 +492,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                     implied_prob = 0.999
 
                 # 5. Position sizing — 15m gets 1.5× premium (82% WR earns it), 5m stays conservative
-                from infrastructure.state.state_manager import get_current_balance
+                from core.engine.state_manager import get_current_balance
                 current_balance = get_current_balance()
 
                 normal_usd = engine.compute_size(0.85, entry_price, current_balance)
@@ -552,7 +552,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                     return
 
                 # 6. Execute order
-                from infrastructure.exchange.trader import place_order
+                from core.engine.trader import place_order
 
                 _trade_tag = "T2_SWEEPER" if t_minus == 2 else "LATENCY_ARB"
                 order = place_order(
@@ -622,7 +622,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             return
 
         try:
-            import infrastructure.state.state_manager as state_mgr
+            import core.engine.state_manager as state_mgr
             open_positions = state_mgr.get_open_positions()
             from core.engine.session_governor import has_open_asset_tf_exposure
             if has_open_asset_tf_exposure(open_positions, peer, "5m"):
@@ -656,12 +656,12 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             if time.time() >= next_close:
                 return  # Candle already closed
 
-            from infrastructure.state.state_manager import get_current_balance
+            from core.engine.state_manager import get_current_balance
             current_balance = get_current_balance()
             normal_usd = peer_engine.compute_size(0.80, peer_entry_price, current_balance)
             usd_size = max(1.0, normal_usd * 0.50)
 
-            from infrastructure.exchange.trader import place_order
+            from core.engine.trader import place_order
             from core.engine.session_governor import commit_trade_slot
             order = place_order(
                 event_id=market["event_id"],
@@ -741,7 +741,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             log.error("[LATENCY-ARB] Scanner loop error: %s", e, exc_info=True)
 
         try:
-            from infrastructure.websocket.spot_websocket_ingest import _price_move_events
+            from core.engine.spot_websocket_ingest import _price_move_events
             await asyncio.wait_for(_price_move_events.get(), timeout=1.0)
         except asyncio.TimeoutError:
             pass
@@ -772,7 +772,7 @@ async def _monitor_lat_exit(
             if now >= boundary_ts:
                 break  # candle has expired — let normal resolution handle it
 
-            from infrastructure.websocket.extraterrestrial_ws_gateway import polymarket_l2_gateway
+            from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
             quote, _ = polymarket_l2_gateway.get_price(token_id)
             if quote is None:
                 continue
@@ -782,7 +782,7 @@ async def _monitor_lat_exit(
                     "[LAT-EXIT] %s/%s %s: quote %.2f < %.2f — bailing early",
                     asset, timeframe, direction, quote, BAIL_THRESHOLD,
                 )
-                from infrastructure.exchange.trader import execute_exit
+                from core.engine.trader import execute_exit
                 execute_exit(order_id, quote, exit_reason="STOP_HIT")
                 try:
                     from app.telegram_bot import send_alert
@@ -811,14 +811,14 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
         timeframe = engine.timeframe
         interval_minutes = 60 if timeframe == "1h" else int(timeframe.rstrip("m"))
         try:
-            from infrastructure.websocket.spot_websocket_ingest import get_book_details
+            from core.engine.spot_websocket_ingest import get_book_details
             book_details = await get_book_details(asset)
             if not book_details:
                 return
             ws_price, _, _ = book_details
 
             # Fetch Chainlink WebSocket Price
-            from infrastructure.websocket.polymarket_rtds_ingest import get_chainlink_price, get_chainlink_candle_open
+            from core.engine.polymarket_rtds_ingest import get_chainlink_price, get_chainlink_candle_open
             cl_details = await get_chainlink_price(asset)
             cl_fresh = False
             if cl_details:
@@ -888,7 +888,7 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
                 return
 
             # Skip if already in this market for REVERSAL-SNIPE
-            import infrastructure.state.state_manager as state_mgr
+            import core.engine.state_manager as state_mgr
             for pos in state_mgr.get_open_positions():
                 if pos.get("event_id") == market["event_id"] and pos.get("entry_type") == "REVERSAL-SNIPE":
                     return
@@ -898,14 +898,14 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
                 log.warning("[REVERSAL-SNIPE] Candle closed, aborting %s/%s", asset, timeframe)
                 return
 
-            from infrastructure.state.state_manager import get_current_balance
+            from core.engine.state_manager import get_current_balance
             balance = get_current_balance()
             # Dynamic fractional size with a $1.50 floor to prevent silents rejections
             usd_size = max(1.50, min(balance * 0.005, 5.0)) * _snipe_size_mult  # $1.50 floor clears Polymarket $1 CLOB minimum
 
             market_id = market["dn_market"]["id"] if snipe_direction == "DOWN" else market["up_market"]["id"]
 
-            from infrastructure.exchange.trader import place_order
+            from core.engine.trader import place_order
             from core.engine.session_governor import commit_trade_slot
             order = place_order(
                 event_id=market["event_id"],
@@ -960,8 +960,8 @@ async def start_resolution_sweeper(session, engines):
     _swept = {}
     while True:
         try:
-            from infrastructure.state.state_manager import get_current_balance
-            import infrastructure.state.state_manager as state_mgr
+            from core.engine.state_manager import get_current_balance
+            import core.engine.state_manager as state_mgr
             balance = get_current_balance()
             # Dynamic fractional size with a $0.50 floor to prevent disabling on small accounts
             usd_size = max(1.50, min(balance * 0.005, 5.0))  # $1.50 floor clears Polymarket $1 CLOB minimum
@@ -1016,7 +1016,7 @@ async def start_resolution_sweeper(session, engines):
                     next_close = ((int(now) // (interval_minutes * 60)) + 1) * (interval_minutes * 60)
                     if now >= next_close:
                         continue
-                    from infrastructure.exchange.trader import place_order
+                    from core.engine.trader import place_order
                     from core.engine.session_governor import commit_trade_slot
                     order = place_order(
                         event_id=event_id,
@@ -1052,7 +1052,7 @@ async def start_close_sniper(session, engines):
     while True:
         try:
             now_ts = int(time.time())
-            import infrastructure.state.state_manager as state_mgr
+            import core.engine.state_manager as state_mgr
             open_positions = state_mgr.get_open_positions()
             open_event_ids = {p.get("event_id") for p in open_positions if p.get("event_id") and p.get("entry_type") in ("CLOSE-SNIPE", "CLOSE-SNIPE-EARLY")}
 
@@ -1147,7 +1147,7 @@ async def start_close_sniper(session, engines):
                     if snipe_mode == "CLOSE-SNIPE" and snipe_price is not None and snipe_price > 0.93:
                         # Fetch last 3 ticks from recent orderbook snapshot cache if available
                         try:
-                            from infrastructure.state.state_manager import get_recent_price_ticks
+                            from core.engine.state_manager import get_recent_price_ticks
                             _ticks = get_recent_price_ticks(asset, timeframe, n=3)
                             if _ticks and len(_ticks) >= 2:
                                 _tick_increasing = sum(1 for i in range(1, len(_ticks)) if _ticks[i] >= _ticks[i-1])
@@ -1165,7 +1165,7 @@ async def start_close_sniper(session, engines):
                     if not snipe_dir or not market_id:
                         continue
 
-                    import infrastructure.state.state_manager as _smgr
+                    import core.engine.state_manager as _smgr
 
                     # Same-asset NCS dedup: block if any NCS position already active on this asset.
                     # ETH/5m + ETH/15m NCS simultaneously creates correlated double-exposure;
@@ -1283,7 +1283,7 @@ async def start_close_sniper(session, engines):
                         snipe_mode, asset, timeframe, snipe_dir, snipe_price * 100, ttl, amount_dollars
                     )
 
-                    from infrastructure.exchange.trader import place_order
+                    from core.engine.trader import place_order
                     order = place_order(
                         event_id=event_id,
                         market_id=market_id,

@@ -1,0 +1,18 @@
+{
+  "name": "zisi-dashboard-backend",
+  "version": "1.0.0",
+  "description": "ZiSi Bot Analytics Backend",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "start:full": "node build-and-start.mjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "ws": "^8.21.0"
+  }
+}

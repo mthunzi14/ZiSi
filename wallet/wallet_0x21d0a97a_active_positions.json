@@ -1,0 +1,62 @@
+[
+    {
+        "TargetWallet": "0x21d0a97aac03917e752857a551bbe5103a00e8d7",
+        "AssetId": null,
+        "ConditionId": "0x69b74a6ad477e04a24d4ae3ba9f6a0a557186dcdfad65628c07c7696396894d3",
+        "Title": "Bitcoin Up or Down - June 10, 8:20PM-8:25PM ET",
+        "AvgPricePaid": 0.0,
+        "CurrentPrice": 0.0,
+        "TotalShares": 0.0,
+        "CashValue": 0.0,
+        "CashPnl": -1.2,
+        "PercentPnl": -2.8846
+    },
+    {
+        "TargetWallet": "0x21d0a97aac03917e752857a551bbe5103a00e8d7",
+        "AssetId": null,
+        "ConditionId": "0x4c09d1746dc41a17a6e4faa985ac032a363f51b09a93ce9788294ecebca59a65",
+        "Title": "Bitcoin Up or Down - June 10, 8:15PM-8:30PM ET",
+        "AvgPricePaid": 0.0,
+        "CurrentPrice": 0.0,
+        "TotalShares": 0.0,
+        "CashValue": 0.0,
+        "CashPnl": 17.4764,
+        "PercentPnl": 104.1119
+    },
+    {
+        "TargetWallet": "0x21d0a97aac03917e752857a551bbe5103a00e8d7",
+        "AssetId": null,
+        "ConditionId": "0x4c09d1746dc41a17a6e4faa985ac032a363f51b09a93ce9788294ecebca59a65",
+        "Title": "Bitcoin Up or Down - June 10, 8:15PM-8:30PM ET",
+        "AvgPricePaid": 0.0,
+        "CurrentPrice": 0.0,
+        "TotalShares": 0.0,
+        "CashValue": 0.0,
+        "CashPnl": -14.3983,
+        "PercentPnl": -93.1371
+    },
+    {
+        "TargetWallet": "0x21d0a97aac03917e752857a551bbe5103a00e8d7",
+        "AssetId": null,
+        "ConditionId": "0xdb799b0c5f7e62e5967ac5b50d2421a65bcf0f1f67053fcabed1d6bf81b90394",
+        "Title": "Solana Up or Down - June 10, 8:20PM-8:25PM ET",
+        "AvgPricePaid": 0.0,
+        "CurrentPrice": 0.0,
+        "TotalShares": 0.0,
+        "CashValue": 0.0,
+        "CashPnl": 0.9871,
+        "PercentPnl": 10.5753
+    },
+    {
+        "TargetWallet": "0x21d0a97aac03917e752857a551bbe5103a00e8d7",
+        "AssetId": null,
+        "ConditionId": "0xd0681fd1615f6aa65f245300aa60987758aa0235c005ae1b3d289e64358686ef",
+        "Title": "XRP Up or Down - June 10, 8:20PM-8:25PM ET",
+        "AvgPricePaid": 0.0,
+        "CurrentPrice": 0.0,
+        "TotalShares": 0.0,
+        "CashValue": 0.0,
+        "CashPnl": 1.8499,
+        "PercentPnl": 36.998
+    }
+]

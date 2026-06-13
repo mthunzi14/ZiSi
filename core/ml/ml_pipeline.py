@@ -20,11 +20,11 @@ from typing import Dict, List, Optional, Tuple
 log = logging.getLogger("zisi.ml")
 
 _BASE_DIR = Path(__file__).parent.parent.parent
-_TRAINING_FILE   = _BASE_DIR / "ml_training_data.jsonl"
-_MODEL_FILE      = _BASE_DIR / "lr_model.pkl"
-_SCALER_FILE     = _BASE_DIR / "lr_scaler.pkl"
-_CALIB_FILE      = _BASE_DIR / "calibration_curve.json"
-_MODEL_META_FILE = _BASE_DIR / "model_meta.json"
+_TRAINING_FILE   = _BASE_DIR / "data" / "ml_training_data.jsonl"
+_MODEL_FILE      = _BASE_DIR / "data" / "lr_model.pkl"
+_SCALER_FILE     = _BASE_DIR / "data" / "lr_scaler.pkl"
+_CALIB_FILE      = _BASE_DIR / "data" / "calibration_curve.json"
+_MODEL_META_FILE = _BASE_DIR / "data" / "model_meta.json"
 
 CYCLES_NEEDED          = 50   # cycles before Phase 2 data collection check
 MIN_LABELLED_TO_TRAIN  = 50   # labelled trades needed before first model train
@@ -209,9 +209,9 @@ def get_ml_progress() -> Dict:
 # Signal → Outcome linker (closes the ML feedback loop)
 # ---------------------------------------------------------------------------
 
-_SIGNAL_EVAL_FILE  = _BASE_DIR / "signal_evaluations.jsonl"
-_LOCAL_TRADES_FILE = _BASE_DIR / "zisi_local_trades.jsonl"
-_LABELLED_FILE     = _BASE_DIR / "ml_labelled_outcomes.jsonl"
+_SIGNAL_EVAL_FILE  = _BASE_DIR / "data" / "signal_evaluations.jsonl"
+_LOCAL_TRADES_FILE = _BASE_DIR / "data" / "zisi_local_trades.jsonl"
+_LABELLED_FILE     = _BASE_DIR / "data" / "ml_labelled_outcomes.jsonl"
 
 
 def link_trade_outcomes() -> int:

@@ -99,16 +99,16 @@ class EdgeOrchestrator:
 
         # L: Portfolio Heat Management
         try:
-            from core.risk.portfolio_heat import PortfolioHeatManager
-            self._portfolio_heat = PortfolioHeatManager()
+            from core.risk.portfolio_heat import PortfolioHeat
+            self._portfolio_heat = PortfolioHeat()
             log.info("[EDGE] ✅ Module L (Portfolio Heat) initialized")
         except Exception as e:
             log.warning("[EDGE] ❌ Module L (Portfolio Heat) failed: %s", e)
 
         # M: Anti-Fragile Recovery System
         try:
-            from core.risk.antifragile import AntifragileSystem
-            self._antifragile = AntifragileSystem()
+            from core.risk.antifragile import AntifragileRecovery
+            self._antifragile = AntifragileRecovery()
             log.info("[EDGE] ✅ Module M (Anti-Fragile) initialized")
         except Exception as e:
             log.warning("[EDGE] ❌ Module M (Anti-Fragile) failed: %s", e)

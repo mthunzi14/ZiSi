@@ -7,13 +7,14 @@ import logging
 import time
 import uuid
 import json
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 
 log = logging.getLogger("zisi.hft.execution")
 
 # File path for tracking atomic execution records
-TRADE_JOURNAL = "zisi_local_trades.jsonl"
+TRADE_JOURNAL = Path(__file__).parent.parent.parent / "data" / "zisi_local_trades.jsonl"
 
 class BlockBundler:
     """
@@ -92,8 +93,12 @@ class BlockBundler:
             "mempool_bypass": True
         }
         try:
-            with open(TRADE_JOURNAL, "a") as f:
-                f.write(json.dumps(entry) + "\n")
+            import os
+            if os.getenv("ZERO_DISK_LOGGING", "false").lower() == "true":
+                logging.getLogger("zisi.local_trades").info(entry)
+            else:
+                with open(TRADE_JOURNAL, "a") as f:
+                    f.write(json.dumps(entry) + "\n")
         except Exception as e:
             log.error("[BUNDLER] Failed to write to local trade journal: %r", e)
 

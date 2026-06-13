@@ -33,7 +33,7 @@ log = logging.getLogger("zisi.antifragile")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _STATE_PATH = _PROJECT_ROOT / "antifragile_state.json"
-_POSITIONS_PATH = _PROJECT_ROOT / "infrastructure" / "exchange" / "positions_state.json"
+_POSITIONS_PATH = _PROJECT_ROOT / "data" / "positions_state.json"
 
 # ── Tier constants ────────────────────────────────────────────────────────────
 
@@ -206,7 +206,7 @@ class AntifragileRecovery:
             return
 
         try:
-            from infrastructure.state.state_manager import GLOBAL_POSITIONS_LOCK
+            from core.engine.state_manager import GLOBAL_POSITIONS_LOCK
 
             if not _POSITIONS_PATH.exists():
                 log.debug("[Antifragile] positions_state.json not found — skipping bootstrap")

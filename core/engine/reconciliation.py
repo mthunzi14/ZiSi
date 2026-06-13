@@ -28,7 +28,7 @@ def _run_reconcile_pass(state_mgr, telegram_fn=None) -> int:
     """Check all open positions for ghost fills, and auto-close expired paper trades."""
     # ── Auto-close expired paper trades ──
     try:
-        from infrastructure.exchange.trader import check_and_close_paper_trades
+        from core.engine.trader import check_and_close_paper_trades
         closed_trades = check_and_close_paper_trades(max_hold_minutes=30)
         if closed_trades:
             log.info("[RECONCILE] Closed %d expired paper positions.", len(closed_trades))

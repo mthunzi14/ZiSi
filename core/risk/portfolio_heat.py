@@ -39,7 +39,7 @@ log = logging.getLogger("zisi.portfolio_heat")
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
-_POSITIONS_FILE = _PROJECT_ROOT / "infrastructure" / "exchange" / "positions_state.json"
+_POSITIONS_FILE = _PROJECT_ROOT / "data" / "positions_state.json"
 _HEAT_STATE_FILE = _PROJECT_ROOT / "portfolio_heat_state.json"
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -301,7 +301,7 @@ class PortfolioHeat:
         if not _POSITIONS_FILE.exists():
             return []
         try:
-            from infrastructure.state.state_manager import GLOBAL_POSITIONS_LOCK
+            from core.engine.state_manager import GLOBAL_POSITIONS_LOCK
 
             with GLOBAL_POSITIONS_LOCK:
                 data = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))

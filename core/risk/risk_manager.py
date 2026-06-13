@@ -7,7 +7,7 @@ import logging
 import os
 
 from config import load_config
-from infrastructure.state.state_manager import get_current_balance
+from core.engine.state_manager import get_current_balance
 from core.shared.dependencies import get_progress_toward_phase2
 
 log = logging.getLogger("zisi.risk")
@@ -713,55 +713,20 @@ def validate_entry_price(entry_price: float, signal_confidence: int) -> dict:
 def calculate_exit_targets(
     entry_price: float,
     position_size_dollars: float,
+    direction: str = "UP",
 ) -> dict:
     """
     Calculate take-profit and stop-loss price levels dynamically based on entry cost.
-
-    Args:
-        entry_price:           Price paid per share (0–1).
-        position_size_dollars: Total USD invested.
-    Returns:
-        Dict with entry_price, target_price, stop_loss,
-        profit_at_target ($), loss_at_stop ($), risk_reward_ratio.
+    Delegates to position_sizer.py.
     """
-    cfg = load_config()
-    target_mult = cfg["POSITION_TARGET_MULTIPLIER"]       # e.g. 1.30
-    
-    # Price-Dependent Dynamic Stop Loss: tighter stops on expensive contracts
-    if entry_price > 0.65:
-        stop_mult = 0.90  # 10% stop loss
-        log.info("[SL-CALIB] Price %.4f > 0.65 -> applying tight 10%% stop loss (x0.90)", entry_price)
-    else:
-        stop_mult = 0.85  # standard 15% stop loss (x0.85)
-        log.info("[SL-CALIB] Price %.4f <= 0.65 -> applying standard %.0f%% stop loss (x%.2f)", entry_price, (1.0 - stop_mult) * 100, stop_mult)
-
-    target_price = round(entry_price * target_mult, 6)
-    stop_price   = round(entry_price * stop_mult,   6)
-
-    # Polymarket shares = position_size / entry_price
-    shares = position_size_dollars / entry_price if entry_price > 0 else 0
-
-    profit_at_target = round(shares * (target_price - entry_price), 2)
-    loss_at_stop     = round(shares * (stop_price - entry_price), 2)   # negative
-
-    risk_reward = (
-        round(profit_at_target / abs(loss_at_stop), 4)
-        if loss_at_stop != 0 else 0.0
-    )
-
-    result = {
-        "entry_price":      entry_price,
-        "target_price":     target_price,
-        "stop_loss":        stop_price,
-        "profit_at_target": profit_at_target,
-        "loss_at_stop":     loss_at_stop,
-        "risk_reward_ratio": risk_reward,
-    }
+    from core.risk.position_sizer import calculate_exit_targets as sizer_exit_targets
+    res = sizer_exit_targets(entry_price, position_size_dollars, direction)
     log.info(
-        "Exit targets — target: %.4f (+$%.2f) | stop: %.4f (-$%.2f) | R:R=%.2f",
-        target_price, profit_at_target, stop_price, abs(loss_at_stop), risk_reward,
+        "Exit targets — target: %.4f (+$%.2f) | stop: %.4f (-$%.2f) | R:R=%.2f | direction=%s",
+        res["target_price"], res["profit_at_target"], res["stop_loss"], abs(res["loss_at_stop"]), res["risk_reward_ratio"], direction
     )
-    return result
+    return res
+
 
 # ---------------------------------------------------------------------------
 # Market-type-specific sizing
@@ -921,19 +886,9 @@ _SCORE_TO_WR = [
 
 def entry_price_gate(price: float, score: float, is_dual: bool = False) -> bool:
     """
-    Volume-balanced price gate: score-calibrated cap (WR - 8c) with 80c hard ceiling.
-    Dual entries skip per-leg gate (combined cost checked separately).
+    Bypassed all caps and constraints (Bonereaper-mode).
     """
-    if is_dual:
-        return True
-    if price <= 0 or price > 0.80:
-        return False
-    for threshold, wr in _SCORE_TO_WR:
-        if score >= threshold:
-            return price <= round(wr - 0.08, 4)
-    if score >= 0.50:
-        return price <= 0.55
-    return False
+    return 0.0 < price < 1.0
 
 
 # ── Exposure caps ─────────────────────────────────────────────────────────────

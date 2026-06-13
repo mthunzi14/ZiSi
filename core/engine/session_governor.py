@@ -25,6 +25,7 @@ _btc_bucket_trades: dict[str, dict] = {}
 # Latency Arb tracking to prevent concurrent double-fills during asynchronous order execution
 _lat_arb_in_flight: set[tuple[str, str]] = set()
 _lat_arb_cooldowns: dict[tuple[str, str], float] = {}
+_recent_requests: list[tuple[float, str]] = []
 
 MAX_TRADES_PER_CANDLE_BUCKET = 5  # Bonereaper-mode: up to 5 simultaneous entries per candle
 BTC_ASSET = "BTC"
@@ -120,118 +121,95 @@ async def request_trade_slot(
     is_dual: bool = False,
     direction: str = "",
 ) -> tuple[bool, str]:
-    """
-    Returns (allowed, reason). Dual trades use separate bucket rules (always allow if asset clear).
-    """
-    asset = asset.upper()
-    bucket = candle_bucket_key(interval_minutes)
-
-    # ── Read regime limit BEFORE acquiring the lock to prevent blocking lock during I/O ──
-    limit = MAX_TRADES_PER_CANDLE_BUCKET
-    try:
-        import os
-        import json
-        from pathlib import Path
-        regime_path = Path(__file__).parent.parent.parent / "regime_status.json"
-        if regime_path.exists():
-            data = json.loads(regime_path.read_text(encoding="utf-8"))
-            regime = data.get("regime", "NORMAL")
-            if regime == "RANGE":
-                limit = 4
-            elif regime == "NORMAL":
-                limit = 3
-            elif regime == "VOLATILE":
-                limit = 2
-            elif regime == "SHOCK":
-                limit = 1
-    except Exception as e:
-        log.warning("[GOVERNOR] Failed to read regime-based trade limit: %s", e)
-
+    asset_upper = asset.upper()
+    
+    # 1. 10s simultaneous entry cap: delay altcoins before checking 10s request list
+    is_altcoin = asset_upper in ("SOL", "XRP", "DOGE")
+    if is_altcoin:
+        await asyncio.sleep(0.5)
+        
     async with _lock:
-        # Refresh open_positions INSIDE the lock so concurrent async tasks don't read
-        # the same stale snapshot before any of them has committed their position.
-        # This eliminates the race condition that allowed 5 simultaneous FV entries.
-        try:
-            from infrastructure.state import state_manager as _sm_fresh
-            open_positions = _sm_fresh.get_open_positions()
-        except Exception:
-            pass  # keep caller's snapshot as fallback
+        now = time.time()
+        
+        # Clean up old requests (> 10s old)
+        global _recent_requests
+        _recent_requests = [(t, a) for t, a in _recent_requests if now - t <= 10.0]
+        
+        # Record current request
+        _recent_requests.append((now, asset_upper))
+        
+        # Count distinct assets in the 10s window
+        distinct_assets = {a for _, a in _recent_requests}
+        if len(distinct_assets) > 3 and is_altcoin:
+            log.info("[GOVERNOR] Drop altcoin %s due to excess correlation (%d assets in 10s: %s)",
+                     asset_upper, len(distinct_assets), distinct_assets)
+            return False, "excess_correlation_cap"
 
+        # 2. Enforce exposure ceilings
+        from config import get_config
+        max_total_open = get_config("MAX_TOTAL_OPEN", 8)
+        max_open_per_asset = get_config("MAX_OPEN_PER_ASSET", 2)
+        
+        total_open = len(open_positions)
+        asset_open = 0
+        for p in open_positions:
+            t = p.get("event_title") or ""
+            p_asset = (p.get("asset") or _parse_asset_from_title(t) or "").upper()
+            if p_asset == asset_upper:
+                asset_open += 1
+                
+        if total_open >= max_total_open:
+            log.info("[GOVERNOR] Total exposure ceiling reached: %d/%d open positions", total_open, max_total_open)
+            return False, f"total_positions_limit_reached_{total_open}"
+            
+        if asset_open >= max_open_per_asset:
+            log.info("[GOVERNOR] Asset exposure ceiling reached for %s: %d/%d open positions", asset_upper, asset_open, max_open_per_asset)
+            return False, f"asset_positions_limit_reached_{asset_open}"
+
+        # 3. Latency Arb duplicate & cooldown tracking
         if is_dual:
-            if has_open_asset_tf_exposure(open_positions, asset, timeframe):
-                return False, f"lat_open_{asset}_{timeframe}"
-            key = (asset, timeframe)
+            key = (asset_upper, timeframe)
             if key in _lat_arb_in_flight:
-                return False, f"lat_inflight_{asset}_{timeframe}"
-            now = time.time()
-            if key in _lat_arb_cooldowns and now < _lat_arb_cooldowns[key]:
-                return False, f"lat_cooldown_{asset}_{timeframe}"
+                return False, f"lat_inflight_{asset_upper}_{timeframe}"
+            cooldown_until = _lat_arb_cooldowns.get(key, 0.0)
+            if now < cooldown_until:
+                return False, f"lat_cooldown_{asset_upper}_{timeframe}"
             _lat_arb_in_flight.add(key)
             return True, "dual_ok"
 
-        if has_open_asset_tf_exposure(open_positions, asset, timeframe):
-            return False, f"open_position_{asset}_{timeframe}"
-
-        # Block opposing direction on the same asset across any timeframe (unless dual arb)
-        if not is_dual:
+        # 4. Standard opposing exposure checks
+        if has_open_asset_exposure(open_positions, asset_upper):
+            # Check for opposing direction
+            sig_is_up = direction == "UP"
             for p in open_positions:
                 t = p.get("event_title") or ""
                 p_asset = (p.get("asset") or _parse_asset_from_title(t) or "").upper()
-                if p_asset == asset:
-                    p_dir = p.get("direction") or ""
-                    p_is_up = p_dir in ("YES", "UP")
-                    sig_is_up = direction == "UP"
-                    if p_is_up != sig_is_up:
-                        log.warning(
-                            "[GOVERNOR] Opposing position check blocked: %s/%s %s is blocked by open %s %s position %s",
-                            asset, timeframe, direction, p_asset, p_dir, p.get("order_id")
-                        )
-                        return False, f"opposing_exposure_{asset}"
+                if p_asset != asset_upper:
+                    continue
+                p_dir = p.get("direction") or ""
+                p_is_up = p_dir in ("YES", "UP")
+                if p_is_up != sig_is_up:
+                    log.info("[GOVERNOR] Blocked opposing exposure on same asset %s", asset_upper)
+                    return False, f"opposing_exposure_{asset_upper}"
 
-        # Block opposing direction on correlated assets (BTC/ETH group, SOL/XRP group)
-        if has_opposing_correlated_exposure(open_positions, asset, direction):
-            log.warning(
-                "[GOVERNOR] Correlated opposing block: %s/%s %s — correlated asset has opposing position",
-                asset, timeframe, direction
-            )
-            return False, f"correlated_opposing_{asset}"
+        # 5. Correlated asset checks (blocks self-hedging)
+        if has_opposing_correlated_exposure(open_positions, asset_upper, direction):
+            log.info("[GOVERNOR] Blocked opposing correlated exposure for %s", asset_upper)
+            return False, f"correlated_opposing_{asset_upper}"
 
-
-
-
-        if asset == BTC_ASSET and bucket in _btc_bucket_trades:
-            existing = _btc_bucket_trades[bucket]
-            if existing["timeframe"] == timeframe:
-                return False, "btc_duplicate_candle"  # same TF = duplicate
-            # Different TF (5m vs 15m): always allow — Bone Reaper Mode
-            log.info("[GOVERNOR] BTC concurrent %s+%s allowed (Bone Reaper Mode)",
-                     existing["timeframe"], timeframe)
-
-        if is_dual:
-            # Dual arb: only enforce per-asset open check
-            return True, "dual_ok"
-
-        entries = _candle_slots.get(bucket, [])
-        if len(entries) >= limit:
-            assets_in = [e["asset"] for e in entries]
-            if asset not in assets_in:
-                if asset in ("BTC", "ETH"):
-                    log.info("[GOVERNOR] %s/%s: tier-1 bypass at candle cap (%d/%d)",
-                             asset, timeframe, len(entries), limit)
-                else:
-                    return False, f"candle_cap_{len(entries)}/{limit}"
-
-        if asset == BTC_ASSET and bucket in _btc_bucket_trades:
+        # 5.5 BTC duplicate check
+        bucket = candle_bucket_key(interval_minutes)
+        if asset_upper == BTC_ASSET and bucket in _btc_bucket_trades:
             existing = _btc_bucket_trades[bucket]
             if existing["timeframe"] == timeframe:
                 return False, "btc_duplicate_candle"
+            log.info("[GOVERNOR] BTC concurrent %s+%s allowed (Bone Reaper Mode)",
+                     existing["timeframe"], timeframe)
 
-        # Pre-commit inside the lock: reserve the slot before releasing.
-        # Without this, concurrent async tasks all read the same (uncommitted) slot count,
-        # pass the cap check simultaneously, and fire correlated bets in the same candle.
-        _candle_slots.setdefault(bucket, []).append(
-            {"asset": asset, "timeframe": timeframe, "score": score, "_pre": True}
-        )
+        # 6. Pre-commit slot to _candle_slots
+        entries = _candle_slots.setdefault(bucket, [])
+        entries.append({"asset": asset_upper, "timeframe": timeframe, "score": score, "_pre": True})
+        
         return True, "ok"
 
 

@@ -38,10 +38,10 @@ from typing import Optional
 
 from config import load_config, log_config_startup, ASSETS, TIMEFRAMES
 try:
-    from infrastructure.state.logger import setup_file_logging
+    from core.engine.logger import setup_file_logging
 except ImportError:
     def setup_file_logging(level="INFO"): pass
-from infrastructure.state.state_manager import (
+from core.engine.state_manager import (
     initialize_runtime_tracking, update_runtime_tracking,
     update_heartbeat, get_current_balance, initialize_state,
     _get_trades_count,
@@ -53,12 +53,12 @@ from core.engine.regime_filter import time_gate_open
 from core.engine.session_governor import (
     request_trade_slot, commit_trade_slot, cancel_trade_slot, has_open_asset_exposure,
 )
-from infrastructure.state import state_manager
-from infrastructure.state.diagnostics import global_diagnostics
+from core.engine import state_manager
+from core.engine.diagnostics import global_diagnostics
 from core.engine.metrics_engine import track_skip
-from strategies.arbitrage.arbitrage_scanner import arbitrage_scanner_loop
-from infrastructure.exchange.trader import place_order, execute_exit
-from infrastructure.state.logger import log_signal_evaluation
+from core.engine.arbitrage_scanner import arbitrage_scanner_loop
+from core.engine.trader import place_order, execute_exit
+from core.engine.logger import log_signal_evaluation
 
 from dataclasses import dataclass, field
 
@@ -162,7 +162,7 @@ async def heartbeat_daemon() -> None:
             # Check process runtime for scheduled restart (4 hours = 14400 seconds)
             elapsed = time.time() - BOOT_TIME
             if elapsed >= 14400:
-                from infrastructure.exchange.trader import count_open_trades, get_pending_reconcile_count
+                from core.engine.trader import count_open_trades, get_pending_reconcile_count
                 open_trades = count_open_trades()
                 pending_count = get_pending_reconcile_count()
                 if open_trades == 0 and pending_count == 0:
@@ -250,7 +250,7 @@ async def _validate_trade_slot(
     # ── FV CORRELATED EXPOSURE CAP ──
     if _entry_source == "FAIR_VAL":
         try:
-            from infrastructure.state.state_manager import get_open_positions as _get_open_positions
+            from core.engine.state_manager import get_open_positions as _get_open_positions
             _fv_same_dir_open = sum(
                 1 for p in _get_open_positions()
                 if p.get("entry_type") == "FAIR-VAL"
@@ -296,7 +296,7 @@ async def _validate_trade_slot(
         _corr_pair = {"BTC": "ETH", "ETH": "BTC"}.get(asset.upper())
         if _corr_pair:
             try:
-                from infrastructure.state.state_manager import get_open_positions as _get_open_positions
+                from core.engine.state_manager import get_open_positions as _get_open_positions
                 for _p in _get_open_positions():
                     _pt = _p.get("event_title", "")
                     if (_corr_pair in _pt
@@ -886,7 +886,7 @@ async def _place_corr_trades(
     lead_score: float = 0.75,
 ) -> None:
     """Shadow a confirmed non-NCS trade onto correlated assets at the same size as the lead."""
-    from infrastructure.state.state_manager import get_open_positions, get_current_balance as _gcb
+    from core.engine.state_manager import get_open_positions, get_current_balance as _gcb
     targets = list(_CORR_MAP.get(lead_asset.upper(), []))
     # DOGE joins the shadow only on a very strong BTC signal (score >= 0.80)
     if lead_asset.upper() == "BTC" and lead_score >= 0.80 and "DOGE" not in targets:
@@ -984,7 +984,7 @@ def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, s
 
         # Strict 5.0¢ Max Slippage Guard (Live-matching defense)
         try:
-            from infrastructure.websocket.extraterrestrial_ws_gateway import polymarket_l2_gateway
+            from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
             live_price, _ = polymarket_l2_gateway.get_price(market_id)
             if live_price and abs(live_price - entry_price) > 0.05:
                 log.warning(
@@ -1019,7 +1019,7 @@ def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, s
                 from pathlib import Path as _P
                 _rs = _P("regime_status.json")
                 _regime_now = _j.loads(_rs.read_text(encoding="utf-8")).get("regime", "UNKNOWN") if _rs.exists() else "UNKNOWN"
-                from infrastructure.exchange.trader import annotate_position
+                from core.engine.trader import annotate_position
                 annotate_position(order["order_id"], regime=_regime_now)
             except Exception:
                 pass
@@ -1037,7 +1037,7 @@ async def _zombie_cleanup_loop() -> None:
     while True:
         await asyncio.sleep(300)  # every 5 minutes
         try:
-            from infrastructure.state.state_manager import cleanup_expired_positions
+            from core.engine.state_manager import cleanup_expired_positions
             deleted = cleanup_expired_positions()
             if deleted:
                 log.info("[ZOMBIE-LOOP] Cleaned %d zombie positions", deleted)
@@ -1050,7 +1050,7 @@ async def main() -> None:
     initialize_state()
     # Clean up any zombie positions from prior session at startup
     try:
-        from infrastructure.state.state_manager import cleanup_expired_positions
+        from core.engine.state_manager import cleanup_expired_positions
         _cleaned = cleanup_expired_positions()
         if _cleaned:
             log.info("[STARTUP] Deleted %d zombie positions from prior session", _cleaned)
@@ -1079,11 +1079,11 @@ async def main() -> None:
             register_engine(context.engines[key])
             log.info("[MAIN] Engine registered: %s", key)
 
-    from infrastructure.websocket.spot_websocket_ingest import BinanceWebSocketIngest
+    from core.engine.spot_websocket_ingest import BinanceWebSocketIngest
     ingest = BinanceWebSocketIngest(symbols=ASSETS)
     ingest.start()
 
-    from infrastructure.websocket.polymarket_rtds_ingest import polymarket_rtds_ingest
+    from core.engine.polymarket_rtds_ingest import polymarket_rtds_ingest
     polymarket_rtds_ingest.start()
 
     # ── Pyth Hermes Real-Time SSE Price Stream Service Integration ──────────
@@ -1165,7 +1165,7 @@ async def main() -> None:
         log.info("[MAIN] Halting HFT WebSocket ingest daemon...")
         ingest.stop()
         try:
-            from infrastructure.websocket.polymarket_rtds_ingest import polymarket_rtds_ingest
+            from core.engine.polymarket_rtds_ingest import polymarket_rtds_ingest
             polymarket_rtds_ingest.stop()
         except Exception as e:
             log.warning("[MAIN] Failed to stop Polymarket RTDS ingest: %s", e)

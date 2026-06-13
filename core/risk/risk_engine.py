@@ -41,7 +41,7 @@ _open_positions: list = []          # in-memory register, populated by main cycl
 _positions_lock = threading.Lock()
 
 # State file for open positions (populated by trader.py)
-_STATE_FILE = Path(__file__).parent / "account_state.json"
+_STATE_FILE = Path(__file__).parent.parent.parent / "data" / "account_state.json"
 
 
 # ── Position registration (called by trader.py after each trade) ──────────────
@@ -91,7 +91,7 @@ def _fetch_current_price(market_id: str) -> Optional[float]:
     Returns None if unavailable.
     """
     try:
-        from infrastructure.exchange.data_fetcher import get_event_current_price
+        from core.engine.data_fetcher import get_event_current_price
         result = get_event_current_price(market_id)
         if result:
             return float(result.get("price", 0))
@@ -188,13 +188,16 @@ def _execute_close(position: dict, reason: str) -> None:
         "mode": "paper" if is_paper else "live",
     }
 
-    # Write to local JSONL log
-    try:
-        log_path = Path(__file__).parent / "zisi_local_trades.jsonl"
-        with log_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(action_log) + "\n")
-    except Exception as exc:
-        log.error("[RISK-ENGINE] Failed to write close log: %s", exc)
+    # Write to local JSONL log or route to stdout logger under ZERO_DISK_LOGGING
+    if cfg.get("ZERO_DISK_LOGGING", False):
+        logging.getLogger("zisi.local_trades").info(action_log)
+    else:
+        try:
+            log_path = Path(__file__).parent.parent.parent / "data" / "zisi_local_trades.jsonl"
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(action_log) + "\n")
+        except Exception as exc:
+            log.error("[RISK-ENGINE] Failed to write close log: %s", exc)
 
     log.info(
         "[RISK-ENGINE] Position CLOSED (%s) | %s | pnl=%+.4f | mode=%s",

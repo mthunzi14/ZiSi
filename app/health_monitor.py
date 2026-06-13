@@ -25,14 +25,14 @@ from typing import Optional
 import requests
 
 log = logging.getLogger("zisi.health")
-from infrastructure.state.state_manager import GLOBAL_POSITIONS_LOCK
+from core.engine.state_manager import GLOBAL_POSITIONS_LOCK
 
 _BASE_DIR          = Path(__file__).parent.parent
-_ALERTS_FILE       = _BASE_DIR / "system_alerts.json"
-_SUSPENSIONS_FILE  = _BASE_DIR / "category_suspensions.json"
-STATE_FILE         = _BASE_DIR / "account_state.json"
+_ALERTS_FILE       = _BASE_DIR / "data" / "system_alerts.json"
+_SUSPENSIONS_FILE  = _BASE_DIR / "data" / "category_suspensions.json"
+STATE_FILE         = _BASE_DIR / "data" / "account_state.json"
 HEALTH_LOG         = _BASE_DIR / "health_monitor.log"
-POSITIONS_FILE     = _BASE_DIR / "infrastructure" / "exchange" / "positions_state.json"
+POSITIONS_FILE     = _BASE_DIR / "data" / "positions_state.json"
 
 # Polymarket health endpoint (CLOB API root)
 POLYMARKET_HEALTH_URL = "https://clob.polymarket.com"
@@ -502,8 +502,8 @@ def strategy_drift_check() -> dict:
 def _export_trade_journal() -> None:
     """Export zisi_local_trades.jsonl → trade_journal_export.csv (called hourly)."""
     import csv
-    trades_file = _BASE_DIR / "zisi_local_trades.jsonl"
-    export_file = _BASE_DIR / "trade_journal_export.csv"
+    trades_file = _BASE_DIR / "data" / "zisi_local_trades.jsonl"
+    export_file = _BASE_DIR / "data" / "trade_journal_export.csv"
     if not trades_file.exists():
         return
     try:
