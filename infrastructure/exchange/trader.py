@@ -88,9 +88,57 @@ def _derive_trade_type(entry_type: str) -> str:
         return "REVERSAL-STREAK"
     return "SIGNAL"
 
-def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, title: str = "") -> tuple[Optional[float], Optional[float]]:
+def _derive_pillar_and_type(title: str) -> tuple[str, str]:
+    t = (title or "").upper()
+    # First determine the type
+    if "CLOSE-SNIPE-EARLY" in t or "CLOSE_SNIPE_EARLY" in t:
+        t_type = "NCS"
+    elif "CLOSE_SNIPE" in t or "CLOSE-SNIPE" in t:
+        t_type = "NCS"
+    elif "T2_SWEEPER" in t or "SWEEP" in t:
+        t_type = "SWEEP"
+    elif "LATENCY_ARB" in t or "LAT_ARB" in t or "ARB" in t:
+        t_type = "LAT_ARB"
+    elif "FAIR_VAL" in t or "FAIR-VAL" in t:
+        t_type = "FV"
+    elif "REVERSAL_SNIPE" in t or "REVERSAL-SNIPE" in t:
+        t_type = "REV_SNIPE"
+    elif "REVERSAL_STREAK" in t or "REVERSAL-STREAK" in t:
+        t_type = "REV_STREAK"
+    else:
+        t_type = "SIG"
+        
+    # Then map the type to the pillar
+    if t_type in ("SIG", "FV", "REV_SNIPE"):
+        pillar = "CORE_SNIPER"
+    elif t_type in ("SWEEP", "NCS", "REV_STREAK"):
+        pillar = "ASYMMETRIC_BARBELL"
+    elif t_type in ("LAT_ARB",):
+        pillar = "LATENCY_ARBITRAGE"
+    else:
+        pillar = "CORE_SNIPER"
+        
+    return pillar, t_type
+
+def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, title: str = "", direction: str = "UP") -> tuple[Optional[float], Optional[float]]:
     try:
         _title_upper = (title or "").upper()
+        pillar, t_type = _derive_pillar_and_type(_title_upper)
+
+        # 1. If ASYMMETRIC_BARBELL and entry_price <= 0.20: hold to expiration (stop_loss = -1.0)
+        if pillar == "ASYMMETRIC_BARBELL" and entry_price <= 0.20:
+            _is_5m = "][5M]" in _title_upper
+            target = 0.72 if _is_5m else 0.88
+            log.info("[SL-CALIB] Underdog Asymmetric Barbell '%s' entry=%.2f -> target %.2f, hold to expiry", title, entry_price, target)
+            return target, -1.0
+
+        # 2. If 40c-50c midpoint trade: early exit at 20c
+        if 0.40 <= entry_price <= 0.50:
+            _is_5m = "][5M]" in _title_upper
+            target = 0.72 if _is_5m else 0.88
+            log.info("[SL-CALIB] Midpoint trade '%s' entry=%.2f -> target %.2f, stop 0.20 (salvage)", title, entry_price, target)
+            return target, 0.20
+
         # Sweeper entries at 90-99¢: target is resolution (0.99), no stop — hold to expiry
         if entry_price >= 0.90 or "T2_SWEEPER" in _title_upper or "SWEEP" in _title_upper:
             log.info("[SL-CALIB] Sweeper/near-certain trade '%s' entry=%.2f -> target 0.99, hold to expiry", title, entry_price)
@@ -101,11 +149,13 @@ def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, ti
             # 15m keeps 88¢ — has the full window to run
             _is_5m = "][5M]" in _title_upper
             target = 0.72 if _is_5m else 0.88
-            log.info("[SL-CALIB] Short-TF trade '%s' -> target %.2f, stop -1.0", title, target)
+            if entry_price >= target:
+                target = min(0.99, round(entry_price + 0.04, 4))
+            log.info("[SL-CALIB] Short-TF trade '%s' (entry=%.4f) -> target %.4f, stop -1.0", title, entry_price, target)
             return target, -1.0
 
         from core.risk.risk_manager import calculate_exit_targets
-        res = calculate_exit_targets(entry_price, amount_spent)
+        res = calculate_exit_targets(entry_price, amount_spent, direction)
         return res.get("target_price"), res.get("stop_loss")
     except Exception as e:
         log.warning("[TRADER] Could not compute dynamic exit targets: %s", e)
@@ -115,6 +165,48 @@ def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, ti
         return tp, sl
 
 
+
+
+def _poll_transaction_confirmation(transaction_id: str) -> bool:
+    """
+    Poll the Polymarket GET /v1/account/transactions/<id> endpoint until confirmed.
+    Returns True if confirmed, False if failed/invalid or timeout.
+    """
+    import time
+    cfg = _get_config()
+    # If paper trading, bypass and return True
+    if cfg["BOT_MODE"] == "paper_trading":
+        return True
+        
+    relayer_url = os.getenv("POLYMARKET_RELAYER_URL", "https://relayer-v2.polymarket.com").rstrip("/")
+    headers = {
+        "RELAYER_API_KEY": os.getenv("RELAYER_API_KEY", ""),
+        "RELAYER_API_KEY_ADDRESS": os.getenv("RELAYER_API_KEY_ADDRESS", ""),
+    }
+    
+    # Poll for up to 60 seconds (with 2s intervals)
+    for _ in range(30):
+        try:
+            resp = _retry_request("GET", f"{relayer_url}/v1/account/transactions/{transaction_id}", headers=headers)
+            if resp is not None and resp.status_code == 200:
+                data = resp.json()
+                state = data.get("state", "").upper()
+                if state == "STATE_CONFIRMED":
+                    log.info("[TX-POLL] Transaction %s confirmed on-chain", transaction_id)
+                    return True
+                elif state in ("STATE_FAILED", "STATE_INVALID"):
+                    log.error("[TX-POLL] Transaction %s terminal failure state: %s. Error: %s",
+                              transaction_id, state, data.get("error_msg"))
+                    return False
+                log.info("[TX-POLL] Transaction %s state is %s, retrying...", transaction_id, state)
+            else:
+                log.warning("[TX-POLL] Failed to get transaction %s status from relayer", transaction_id)
+        except Exception as e:
+            log.warning("[TX-POLL] Error polling transaction status: %s", e)
+        time.sleep(2.0)
+    
+    log.error("[TX-POLL] Timeout polling transaction %s confirmation", transaction_id)
+    return False
 
 # ---------------------------------------------------------------------------
 # Silent Fill Reconciliation  (0x_Punisher pattern)
@@ -180,7 +272,8 @@ def _reconcile_pending_orders() -> None:
             resolved_ids.append(order_id)
             price  = meta.get("entry_price", 0.5)
             amount = meta.get("amount", 0.0)
-            tp, sl = _calculate_exit_targets_fallback(price, amount, meta.get("event_title", ""))
+            direction = meta.get("direction", "UP")
+            tp, sl = _calculate_exit_targets_fallback(price, amount, meta.get("event_title", ""), direction)
 
             reconstructed[order_id] = {
                 "order_id":        order_id,
@@ -457,7 +550,7 @@ def place_order(
                 **({"expiry_ts": expiry_ts} if expiry_ts else {}),
             }
 
-            tp, sl = _calculate_exit_targets_fallback(entry_price, actual_cost, _display_title)
+            tp, sl = _calculate_exit_targets_fallback(entry_price, actual_cost, _display_title, direction)
             _open_positions[order_id] = {
                 **order,
                 "target_price": tp,
@@ -493,7 +586,8 @@ def place_order(
             "market": market,
             **({"expiry_ts": expiry_ts} if expiry_ts else {}),
         }
-        tp, sl = _calculate_exit_targets_fallback(entry_price, actual_cost, _display_title)
+        tp, sl = _calculate_exit_targets_fallback(entry_price, actual_cost, _display_title, direction)
+        pillar, t_type = _derive_pillar_and_type(_display_title)
         _open_positions[order_id] = {
             **order,
             "target_price": tp,
@@ -501,6 +595,8 @@ def place_order(
             "open_time": datetime.now(timezone.utc),
             "entry_type": _derive_entry_type(_display_title),
             "trade_type": _derive_trade_type(_derive_entry_type(_display_title)),
+            "pillar": pillar,
+            "type": t_type,
             "hold_to_expiry": hold_to_expiry,
         }
         persist_positions()
@@ -531,6 +627,13 @@ def place_order(
     resolved_id = data.get("id", order_id)
     api_status  = data.get("status", "PENDING").upper()
 
+    tx_id = data.get("transaction_id") or data.get("tx_id")
+    if tx_id:
+        confirmed = _poll_transaction_confirmation(tx_id)
+        if not confirmed:
+            log.error("[TRADE] Live transaction %s failed confirmation status. Discarding order state.", tx_id)
+            return None
+
     order = {
         "order_id":        resolved_id,
         "event_id":        event_id,
@@ -556,7 +659,8 @@ def place_order(
                 resolved_id, market_id, event_id, direction, amount_dollars, entry_price, event_title
             )
 
-    tp, sl = _calculate_exit_targets_fallback(entry_price, amount_dollars, event_title)
+    tp, sl = _calculate_exit_targets_fallback(entry_price, amount_dollars, event_title, direction)
+    pillar, t_type = _derive_pillar_and_type(event_title or "")
     _open_positions[order["order_id"]] = {
         **order,
         "event_title":  event_title or event_id,
@@ -565,6 +669,8 @@ def place_order(
         "open_time":    datetime.now(timezone.utc),
         "entry_type":   _derive_entry_type(event_title or ""),
         "trade_type":   _derive_trade_type(_derive_entry_type(event_title or "")),
+        "pillar":       pillar,
+        "type":         t_type,
         **({"expiry_ts": expiry_ts} if expiry_ts else {}),
     }
     persist_positions()
@@ -972,20 +1078,24 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
             elif not target_price or target_price <= 0:
                 _is_5m = "][5M]" in _ev_title
                 target_price = 0.72 if _is_5m else 0.88
+            
+            if target_price and target_price <= entry_price:
+                target_price = min(0.99, round(entry_price + 0.04, 4))
         elif not target_price or target_price <= 0:
             target_price = round(entry_price * cfg.get("POSITION_TARGET_MULTIPLIER", 1.50), 4)
 
         stop_loss = pos.get("stop_loss")
         if _is_short_tf:
-            stop_loss = -1.0
+            if stop_loss is None or stop_loss <= 0:
+                stop_loss = -1.0
         elif not stop_loss or stop_loss <= 0:
             stop_loss = round(entry_price * cfg.get("POSITION_STOP_LOSS_MULTIPLIER", 0.50), 4)
 
         # Evaluate expired status
         _expiry_ts = pos.get("expiry_ts")
         if is_updown and _expiry_ts:
-            # Polymarket contract resolves after the interval finishes (expiry_ts + interval_s)
-            is_expired = now.timestamp() >= (float(_expiry_ts) + (effective_max_minutes * 60))
+            # Polymarket contract resolves after the interval finishes (expiry_ts)
+            is_expired = now.timestamp() >= float(_expiry_ts)
         else:
             is_expired = age_minutes >= effective_max_minutes
 
@@ -1076,7 +1186,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
 
         # Evaluate exit triggers
         is_target_hit = exit_price >= target_price
-        is_stop_hit = exit_price <= stop_loss if not _is_short_tf else False
+        is_stop_hit = exit_price <= stop_loss if (not _is_short_tf or (stop_loss is not None and stop_loss > 0)) else False
         is_time_decay_hit = is_updown and not _is_short_tf and not is_expired and age_minutes >= 0.7 * effective_max_minutes
 
         # SALVAGE_EXIT (short-TF only): if within 90s of the real market expiry_ts
@@ -1250,8 +1360,11 @@ def check_exit_condition(
     _is_short_tf = "5M" in _ev_title or "15M" in _ev_title or "UPDOWN" in _ev_title
     _trade_type = pos.get("trade_type", "SIGNAL")
     _is_ncs_or_sweep = _trade_type in ("NCS", "SWEEP")
-    effective_stop_loss = -1.0 if _is_short_tf else stop_loss
+    effective_stop_loss = stop_loss if (stop_loss is not None and stop_loss > 0) else (-1.0 if _is_short_tf else stop_loss)
     effective_target_price = 0.99 if _is_ncs_or_sweep else target_price
+    
+    if _is_short_tf and effective_target_price <= entry_price:
+        effective_target_price = min(0.99, round(entry_price + 0.04, 4))
 
     # Calculate expiry_time for short timeframes to check salvage exit
     expiry_time = None
@@ -1274,7 +1387,7 @@ def check_exit_condition(
     if current_price >= effective_target_price:
         should_exit = True
         reason = "TARGET_HIT"
-    elif current_price <= effective_stop_loss if not _is_short_tf else False:
+    elif current_price <= effective_stop_loss if (not _is_short_tf or effective_stop_loss > 0) else False:
         should_exit = True
         reason = "STOP_HIT"
     elif hours_held >= max_hold_hours:
@@ -1640,6 +1753,15 @@ def persist_positions() -> None:
         merged_active = active + kalshi_active
         merged_closed = closed + existing_poly_closed + jsonl_closed + kalshi_closed
         merged_closed.sort(key=lambda p: p.get("exit_time", p.get("exit_timestamp", "")), reverse=True)
+
+        for p in merged_active:
+            pillar, t_type = _derive_pillar_and_type(p.get("event_title", ""))
+            p["pillar"] = pillar
+            p["type"] = t_type
+        for p in merged_closed:
+            pillar, t_type = _derive_pillar_and_type(p.get("event_title", ""))
+            p["pillar"] = pillar
+            p["type"] = t_type
 
         summary = {
             "active_count":  len(merged_active),
