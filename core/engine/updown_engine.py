@@ -58,8 +58,12 @@ def _write_gate_event(asset: str, timeframe: str, gate: str, direction: str, rea
             "direction": direction,
             "reason": reason,
         }
-        with open(_GATE_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+        import os
+        if os.getenv("ZERO_DISK_LOGGING", "false").lower() == "true":
+            logging.getLogger("zisi.gate_events").info(entry)
+        else:
+            with open(_GATE_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
     except Exception:
         pass
 
@@ -503,8 +507,8 @@ class UpDownEngine:
                 _rev_min_price = 0.65
                 if _rev_contra_price < _rev_min_price:
                     log.info(
-                        "[REV-STREAK-GATE] %s/1h: contra price %.0fc < %.0fc min — skip",
-                        self.asset, _rev_contra_price * 100, _rev_min_price * 100,
+                        "[REV-STREAK-GATE] %s/1h: contra price %.4f < %.4f min — skip",
+                        self.asset, _rev_contra_price, _rev_min_price,
                     )
             if (all_green or all_red) and _rev_contra_price >= _rev_min_price:
                 raw_dir = "DOWN" if all_green else "UP"
@@ -708,20 +712,20 @@ class UpDownEngine:
                             _dc_conf = float(_fv.get("confidence", 0.0))
                             if _dc_conf < _dc_min_conf:
                                 log.info(
-                                    '[FV-SPOT-ALIGN] %s/%s: deep contrarian %.0fc — conf %.2f < %.2f (FV_DEEP_CONTRA_MIN_CONF) — blocked',
-                                    self.asset, self.timeframe, _fv_entry_p * 100, _dc_conf, _dc_min_conf,
+                                    '[FV-SPOT-ALIGN] %s/%s: deep contrarian %.4f — conf %.2f < %.2f (FV_DEEP_CONTRA_MIN_CONF) — blocked',
+                                    self.asset, self.timeframe, _fv_entry_p, _dc_conf, _dc_min_conf,
                                 )
                                 _fv_spot_align = False
                             elif self.timeframe == "5m" and _elapsed_min > 3.5:
                                 log.info(
-                                    '[FV-SPOT-ALIGN] %s/%s: deep contrarian %.0fc — <90s remaining (elapsed=%.2fmin) — blocked',
-                                    self.asset, self.timeframe, _fv_entry_p * 100, _elapsed_min,
+                                    '[FV-SPOT-ALIGN] %s/%s: deep contrarian %.4f — <90s remaining (elapsed=%.2fmin) — blocked',
+                                    self.asset, self.timeframe, _fv_entry_p, _elapsed_min,
                                 )
                                 _fv_spot_align = False
                             else:
                                 log.info(
-                                    '[FV-SPOT-ALIGN] %s/%s: deep contrarian %.0fc @ conf=%.2f — bypass approved (spot %.3f%%)',
-                                    self.asset, self.timeframe, _fv_entry_p * 100, _dc_conf, _spot_pct * 100,
+                                    '[FV-SPOT-ALIGN] %s/%s: deep contrarian %.4f @ conf=%.2f — bypass approved (spot %.3f%%)',
+                                    self.asset, self.timeframe, _fv_entry_p, _dc_conf, _spot_pct * 100,
                                 )
                     except Exception:
                         pass  # fail open — do not block if price data unavailable
@@ -744,8 +748,8 @@ class UpDownEngine:
                     _regime_fv_conf = float(_fv.get("confidence", 0.0))
                     if _regime_fv_conf < _regime_req_conf:
                         log.info(
-                            "[FV-REGIME-GATE] %s/5m: MEAN_REVERSION regime — FV %.0fc conf=%.2f < %.2f — skip",
-                            self.asset, _regime_fv_ep * 100, _regime_fv_conf, _regime_req_conf,
+                            "[FV-REGIME-GATE] %s/5m: MEAN_REVERSION regime — FV %.4f conf=%.2f < %.2f — skip",
+                            self.asset, _regime_fv_ep, _regime_fv_conf, _regime_req_conf,
                         )
                         _fv = {"direction": None, "edge": 0.0, "archetype": None, "confidence": 0.0, "fp_up": 0.0}
 
@@ -944,8 +948,8 @@ class UpDownEngine:
                         raw_dir = "UP" if ofi >= 0 else "DOWN"
                         score_base = 0.62
                         log.info(
-                            "[ENGINE] %s/%s: Dual-eligible (sum=%.2fc) neutral RSI — OFI → %s",
-                            self.asset, self.timeframe, (up_price + dn_price) * 100, raw_dir,
+                            "[ENGINE] %s/%s: Dual-eligible (sum=%.4f) neutral RSI — OFI → %s",
+                            self.asset, self.timeframe, (up_price + dn_price), raw_dir,
                         )
                     else:
                         return None
@@ -1138,7 +1142,7 @@ class UpDownEngine:
             if is_dual_eligible:
                 score = min(1.0, score + 0.06)
                 log.info(
-                    "[ENGINE] %s/%s: Dual boost — combined=%.2fc",
+                    "[ENGINE] %s/%s: Dual boost — combined=%.4f",
                     self.asset, self.timeframe, up_price + dn_price,
                 )
 
@@ -1292,10 +1296,61 @@ class UpDownEngine:
                 )
                 return None
 
+        # ── Overlay B: Trend-Following Midpoint Freeze Protection ──
+        try:
+            from config import (
+                OVERLAY_B_ENABLED,
+                OVERLAY_B_FREEZE_MIDPOINTS,
+                OVERLAY_B_TREND_ALIGNMENT_THRESHOLD,
+                OVERLAY_B_ADX_THRESHOLD,
+            )
+        except ImportError:
+            OVERLAY_B_ENABLED = True
+            OVERLAY_B_FREEZE_MIDPOINTS = True
+            OVERLAY_B_TREND_ALIGNMENT_THRESHOLD = 4
+            OVERLAY_B_ADX_THRESHOLD = 25.0
+
+        if OVERLAY_B_ENABLED and OVERLAY_B_FREEZE_MIDPOINTS:
+            _entry_price_check = up_price if direction == "UP" else dn_price
+            if 0.40 <= _entry_price_check <= 0.60:
+                try:
+                    from core.engine.confluence_engine import ConfluenceEngine
+                    from core.engine.edge_orchestrator import edge_orchestrator
+                    if edge_orchestrator and getattr(edge_orchestrator, "_confluence", None):
+                        conf_engine = edge_orchestrator._confluence
+                    else:
+                        conf_engine = ConfluenceEngine()
+
+                    conf_up = await conf_engine.get_confluence(session, self.asset, "UP")
+                    conf_dn = await conf_engine.get_confluence(session, self.asset, "DOWN")
+                    score_up = conf_up.get("score", 0)
+                    score_dn = conf_dn.get("score", 0)
+                    alignment_score = max(score_up, score_dn)
+
+                    if alignment_score >= OVERLAY_B_TREND_ALIGNMENT_THRESHOLD:
+                        # Calculate Simple Trend Strength (ADX-equivalent proxy)
+                        lookback = min(14, len(closes) - 1)
+                        if lookback > 0:
+                            net_move = abs(closes[-1] - closes[-lookback - 1])
+                            path_length = sum(abs(closes[i] - closes[i - 1]) for i in range(len(closes) - lookback, len(closes)))
+                            efficiency_ratio = net_move / path_length if path_length > 0 else 0.0
+                            adx = efficiency_ratio * 100.0
+                        else:
+                            adx = 0.0
+
+                        if adx >= OVERLAY_B_ADX_THRESHOLD:
+                            log.warning(
+                                "[TREND-FREEZE] %s midpoint entry frozen. Alignment=%d/4, ADX=%.1f. Bypassing entry to avoid drawdown.",
+                                self.asset, alignment_score, adx
+                            )
+                            return None
+                except Exception as e:
+                    log.warning("[ENGINE] Failed to evaluate Overlay B: %s", e)
+
         log.info(
-            "[ENGINE] %s/%s SIGNAL: %s | Score=%.2f | up=%.0fc dn=%.0fc | dual=%s | %s",
+            "[ENGINE] %s/%s SIGNAL: %s | Score=%.2f | up=%.4f dn=%.4f | dual=%s | %s",
             self.asset, self.timeframe, direction, score,
-            up_price * 100, dn_price * 100, is_dual_eligible, market["event_title"],
+            up_price, dn_price, is_dual_eligible, market["event_title"],
         )
 
         # Add whale alignment and confluence to signal for downstream gates
@@ -1349,38 +1404,36 @@ class UpDownEngine:
         polymarket_l2_gateway.subscribe(up_tk)
         polymarket_l2_gateway.subscribe(dn_tk)
 
-        # Always enforce live spread gate regardless of mode — this is a live simulation.
-        # REBUILD: non-latency FV/SIG tolerate a wider spread (thin early-candle books are
-        # real, just illiquid) so they aren't hard-skipped; latency sweeps stay tight.
-        effective_max_spread = max_spread if is_latency_scan else max(max_spread, 0.20)
+        # Always allow any spread to prevent skipping - CAP REMOVAL
+        effective_max_spread = 1.0
 
         up_price, dn_price = None, None
         attempts = 2 if is_latency_scan else 4
         for attempt in range(attempts):
-            # Enforce 0s sleep on attempt 0 if latency scan to fail fast / act instantly
             if attempt > 0 or not is_latency_scan:
                 await asyncio.sleep(0.5 if is_latency_scan else (1.0 if attempt == 0 else 1.5))
             up_price, up_spread = polymarket_l2_gateway.get_price(up_tk)
             dn_price, dn_spread = polymarket_l2_gateway.get_price(dn_tk)
             
-            # Near-certain L2 gate: sweeper entries at 95-99¢ need a wider validity window
-            _price_ceil = 0.99 if is_latency_scan else 0.97
+            # Widen price ceiling and floor to accept all valid prices
+            _price_ceil = 0.999
+            _price_floor = 0.001
 
             # 1. If we have both prices, verify and use them
-            if up_price and dn_price and 0.03 < up_price < _price_ceil and 0.03 < dn_price < _price_ceil:
+            if up_price and dn_price and _price_floor < up_price < _price_ceil and _price_floor < dn_price < _price_ceil:
                 spread = (up_spread or 0.02) + (dn_spread or 0.02)
                 if spread <= effective_max_spread:
                     return up_price, dn_price, spread
 
             # 2. Derive DOWN price if only UP exists and is valid
-            if up_price and 0.03 < up_price < _price_ceil and (not dn_price or dn_price <= 0.03 or dn_price >= _price_ceil):
+            if up_price and _price_floor < up_price < _price_ceil and (not dn_price or dn_price <= _price_floor or dn_price >= _price_ceil):
                 derived_dn = round(1.0 - up_price, 4)
                 spread = (up_spread or 0.02) + 0.02
                 if spread <= effective_max_spread:
                     return up_price, derived_dn, spread
 
             # 3. Derive UP price if only DOWN exists and is valid
-            if dn_price and 0.03 < dn_price < _price_ceil and (not up_price or up_price <= 0.03 or up_price >= _price_ceil):
+            if dn_price and _price_floor < dn_price < _price_ceil and (not up_price or up_price <= _price_floor or up_price >= _price_ceil):
                 derived_up = round(1.0 - dn_price, 4)
                 spread = (dn_spread or 0.02) + 0.02
                 if spread <= effective_max_spread:
@@ -1392,38 +1445,35 @@ class UpDownEngine:
         up_p, up_s = _parse_clob_book(up_book)
         dn_p, dn_s = _parse_clob_book(dn_book)
         
+        _price_ceil = 0.999
+        _price_floor = 0.001
+
         # REST 1. Both valid
-        if up_p and dn_p and 0.03 < up_p < 0.97 and 0.03 < dn_p < 0.97:
+        if up_p and dn_p and _price_floor < up_p < _price_ceil and _price_floor < dn_p < _price_ceil:
             spread = (up_s or 0.03) + (dn_s or 0.03)
             if spread <= effective_max_spread:
                 return up_p, dn_p, spread
         
         # REST 2. Derive REST DOWN from REST UP
-        if up_p and 0.03 < up_p < 0.97 and (not dn_p or dn_p <= 0.03 or dn_p >= 0.97):
+        if up_p and _price_floor < up_p < _price_ceil and (not dn_p or dn_p <= _price_floor or dn_p >= _price_ceil):
             derived_dn = round(1.0 - up_p, 4)
             spread = (up_s or 0.03) + 0.03
             if spread <= effective_max_spread:
                 return up_p, derived_dn, spread
                 
         # REST 3. Derive REST UP from REST DOWN
-        if dn_p and 0.03 < dn_p < 0.97 and (not up_p or up_p <= 0.03 or up_p >= 0.97):
+        if dn_p and _price_floor < dn_p < _price_ceil and (not up_p or up_p <= _price_floor or up_p >= _price_ceil):
             derived_up = round(1.0 - dn_p, 4)
             spread = (dn_s or 0.03) + 0.03
             if spread <= effective_max_spread:
                 return derived_up, dn_p, spread
 
-        # No live L2 book and REST fallback also failed.
-        # ── SOFT LIVE-BOOK FALLBACK (Bonereaper-mode) ──────────────────────────────────
-        # Instead of hard-skipping (which generated 458 skips per 15-min in June 10 forensic),
-        # return a neutral 0.50/0.50 mid-price so the indicator/signal engine can still
-        # evaluate direction and entry. Price confirmation logic (FV edge, score threshold)
-        # will still gate the trade — we just no longer block at the book-fetch stage.
+        # No live L2 book and REST fallback also failed. Return None (no fake fallbacks).
         log.warning(
-            "[LIVE-BOOK] %s/%s: No valid L2 book (WS+REST failed) — using neutral fallback 0.50/0.50; "
-            "signal logic will still decide entry.",
+            "[LIVE-BOOK] %s/%s: No valid L2 book (WS+REST failed) — skipping candle.",
             self.asset, self.timeframe,
         )
-        return 0.50, 0.50, 0.10  # neutral mid; wide spread (0.10) accepted by non-latency gate
+        return None
 
     async def prefetch_upcoming_market(self, session: aiohttp.ClientSession, next_boundary: int) -> None:
         """Prefetch token IDs for the upcoming market 20s before start and warm WebSocket."""
@@ -1535,9 +1585,9 @@ class UpDownEngine:
                 market["dn_price"] = dn_price
                 market["spread"] = spread
                 log.info(
-                    "[ENGINE] %s/%s: [PRE-FETCH HIT] %s up=%.0fc dn=%.0fc spread=%.0fc",
+                    "[ENGINE] %s/%s: [PRE-FETCH HIT] %s up=%.4f dn=%.4f spread=%.4f",
                     self.asset, self.timeframe, market["slug"],
-                    up_price * 100, dn_price * 100, spread * 100,
+                    up_price, dn_price, spread,
                 )
                 return market
 
@@ -1559,6 +1609,7 @@ class UpDownEngine:
 
                 async with session.get(gamma_url, params={"slug": slug}, timeout=5) as r:
                     if r.status != 200:
+                        await asyncio.sleep(0.5)
                         continue
                     raw = await r.json()
                     evs = []
@@ -1604,16 +1655,17 @@ class UpDownEngine:
                             resolved = await self._resolve_l2_prices(session, up_tk, dn_tk, is_latency_scan=is_latency_scan)
                             if not resolved:
                                 log.info(
-                                    "[ENGINE] %s/%s: slug %s — no valid L2 book (skip phantom 50c)",
+                                    "[ENGINE] %s/%s: slug %s — no valid L2 book (skip phantom 50¢)",
                                     self.asset, self.timeframe, slug,
                                 )
+                                await asyncio.sleep(0.5)
                                 continue
 
                             up_price, dn_price, spread = resolved
                             log.info(
-                                "[ENGINE] %s/%s: %s up=%.0fc dn=%.0fc spread=%.0fc",
+                                "[ENGINE] %s/%s: %s up=%.4f dn=%.4f spread=%.4f",
                                 self.asset, self.timeframe, slug,
-                                up_price * 100, dn_price * 100, spread * 100,
+                                up_price, dn_price, spread,
                             )
                             return {
                                 "event_id": ev.get("id", ""),

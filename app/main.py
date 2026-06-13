@@ -70,7 +70,6 @@ log = logging.getLogger("zisi.main")
 # DOGE excluded — insufficient correlation with BTC/ETH price action.
 _CORR_MAP: dict[str, list[str]] = {
     "BTC": ["ETH", "SOL", "XRP"],
-    "ETH": ["SOL", "XRP"],
 }
 _NCS_SOURCES = frozenset({"CLOSE-SNIPE", "CLOSE-SNIPE-EARLY"})
 
@@ -269,8 +268,8 @@ async def _validate_trade_slot(
     # that consensus. Raised from 20¢ after two clean-slate losses at 24.5¢ and 40¢ NO entries.
     # CORR trades (already vetted by lead asset) and FV/NCS are exempt.
     if _entry_source not in ("FAIR_VAL", "CLOSE-SNIPE", "CORR") and entry_price < 0.40:
-        log.info("[SIG-FLOOR] %s/%s: SIG %.0fc < 40c — crowd >60%% against signal — skip",
-                 asset, timeframe, entry_price * 100)
+        log.info("[SIG-FLOOR] %s/%s: SIG %.4f < 0.40 — crowd >60%% against signal — skip",
+                 asset, timeframe, entry_price)
         context.log_skip("sig_floor_40c", asset, timeframe)
         return False, {}
 
@@ -280,8 +279,8 @@ async def _validate_trade_slot(
     if _entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE", "CORR"):
         _sig_ceil = 0.60 if timeframe == "5m" else 0.65
         if entry_price > _sig_ceil:
-            log.info("[SIG-CEIL] %s/%s: SIG %.0fc > %.0fc ceiling — overextended — skip",
-                     asset, timeframe, entry_price * 100, _sig_ceil * 100)
+            log.info("[SIG-CEIL] %s/%s: SIG %.4f > %.4f ceiling — overextended — skip",
+                     asset, timeframe, entry_price, _sig_ceil)
             context.log_skip("sig_ceiling", asset, timeframe)
             return False, {}
 
@@ -312,8 +311,8 @@ async def _validate_trade_slot(
             except Exception:
                 pass
         if not _corr_bypass:
-            log.info("[SIG-MIDGUARD] %s/%s: SIG %.0fc in 35-57c with weak score %.2f < 0.70 — skip",
-                     asset, timeframe, entry_price * 100, score)
+            log.info("[SIG-MIDGUARD] %s/%s: SIG %.4f in 0.35-0.57 with weak score %.2f < 0.70 — skip",
+                     asset, timeframe, entry_price, score)
             context.log_skip("sig_midrange_guard", asset, timeframe)
             return False, {}
 
@@ -470,8 +469,8 @@ async def _validate_trade_slot(
         )
         if _same_dir_count >= 4 and score < 0.75:
             log.info(
-                "[SAME-DIR-GATE] %s/%s: %d open %s + moderate FV (%.0fc) + score %.2f < 0.82 — skip",
-                asset, timeframe, _same_dir_count, direction, entry_price * 100, score,
+                "[SAME-DIR-GATE] %s/%s: %d open %s + moderate FV (%.4f) + score %.2f < 0.82 — skip",
+                asset, timeframe, _same_dir_count, direction, entry_price, score,
             )
             context.log_skip("same_dir_quality_gate", asset, timeframe)
             return False, {}
@@ -496,8 +495,8 @@ async def _validate_trade_slot(
             _fv_atm_min = 0.60
         if _fv_conf < _fv_atm_min:
             log.info(
-                "[FV-ATM-CONF] %s/%s: %.0fc ATM, confidence %.2f < %.2f — no directional edge, skip",
-                asset, timeframe, entry_price * 100, _fv_conf, _fv_atm_min,
+                "[FV-ATM-CONF] %s/%s: %.4f ATM, confidence %.2f < %.2f — no directional edge, skip",
+                asset, timeframe, entry_price, _fv_conf, _fv_atm_min,
             )
             context.log_skip("fv_atm_low_confidence", asset, timeframe)
             return False, {}
@@ -514,6 +513,25 @@ async def _validate_trade_slot(
             )
             context.log_skip("15m_correlation_cap", asset, timeframe)
             return False, {}
+
+    # ── CLOB V2 Fee Mitigation engine ──
+    # Midpoint trades (40¢–60¢) in Pillar 1 are rejected if implied edge < 1.5× taker fee.
+    _entry_source = signal.get("entry_source", "SIG")
+    if _entry_source in ("SIG", "SIGNAL", "FAIR_VAL", "FV", "REVERSAL_SNIPE", "REV_SNIPE"):
+        if 0.40 <= entry_price <= 0.60:
+            win_rate = signal.get("fv_confidence") or signal.get("score") or 0.52
+            if win_rate > 1.0:
+                win_rate = win_rate / 100.0
+            implied_edge = win_rate - entry_price
+            taker_fee_per_share = 0.072 * entry_price * (1.0 - entry_price)
+            
+            if implied_edge < 1.5 * taker_fee_per_share:
+                log.info(
+                    "[FEE-GATE] Blocked Pillar 1 midpoint trade: asset=%s, price=%.4f, win_rate=%.4f, implied_edge=%.4f, taker_fee_per_share=%.4f (1.5x fee = %.4f)",
+                    asset, entry_price, win_rate, implied_edge, taker_fee_per_share, 1.5 * taker_fee_per_share
+                )
+                context.log_skip("fee_gate_blocked", asset, timeframe)
+                return False, {}
 
     allowed, slot_reason = await request_trade_slot(
         asset, timeframe, score, interval_minutes, open_positions, is_dual=is_dual, direction=direction,
@@ -577,8 +595,8 @@ async def _validate_trade_slot(
             _kelly = (_rev_wr * _gain - (1.0 - _rev_wr) * _loss) / _gain if _gain > 0 else 0.0
             _qk_size = max(3.0, min(current_balance * max(0.0, _kelly) * 0.25, 15.0))
             if _qk_size > bet_usd:
-                log.info("[REVERSAL-SIZE] %s/%s ep=%.0fc kelly=%.1f%% → $%.2f (was $%.2f)",
-                         asset, timeframe, _ep * 100, _kelly * 100, _qk_size, bet_usd)
+                log.info("[REVERSAL-SIZE] %s/%s ep=%.4f kelly=%.1f%% → $%.2f (was $%.2f)",
+                         asset, timeframe, _ep, _kelly * 100, _qk_size, bet_usd)
                 bet_usd = _qk_size
 
     # ── P2: Global Bet Cap — differentiated by timeframe / entry conviction ──
@@ -689,57 +707,65 @@ async def _execute_order_flow(
     bet_usd      = details["bet_usd"]
     entry_source = details.get("entry_source", "SIG")
 
-    traded = False
-    if is_dual:
-        main_usd, hedge_usd = engine.compute_dual_sizes(
-            score, entry_price,
-            dn_price if direction == "UP" else up_price,
-            current_balance,
-        )
-        main_usd = max(1.0, main_usd * risk_multiplier)
-        hedge_usd = max(1.0, hedge_usd * risk_multiplier)
-
-        if entry_source == "FAIR_VAL":
-            dual_main_tag = "FAIR_VAL"
-        elif entry_source == "REVERSAL_STREAK":
-            dual_main_tag = "REVERSAL_STREAK"
-        else:
-            dual_main_tag = "DUAL_MAIN"
-        main_order = _place_trade(asset, timeframe, direction, market, main_usd, entry_price, score, dual_main_tag)
-        hedge_dir = "DOWN" if direction == "UP" else "UP"
-        hedge_price = dn_price if direction == "UP" else up_price
-        hedge_order = _place_trade(asset, timeframe, hedge_dir, market, hedge_usd, hedge_price, score, "DUAL_HEDGE")
-
-        if main_order or hedge_order:
-            traded = True
-            await commit_trade_slot(asset, timeframe, score, interval_minutes, is_dual=True, direction=direction)
-
-        if (main_order is not None) != (hedge_order is not None):
-            log.critical(
-                "[MAIN] %s/%s: ASYMMETRIC FILL main=%s hedge=%s",
-                asset, timeframe, main_order is not None, hedge_order is not None,
+    slot_committed = False
+    try:
+        traded = False
+        if is_dual:
+            main_usd, hedge_usd = engine.compute_dual_sizes(
+                score, entry_price,
+                dn_price if direction == "UP" else up_price,
+                current_balance,
             )
-            global_diagnostics.log_execution(150.0, 5.0, successful_hedge=False)
-            _try_telegram(f"EMERGENCY: Asymmetric fill on {asset}/{timeframe}!")
-            if main_order:
-                execute_exit(main_order["order_id"], entry_price, exit_reason="EMERGENCY_ASYMMETRIC_UNWIND")
-            if hedge_order:
-                execute_exit(hedge_order["order_id"], hedge_price, exit_reason="EMERGENCY_ASYMMETRIC_UNWIND")
-    else:
-        if entry_source == "FAIR_VAL":
-            single_tag = "FAIR_VAL"
-        elif entry_source == "REVERSAL_STREAK":
-            single_tag = "REVERSAL_STREAK"
-        else:
-            single_tag = "SINGLE"
-        order = _place_trade(asset, timeframe, direction, market, bet_usd, entry_price, score, single_tag)
-        if order:
-            traded = True
-            await commit_trade_slot(asset, timeframe, score, interval_minutes, is_dual=False, direction=direction)
-        else:
-            await cancel_trade_slot(asset, timeframe)
+            main_usd = max(1.0, main_usd * risk_multiplier)
+            hedge_usd = max(1.0, hedge_usd * risk_multiplier)
 
-    return traded
+            if entry_source == "FAIR_VAL":
+                dual_main_tag = "FAIR_VAL"
+            elif entry_source == "REVERSAL_STREAK":
+                dual_main_tag = "REVERSAL_STREAK"
+            else:
+                dual_main_tag = "DUAL_MAIN"
+            
+            # Place dual trade legs in parallel using thread pool to avoid blocking the event loop
+            main_task = asyncio.to_thread(_place_trade, asset, timeframe, direction, market, main_usd, entry_price, score, dual_main_tag)
+            hedge_dir = "DOWN" if direction == "UP" else "UP"
+            hedge_price = dn_price if direction == "UP" else up_price
+            hedge_task = asyncio.to_thread(_place_trade, asset, timeframe, hedge_dir, market, hedge_usd, hedge_price, score, "DUAL_HEDGE")
+            main_order, hedge_order = await asyncio.gather(main_task, hedge_task)
+
+            if main_order or hedge_order:
+                traded = True
+                await commit_trade_slot(asset, timeframe, score, interval_minutes, is_dual=True, direction=direction)
+                slot_committed = True
+
+            if (main_order is not None) != (hedge_order is not None):
+                log.critical(
+                    "[MAIN] %s/%s: ASYMMETRIC FILL main=%s hedge=%s",
+                    asset, timeframe, main_order is not None, hedge_order is not None,
+                )
+                global_diagnostics.log_execution(150.0, 5.0, successful_hedge=False)
+                _try_telegram(f"EMERGENCY: Asymmetric fill on {asset}/{timeframe}!")
+                if main_order:
+                    await asyncio.to_thread(execute_exit, main_order["order_id"], entry_price, exit_reason="EMERGENCY_ASYMMETRIC_UNWIND")
+                if hedge_order:
+                    await asyncio.to_thread(execute_exit, hedge_order["order_id"], hedge_price, exit_reason="EMERGENCY_ASYMMETRIC_UNWIND")
+        else:
+            if entry_source == "FAIR_VAL":
+                single_tag = "FAIR_VAL"
+            elif entry_source == "REVERSAL_STREAK":
+                single_tag = "REVERSAL_STREAK"
+            else:
+                single_tag = "SINGLE"
+            # Run synchronous place_trade in a separate thread to avoid blocking WebSocket ingestion
+            order = await asyncio.to_thread(_place_trade, asset, timeframe, direction, market, bet_usd, entry_price, score, single_tag)
+            if order:
+                traded = True
+                await commit_trade_slot(asset, timeframe, score, interval_minutes, is_dual=False, direction=direction)
+                slot_committed = True
+        return traded
+    finally:
+        if not slot_committed:
+            await cancel_trade_slot(asset, timeframe)
 
 
 async def asset_loop(
@@ -862,8 +888,8 @@ async def _place_corr_trades(
     """Shadow a confirmed non-NCS trade onto correlated assets at the same size as the lead."""
     from infrastructure.state.state_manager import get_open_positions, get_current_balance as _gcb
     targets = list(_CORR_MAP.get(lead_asset.upper(), []))
-    # DOGE joins the shadow only on a very strong BTC/ETH signal (score >= 0.80)
-    if lead_asset.upper() in ("BTC", "ETH") and lead_score >= 0.80 and "DOGE" not in targets:
+    # DOGE joins the shadow only on a very strong BTC signal (score >= 0.80)
+    if lead_asset.upper() == "BTC" and lead_score >= 0.80 and "DOGE" not in targets:
         targets.append("DOGE")
     if not targets:
         return
@@ -933,7 +959,7 @@ async def _place_corr_trades(
         # Only shadow if market is reasonably liquid, not at extremes, and crowd isn't >60% against.
         # ETH/SOL CORR at 38.5c lost -$5.25/-$1.12: crowd was 61.5% against direction — no gate caught it.
         if entry_price < 0.40 or entry_price > 0.95:
-            log.info("[CORR] %s/%s: price %.0fc out of bounds (min 40c) — skip shadow", corr_asset, timeframe, entry_price * 100)
+            log.info("[CORR] %s/%s: price %.4f out of bounds (min 0.40) — skip shadow", corr_asset, timeframe, entry_price)
             continue
         # Log CORR with the lead's trade type so analysis correctly attributes source
         _lead_type_map = {
@@ -941,11 +967,12 @@ async def _place_corr_trades(
             "REVERSAL_STREAK": "REVERSAL_STREAK", "LATENCY_ARB": "LATENCY-ARB",
         }
         _corr_trade_type = _lead_type_map.get(lead_source, lead_source)
-        order = _place_trade(corr_asset, timeframe, direction, market, bet_usd, entry_price, lead_score, _corr_trade_type)
+        # Run in thread pool to prevent blocking main event loop during shadow correlation placement
+        order = await asyncio.to_thread(_place_trade, corr_asset, timeframe, direction, market, bet_usd, entry_price, lead_score, _corr_trade_type)
         if order:
             log.info(
-                "[CORR] %s/%s %s | $%.2f @ %.0fc | shadow of %s/%s [%s] → logged as %s",
-                corr_asset, timeframe, direction, bet_usd, entry_price * 100,
+                "[CORR] %s/%s %s | $%.2f @ %.4f | shadow of %s/%s [%s] → logged as %s",
+                corr_asset, timeframe, direction, bet_usd, entry_price,
                 lead_asset, timeframe, lead_source, _corr_trade_type,
             )
             await commit_trade_slot(corr_asset, timeframe, 0.75, interval_minutes, is_dual=False, direction=direction)
@@ -983,8 +1010,8 @@ def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, s
 
         if order:
             log.info(
-                "[TRADE OPENED] %s/%s %s | $%.2f @ %.0f¢ | score=%.2f | %s",
-                asset, timeframe, direction, actual_cost, entry_price * 100, score, trade_type,
+                "[TRADE OPENED] %s/%s %s | $%.2f @ %.4f | score=%.2f | %s",
+                asset, timeframe, direction, actual_cost, entry_price, score, trade_type,
             )
             # Stamp the regime at entry time for Session×Regime analytics
             try:
@@ -997,7 +1024,7 @@ def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, s
             except Exception:
                 pass
             _try_telegram(
-                f"TRADE {asset}/{timeframe} {direction} | ${actual_cost:.2f} @ {entry_price*100:.0f}c | {trade_type}"
+                f"TRADE {asset}/{timeframe} {direction} | ${actual_cost:.2f} @ {entry_price:.4f} | {trade_type}"
             )
             return order
     except Exception as exc:
@@ -1152,8 +1179,13 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        log.info("[MAIN] Shutdown requested")
-        sys.exit(0)
+    while True:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            log.info("[MAIN] Shutdown requested")
+            sys.exit(0)
+        except Exception as e:
+            log.exception("[MAIN] Engine crashed, restarting in 5s: %s", e)
+            import time
+            time.sleep(5)
