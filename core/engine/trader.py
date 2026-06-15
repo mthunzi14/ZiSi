@@ -1189,13 +1189,21 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         is_stop_hit = exit_price <= stop_loss if (not _is_short_tf or (stop_loss is not None and stop_loss > 0)) else False
         is_time_decay_hit = is_updown and not _is_short_tf and not is_expired and age_minutes >= 0.7 * effective_max_minutes
 
-        # SALVAGE_EXIT (short-TF only): if within 90s of the real market expiry_ts
-        # AND the contract price has collapsed below 20¢, exit immediately to recover
-        # whatever value remains instead of riding it to 1¢.
-        # Uses expiry_ts (actual Polymarket close) NOT age-from-entry, eliminating the
-        # ~90s blind spot that was causing full losses on the reconciliation path.
         is_salvage_exit = False
         # Salvage exits disabled for short-TF to hold to resolution
+
+        # PRE-EMPTIVE TIMEOUT: In the execution block, if we are within 3 seconds of market expiration (T-3),
+        # immediately execute an aggressive market-sweep order to completely flatten risk.
+        is_preemptive_timeout = False
+        if is_updown and _expiry_ts and not is_expired:
+            time_left = float(_expiry_ts) - now.timestamp()
+            if 0 < time_left <= 3.0:
+                log.info(
+                    "[PRE-EMPTIVE-TIMEOUT] %s: Market resolves in %.1fs (T-3 gate) — sweeping book to flatten risk",
+                    order_id, time_left
+                )
+                is_preemptive_timeout = True
+                is_salvage_exit = True
 
         # 80% drawdown stop-loss: if price dropped to ≤20% of entry, position is
         # almost certainly wrong direction. Exit now to save 80% of stake.
@@ -1247,7 +1255,10 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
                 order_id, age_minutes, effective_max_minutes
             )
         elif is_salvage_exit:
-            exit_reason = "SALVAGE_EXIT"
+            if "is_preemptive_timeout" in locals() and is_preemptive_timeout:
+                exit_reason = "RESOLUTION_PROXIMITY"
+            else:
+                exit_reason = "SALVAGE_EXIT"
         else:
             exit_reason = "MARKET_EXPIRED"
 
