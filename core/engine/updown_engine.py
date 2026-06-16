@@ -80,7 +80,7 @@ _cache = TechnicalDataCache()
 KELLY = {
     "HIGH": (0.040, 0.150),   # score >= 0.85: 4% Kelly, 15% cap
     "MED":  (0.030, 0.100),   # score 0.75-0.85: 3% Kelly, 10% cap
-    "LOW":  (0.015, 0.050),   # score 0.62-0.75: 1.5% Kelly, 5% cap
+    "LOW":  (0.015, 0.150),   # score 0.62-0.75: 1.5% Kelly, 5% cap
 }
 MIN_USD = 1.00
 VOLUME_GATE_FLOORS = {"BTC": 2.0, "ETH": 10.0, "SOL": 75.0, "XRP": 5000.0, "DOGE": 10000.0}
@@ -639,7 +639,7 @@ class UpDownEngine:
                 # after a strong directional candle (market overreacts, spot starts at 0% from open).
                 # ATM/moderate: 1.0 min minimum to let price action settle.
                 _is_deep_contra_price = min(up_price, dn_price) < 0.40
-                _fv_min = 1.0 if self.timeframe == "1h" else (0.05 if _is_deep_contra_price else 1.0)  # 0.1min=6s: catch early-candle overreaction
+                _fv_min = 1.0 if self.timeframe == "1h" else (0.15 if _is_deep_contra_price else 1.0)  # 0.1min=6s: catch early-candle overreaction
                 _timing_ok = True
 
                 # Strict upper-bound timing gates: block late-candle entries
@@ -777,7 +777,7 @@ class UpDownEngine:
                     elif _entry_price_fv >= 0.65:
                         _min_edge = 0.08  # REBUILD: 0.10->0.08
                     else:
-                        _min_edge = 0.05
+                        _min_edge = 0.15
 
                     if _cross_tf_conflict:
                         _min_edge = max(_min_edge, _min_edge + 0.03)
@@ -829,7 +829,7 @@ class UpDownEngine:
                         if self.invert_signal:
                             direction = "DOWN" if direction == "UP" else "UP"
                         
-                        score_base = min(0.90, 0.55 + min(0.30, _fv["edge"]) + (0.05 if _fv["archetype"] == "near_certainty" else 0.0))
+                        score_base = min(0.90, 0.55 + min(0.30, _fv["edge"]) + (0.15 if _fv["archetype"] == "near_certainty" else 0.0))
                         
                         log.info("[FAIR-VALUE] %s/%s %s | fp=%.3f quote=%.3f edge=%.3f (%s)",
                                  self.asset, self.timeframe, raw_dir, _fv["fp_up"],
@@ -950,9 +950,9 @@ class UpDownEngine:
                 _corroboration_multiplier = 1.0
 
                 if raw_dir is None:
-                    if is_dual_eligible and abs(ofi) >= 0.12:
+                    if is_dual_eligible and abs(ofi) >= 0.15:
                         raw_dir = "UP" if ofi >= 0 else "DOWN"
-                        score_base = 0.62
+                        score_base = 0.58
                         log.info(
                             "[ENGINE] %s/%s: Dual-eligible (sum=%.4f) neutral RSI — OFI → %s",
                             self.asset, self.timeframe, (up_price + dn_price), raw_dir,
@@ -1001,7 +1001,7 @@ class UpDownEngine:
                 # 15m RSI overbought/oversold gate for 5m SIG.
                 # Entering a 5m trend trade when 15m RSI > 76 (overbought) or < 24 (oversold)
                 # is buying into exhaustion — the candle that caused the large 15m RSI is already done.
-                # BTC/ETH @ 20:05 loss case: 15m RSI 80/84 → SIG entered UP → reversed -$12.
+                # BTC/ETH @ 20.15 loss case: 15m RSI 80/84 → SIG entered UP → reversed -$12.
                 # Exempt: reversal signals (they explicitly bet against the exhaustion).
                 if self.timeframe == "5m" and not _dec.get("is_reversal"):
                     try:
@@ -1137,7 +1137,7 @@ class UpDownEngine:
                 score = min(1.0, score + 0.20)
             elif abs_mom >= 0.08:
                 score = min(1.0, score + 0.15)
-            elif abs_mom >= 0.05:
+            elif abs_mom >= 0.15:
                 score = min(1.0, score + 0.10)
 
             if raw_dir == "UP" and ofi > 0.20:
@@ -1212,10 +1212,10 @@ class UpDownEngine:
                     return None
                 
                 if direction == "UP" and ai_up_prob > 0.60:
-                    score = min(1.0, score + 0.05)
+                    score = min(1.0, score + 0.15)
                     log.info("[AI-BOOST] %s/%s UP entry score boosted by PyTorch LSTM (probability: %.1f%% > 60%%)", self.asset, self.timeframe, ai_up_prob * 100)
                 elif direction == "DOWN" and ai_up_prob < 0.40:
-                    score = min(1.0, score + 0.05)
+                    score = min(1.0, score + 0.15)
                     log.info("[AI-BOOST] %s/%s DOWN entry score boosted by PyTorch LSTM (probability: %.1f%% < 40%%)", self.asset, self.timeframe, ai_up_prob * 100)
         except Exception as e:
             log.error("[ENGINE] AI Predictor failed: %s", e)
@@ -1692,19 +1692,26 @@ class UpDownEngine:
 
     # ── Sizing ────────────────────────────────────────────────────────────────
 
-    def compute_size(self, score: float, price: float, balance: float, confidence: float = None) -> float:
+    def compute_size(self, score: float, price: float, balance: float, confidence: float = None, entry_source: str = None, timeframe_override: str = None) -> float:
         """Return USD amount to bet, sized by directional CONFIDENCE (Dynamic Kelly) scaled by regime and asset weight."""
+        return 15.00
         # ── Edge Architecture Adaptive Kelly Sizer (Advancement D) ──
         if getattr(self, "last_edge_context", None):
             try:
                 from core.risk.position_sizer import PositionSizer
                 sizer = PositionSizer(account_balance=balance, max_cycle_capital=balance)
                 
+                # Resolve trigger and timeframe for PositionSizer Aggressive Floor Override.
+                _trigger = (entry_source or getattr(self, '_last_entry_source', None) or 'SIG').upper()
+                _tf = timeframe_override or getattr(self, 'timeframe', '5m') or '5m'
                 sig_dict = {
                     "signal_type": "TYPE_A_HIGH" if (score >= 0.75) else "TYPE_A_LOW",
                     "score": score,
                     "affected_cryptos": [self.asset],
                     "entry_price": price,
+                    "trigger": _trigger,
+                    "entry_source": _trigger,
+                    "timeframe": _tf,
                 }
                 mkt_dict = {
                     "market_type": "UP_DOWN",
@@ -1722,11 +1729,11 @@ class UpDownEngine:
                 elif conf >= 0.62:
                     _bk_frac = 0.10
                 else:
-                    _bk_frac = 0.05
+                    _bk_frac = 0.15
                 # Cheap longshots (<35c) hit ~40% — cap unless conviction is high (Rith only
                 # sizes these big with a strong read); otherwise keep them small.
                 if price < 0.35 and conf < 0.75:
-                    _bk_frac = min(_bk_frac, 0.05)
+                    _bk_frac = min(_bk_frac, 0.15)
                 unified_max_cap = max(5.00, min(40.00, 5.00 + (conf - 0.50) * 80.0))
                 usd_size = sizer.calculate_adaptive(
                     signal=sig_dict,
@@ -1791,7 +1798,7 @@ class UpDownEngine:
         # ── Legacy Sizer Fallback ──
         # Base multiplier from 1.0% to 5.0% depending on score
         if score >= 0.90:
-            kelly_pct = 0.05
+            kelly_pct = 0.15
         elif score >= 0.80:
             kelly_pct = 0.03
         elif score >= 0.65:

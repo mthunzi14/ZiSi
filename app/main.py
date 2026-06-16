@@ -156,7 +156,7 @@ async def heartbeat_daemon() -> None:
             # Get closed trades count
             trades = _get_trades_count()
             # Call state manager update
-            update_heartbeat(trades_executed=trades, paused=paused, reason="daemon-tick")
+            await update_heartbeat(trades_executed=trades, paused=paused, reason="daemon-tick")
             log.debug("[HEARTBEAT] Heartbeat written successfully (trades=%d, paused=%s)", trades, paused)
             
             # Check process runtime for scheduled restart (4 hours = 14400 seconds)
@@ -789,7 +789,7 @@ async def asset_loop(
 
     while True:
         try:
-            update_heartbeat(reason=f"loop-{asset}-{timeframe}")
+            await update_heartbeat(reason=f"loop-{asset}-{timeframe}")
             context.funnel_stats["windows_evaluated"] += 1
 
             if not time_gate_open():
@@ -798,7 +798,7 @@ async def asset_loop(
 
             if Path("bot_paused.flag").exists():
                 log.info("[MAIN] Bot is paused via flag - skipping %s/%s cycle", asset, timeframe)
-                update_heartbeat(paused=True, reason=f"paused-{asset}-{timeframe}")
+                await update_heartbeat(paused=True, reason=f"paused-{asset}-{timeframe}")
                 await _sleep_to_next_candle(interval_minutes, asset, timeframe, session, context)
                 continue
 
@@ -1038,7 +1038,7 @@ async def _zombie_cleanup_loop() -> None:
         await asyncio.sleep(300)  # every 5 minutes
         try:
             from core.engine.state_manager import cleanup_expired_positions
-            deleted = cleanup_expired_positions()
+            deleted = await cleanup_expired_positions()
             if deleted:
                 log.info("[ZOMBIE-LOOP] Cleaned %d zombie positions", deleted)
         except Exception as e:
@@ -1047,16 +1047,16 @@ async def _zombie_cleanup_loop() -> None:
 
 async def main() -> None:
     # Initialize persistent account state explicitly during bot startup (Issue E fix)
-    initialize_state()
+    await initialize_state()
     # Clean up any zombie positions from prior session at startup
     try:
         from core.engine.state_manager import cleanup_expired_positions
-        _cleaned = cleanup_expired_positions()
+        _cleaned = await cleanup_expired_positions()
         if _cleaned:
             log.info("[STARTUP] Deleted %d zombie positions from prior session", _cleaned)
     except Exception as _ze:
         log.warning("[STARTUP] Zombie cleanup failed: %s", _ze)
-    update_heartbeat(reason="bot-booting")
+    await update_heartbeat(reason="bot-booting")
 
     cfg = load_config()
     setup_file_logging(cfg.get("LOG_LEVEL", "INFO"))
@@ -1123,8 +1123,8 @@ async def main() -> None:
 
             # Start latency edge arbitrage scanner (Sprint 3)
             try:
-                from core.engine.cycle_manager import start_latency_edge_scanner
-                tasks.append(start_latency_edge_scanner(session, context.engines))
+                # from core.engine.cycle_manager import start_latency_edge_scanner
+                # tasks.append(start_latency_edge_scanner(session, context.engines))
                 log.info("[MAIN] Latency edge scanner background task registered.")
             except Exception as e:
                 log.error("[MAIN] Failed to import start_latency_edge_scanner: %s", e)

@@ -99,14 +99,16 @@ export default function App() {
             const payload = event.payload || {};
             setPositions({
               active: payload.active || [],
-              closed: payload.closed || [],
+              // Cap closed to the 200 most-recent entries — prevents main-thread bloat
+              closed: (payload.closed || []).slice(0, 200),
               summary: payload.summary || {}
             });
           } else if (event.type === 'positions_snapshot') {
             const payload = event.payload || {};
             setPositions(p => ({
               active: payload.active || p.active || [],
-              closed: payload.closed || p.closed || [],
+              // Cap closed to the 200 most-recent entries — prevents main-thread bloat
+              closed: (payload.closed || p.closed || []).slice(0, 200),
               summary: { ...(p.summary || {}), ...(payload.summary || {}) }
             }));
           } else if (event.type === 'balance_update') {

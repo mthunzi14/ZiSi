@@ -1,5 +1,36 @@
 /* App.css - Mtsunzi Styling Overhaul (FutureDesk Visual Clone) */
 
+/* ── 0. GPU HARDWARE ACCELERATION (120Hz PWA layer) ────────────────────────── */
+
+/* Force GPU compositing layer on all primary layout containers.
+   This promotes elements to their own compositor tile, preventing
+   layout thrashing from stalling the browser's 120Hz render context. */
+.glass-panel,
+.border-beam-card,
+[class*="glass-"],
+[class*="panel-"] {
+  transform: translateZ(0);
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* Scrollable containers: use 3D acceleration + momentum scrolling */
+[class*="scroll"],
+.ledger-scroll,
+.overflow-y-auto {
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Animated elements: hint browser to use GPU paths */
+[style*="transition"],
+[style*="animation"] {
+  transform: translateZ(0);
+}
+
+
 /* ── 1. KEYFRAME ANIMATIONS ────────────────────────────────────────────────── */
 
 /* Page entrance fade-in and subtle slide */

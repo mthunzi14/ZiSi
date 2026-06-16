@@ -279,3 +279,67 @@ async def cancel_trade_slot(asset: str, timeframe: str) -> None:
                 if not (e.get("asset") == asset and e.get("timeframe") == timeframe and e.get("_pre"))
             ]
 
+
+def get_active_regime_gates(utc_hour: int, is_weekend: bool, strategy_type: Optional[str] = None) -> dict:
+    """Returns the dominant session routing parameters for the active UTC clock window."""
+    strategy_upper = str(strategy_type).upper().replace(" ", "_") if strategy_type else ""
+    is_hft_strategy = strategy_upper in ["SWEEP", "LAT_ARB", "LAT_RAW", "REV_SNIPE", "REVERSAL_SNIPE", "NCS", "FV", "SIG"]
+
+    if is_weekend:
+        min_score = 0.50 if is_hft_strategy else 0.65
+        symbols = ["BTC", "ETH", "SOL", "XRP", "DOGE"] if is_hft_strategy else ["BTC", "SOL", "ETH"]
+        return {
+            "regime": "CERTOVA_ASYMMETRIC_HFT" if is_hft_strategy else "RITB_WEEKEND_RANGES",
+            "size_multiplier": 1.25,
+            "min_score_gate": min_score,
+            "symbols_allowed": symbols
+        }
+    if 0 <= utc_hour < 8:
+        return {
+            "regime": "RITB_ASIAN_TREND",
+            "size_multiplier": 1.10,
+            "min_score_gate": 0.70,
+            "symbols_allowed": ["BTC", "ETH", "SOL", "XRP", "DOGE"] if is_hft_strategy else ["BTC", "SOL", "ETH"]
+        }
+    elif 8 <= utc_hour < 16:
+        return {
+            "regime": "BONEREAPER_EUROPEAN_MOMENTUM",
+            "size_multiplier": 1.35,
+            "min_score_gate": 0.60,
+            "symbols_allowed": ["BTC", "ETH", "SOL", "XRP", "DOGE"] if is_hft_strategy else ["SOL", "XRP", "BTC"]
+        }
+    else:
+        return {
+            "regime": "PBOT_SWEEPER_LIQUIDITY",
+            "size_multiplier": 1.00,
+            "min_score_gate": 0.75,
+            "symbols_allowed": ["BTC", "ETH", "SOL", "XRP", "DOGE"] if is_hft_strategy else ["BTC", "ETH", "SOL"]
+        }
+
+
+async def get_in_flight_count_internal(asset: str) -> tuple[int, int]:
+    """
+    Returns (in_flight_total, in_flight_asset) from governor trackers.
+    No file reads, purely in-memory.
+    """
+    async with _lock:
+        in_flight_lat = len(_lat_arb_in_flight)
+        in_flight_pre = 0
+        for entries in _candle_slots.values():
+            for entry in entries:
+                if entry.get("_pre"):
+                    in_flight_pre += 1
+        in_flight_total = in_flight_lat + in_flight_pre
+
+        asset_upper = asset.upper()
+        in_flight_lat_asset = sum(1 for a, tf in _lat_arb_in_flight if a == asset_upper)
+        in_flight_pre_asset = 0
+        for entries in _candle_slots.values():
+            for entry in entries:
+                if entry.get("_pre") and entry.get("asset") == asset_upper:
+                    in_flight_pre_asset += 1
+        in_flight_asset = in_flight_lat_asset + in_flight_pre_asset
+
+        return in_flight_total, in_flight_asset
+
+

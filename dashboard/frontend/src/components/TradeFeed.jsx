@@ -1501,15 +1501,17 @@ function SrcPill({ src, active, count, pnl, onClick }) {
 export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {} }) {
   const [tab, setTab] = useState('open');
   const [srcFilter, setSrcFilter] = useState('ALL');
-  const [limit, setLimit] = useState(10);
+  const [limit, setLimit] = useState(20);
   const [engineStatus, setEngineStatus] = useState({ status: 'SCANNING', detail: '' });
   const [isLedgerCollapsed, setIsLedgerCollapsed] = useState(false);
   const [btnHovered, setBtnHovered] = useState(false);
 
-  // Reset limit to 10 when the filter source or tab changes
+  // Reset limit to 20 when the filter source or tab changes
   useEffect(() => {
-    setLimit(10);
+    setLimit(20);
   }, [srcFilter, tab]);
+
+
 
   useEffect(() => {
     const poll = () =>
@@ -1543,6 +1545,14 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
   const filteredClosed = useMemo(() => {
     return filterBySrc(closed, srcFilter);
   }, [closed, srcFilter]);
+
+  // Scroll-triggered lazy load — fires when within 120px of bottom
+  const handleLedgerScroll = useCallback((e) => {
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) {
+      setLimit(prev => Math.min(prev + 20, filteredClosed.length));
+    }
+  }, [filteredClosed.length]);
 
   const visibleClosed = useMemo(() => {
     return filteredClosed.slice(0, limit);
@@ -1665,9 +1675,21 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
               lastTradeAgo={closed.length > 0 ? Math.floor((Date.now() / 1000 - (typeof closed[0].exit_time === 'string' ? new Date(closed[0].exit_time).getTime() / 1000 : Number(closed[0].exit_time || 0))) / 60) : 999}
             />
 
-            {/* Trade rows */}
+            {/* Trade rows — GPU-accelerated virtualized scroll window */}
             <ColHeaders cols={CLOSED_COLS} grid={CLOSED_GRID} />
-            <div style={{ overflowY: 'auto', maxHeight: 380, flex: 1 }}>
+            <div
+              onScroll={handleLedgerScroll}
+              style={{
+                overflowY: 'auto',
+                maxHeight: 380,
+                flex: 1,
+                /* GPU compositing layer — prevents layout thrashing at 120Hz */
+                transform: 'translate3d(0,0,0)',
+                willChange: 'transform',
+                WebkitOverflowScrolling: 'touch',
+                contain: 'strict',
+              }}
+            >
               {visibleClosed.length === 0
                 ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>
                     {srcFilter === 'ALL' ? 'No closed trades yet' : `No ${srcFilter} trades yet`}

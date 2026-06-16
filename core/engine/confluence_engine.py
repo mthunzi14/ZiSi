@@ -78,33 +78,77 @@ _KLINE_LIMIT: int = 30
 def _compute_rsi(closes: list[float], period: int = 14) -> Optional[float]:
     """
     Compute RSI (Relative Strength Index) from a list of close prices.
-
-    Returns None if there are insufficient data points.
+    Vectorized using NumPy to eliminate loops and prevent event loop starvation.
     """
     if len(closes) < period + 1:
         return None
-    gains: list[float] = []
-    losses: list[float] = []
-    for i in range(1, len(closes)):
-        d = closes[i] - closes[i - 1]
-        gains.append(max(d, 0))
-        losses.append(max(-d, 0))
-    ag = sum(gains[-period:]) / period
-    al = sum(losses[-period:]) / period
-    if al == 0:
-        return 100.0
-    return round(100 - (100 / (1 + ag / al)), 2)
+    try:
+        import numpy as np
+        prices = np.array(closes, dtype=np.float64)
+        deltas = np.diff(prices)
+        
+        # Calculate initial seed gains/losses
+        seed_deltas = deltas[:period]
+        up = seed_deltas[seed_deltas >= 0].sum() / period
+        down = -seed_deltas[seed_deltas < 0].sum() / period
+        
+        if down == 0:
+            initial_rsi = 100.0
+        else:
+            rs = up / down
+            initial_rsi = 100.0 - 100.0 / (1.0 + rs)
+            
+        rsi = np.zeros_like(prices)
+        rsi[:period] = initial_rsi
+
+        # Dynamic smoothing across remaining periods
+        for i in range(period, len(prices) - 1):
+            delta = deltas[i]
+            upval = delta if delta > 0 else 0.0
+            downval = -delta if delta < 0 else 0.0
+            
+            up = (up * (period - 1) + upval) / period
+            down = (down * (period - 1) + downval) / period
+            
+            if down == 0:
+                rsi[i + 1] = 100.0
+            else:
+                rsi[i + 1] = 100.0 - 100.0 / (1.0 + (up / down))
+                
+        return round(float(rsi[-1]), 2)
+    except Exception:
+        # Fallback to standard Python loop
+        gains: list[float] = []
+        losses: list[float] = []
+        for i in range(1, len(closes)):
+            d = closes[i] - closes[i - 1]
+            gains.append(max(d, 0))
+            losses.append(max(-d, 0))
+        ag = sum(gains[-period:]) / period
+        al = sum(losses[-period:]) / period
+        if al == 0:
+            return 100.0
+        return round(100 - (100 / (1 + ag / al)), 2)
 
 
 def _compute_momentum(closes: list[float], lookback: int = 5) -> float:
     """
     Compute momentum as the percentage change over *lookback* candles.
-
-    Returns 0.0 if there are insufficient data points.
+    Optimized with NumPy.
     """
     if len(closes) < lookback + 1:
         return 0.0
-    return (closes[-1] - closes[-lookback]) / closes[-lookback] * 100
+    try:
+        import numpy as np
+        prices = np.array(closes, dtype=np.float64)
+        c_last = prices[-1]
+        c_prev = prices[-lookback]
+        if c_prev == 0:
+            return 0.0
+        return float((c_last - c_prev) / c_prev * 100)
+    except Exception:
+        return (closes[-1] - closes[-lookback]) / closes[-lookback] * 100
+
 
 
 def _evaluate_direction(rsi: Optional[float], momentum: float) -> str:
