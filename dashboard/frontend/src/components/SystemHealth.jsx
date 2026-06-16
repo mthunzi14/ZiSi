@@ -2,14 +2,14 @@
 import { useState } from 'react';
 
 function StatusDot({ ok, warn, off, pulse = false }) {
-  const color = off ? '#ef4444' : warn ? '#f97316' : '#10b981';
+  const color = ok ? 'var(--color-profit)' : warn ? 'var(--color-amber)' : 'var(--color-loss)';
   return (
     <span style={{
       display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
       background: color,
-      boxShadow: `0 0 ${ok && pulse ? '5px' : '2px'} ${color}88`,
+      boxShadow: `0 0 2px ${color}`,
       flexShrink: 0,
-      animation: ok && pulse ? 'alertPulse 2.5s infinite' : 'none',
+      animation: 'none',
     }} />
   );
 }
@@ -25,7 +25,7 @@ function KPI({ label, value, sub, color }) {
 }
 
 function DataRow({ label, value, ok, warn, off }) {
-  const valColor = off ? '#ef4444' : warn ? '#f97316' : ok ? '#10b981' : '#a1a1aa';
+  const valColor = ok ? 'var(--color-text-primary)' : warn ? 'var(--color-text-muted)' : 'var(--color-text-muted)';
   return (
     <div style={{
       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -44,8 +44,8 @@ function SecHead({ title, color }) {
   return (
     <div style={{
       fontSize: 8, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase',
-      color: color || '#00cbd6', marginTop: 10, marginBottom: 3, paddingBottom: 3,
-      borderBottom: `1px solid ${color || '#00cbd6'}33`,
+      color: color || '#71717a', marginTop: 10, marginBottom: 3, paddingBottom: 3,
+      borderBottom: `1px solid ${color || '#71717a'}33`,
     }}>{title}</div>
   );
 }
@@ -77,7 +77,7 @@ export default function SystemHealth({ state = {}, positions = {}, candles = [],
   const cbActive = state.circuit_breaker_active || false;
   const heartbeat = isOffline ? 'OFFLINE' : isStale ? `${minutesAgo}m (STALE)` : minutesAgo !== null ? `${minutesAgo}m ago` : '—';
 
-  const liveColor = isAlive ? '#10b981' : isStale ? '#f97316' : '#ef4444';
+  const liveColor = isAlive ? 'var(--color-profit)' : isStale ? 'var(--color-amber)' : 'var(--color-loss)';
   const liveLabel = isAlive ? 'LIVE' : isStale ? 'STALE' : 'OFFLINE';
 
   return (
@@ -96,7 +96,7 @@ export default function SystemHealth({ state = {}, positions = {}, candles = [],
           }}>
             <span style={{
               width: 5, height: 5, borderRadius: '50%', background: liveColor,
-              display: 'inline-block', animation: isAlive ? 'alertPulse 2s infinite' : 'none',
+              display: 'inline-block',
             }} />
             {liveLabel}
           </span>
@@ -122,32 +122,32 @@ export default function SystemHealth({ state = {}, positions = {}, candles = [],
           <KPI label="Balance"
             value={`$${balance.toFixed(2)}`}
             sub={`started $${startBalance.toFixed(2)}`}
-            color={balance >= startBalance ? '#10b981' : '#ef4444'} />
+            color={balance >= startBalance ? 'var(--color-profit)' : 'var(--color-loss)'} />
           <KPI label="Net P&L"
             value={`${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`}
             sub={`${pnl >= 0 ? '+' : ''}${startBalance > 0 ? ((pnl/startBalance)*100).toFixed(1) : 0}%`}
-            color={pnl >= 0 ? '#10b981' : '#ef4444'} />
+            color={pnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)'} />
           <KPI label="Win Rate"
             value={wr === '—' ? '—' : `${wr}%`}
             sub={`${wins}W · ${losses}L`}
-            color={parseFloat(wr) >= 65 ? '#10b981' : parseFloat(wr) >= 50 ? '#f97316' : '#ef4444'} />
+            color={parseFloat(wr) >= 65 ? 'var(--color-profit)' : parseFloat(wr) >= 50 ? 'var(--color-amber)' : 'var(--color-loss)'} />
           <KPI label="Profit Factor"
             value={pf}
             sub={`${grossW.toFixed(2)} gross`}
-            color={parseFloat(pf) >= 1.5 || pf === '∞' ? '#10b981' : parseFloat(pf) >= 1 ? '#f97316' : '#ef4444'} />
+            color={parseFloat(pf) >= 1.5 || pf === '∞' ? 'var(--color-profit)' : parseFloat(pf) >= 1 ? 'var(--color-amber)' : 'var(--color-loss)'} />
         </div>
 
-        <SecHead title="Infrastructure" color="#00cbd6" />
+        <SecHead title="Infrastructure" color="#71717a" />
         <DataRow label="Engine heartbeat"  value={heartbeat}              ok={isAlive}   warn={isStale}  off={isOffline} />
         <DataRow label="Session uptime"    value={uptime}                 ok={!!state.running} warn={false} off={!state.running} />
         <DataRow label="Open positions"    value={`${active.length} / 6`} ok={active.length <= 3} warn={active.length > 3 && active.length < 6} off={active.length >= 6} />
         <DataRow label="Daily drawdown"    value={`${drawPct.toFixed(1)}%`} ok={drawPct < 5} warn={drawPct >= 5 && drawPct < 12} off={drawPct >= 12} />
 
-        <SecHead title="Circuit Breaker" color="#f97316" />
+        <SecHead title="Circuit Breaker" color="#71717a" />
         <DataRow label="CB status"      value={cbActive ? `ACTIVE` : 'CLEAR'}             ok={!cbActive} off={cbActive} />
         <DataRow label="Trades session" value={state.trades_executed ?? closed.length}     ok />
 
-        <SecHead title="Session Stats" color="#2b7fff" />
+        <SecHead title="Session Stats" color="#71717a" />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: 16 }}>
           <DataRow label="Starting bal" value={`$${startBalance.toFixed(2)}`} ok />
           <DataRow label="Current bal"  value={`$${balance.toFixed(2)}`}      ok={balance >= startBalance} warn={balance < startBalance && balance > startBalance * 0.9} off={balance <= startBalance * 0.9} />

@@ -16,28 +16,61 @@ const ASSETS = [
 ];
 
 
-function getAssetStats(key, positions) {
+function getAssetStats(key, positions, clPrice) {
   const [asset, tf] = key.split('/');
   const active = (positions?.active || []).filter(p => {
     const t = (p.event_title || '').toUpperCase();
-    return t.includes(`[${asset}]`) && t.includes(`[${tf.toUpperCase()}]`);
+    const isClosed = p.status === 'CLOSED' || p.status === 'CANCELLED';
+    return !isClosed && t.includes(`[${asset}]`) && t.includes(`[${tf.toUpperCase()}]`);
   });
+
+  const enrichedActive = active.map(p => {
+    const entrySpot = parseFloat(p.entry_spot || 0);
+    const entryPrice = parseFloat(p.entry_price || p.price || 0.5);
+    const shares = parseFloat(p.shares || 0);
+    const cost = parseFloat(p.size || 0);
+    let unrealized = parseFloat(p.unrealized_pnl || 0);
+    let currentPrice = p.current_price;
+
+    if (clPrice && entrySpot > 0 && entryPrice > 0) {
+      const priceDiffPct = (clPrice - entrySpot) / entrySpot;
+      const delta = priceDiffPct * 20.0;
+      let derivedPrice = entryPrice;
+      const dir = (p.direction || 'YES').toUpperCase();
+      if (dir === 'YES' || dir === 'UP') {
+        derivedPrice += delta;
+      } else {
+        derivedPrice -= delta;
+      }
+      derivedPrice = Math.max(0.01, Math.min(0.99, derivedPrice));
+      currentPrice = derivedPrice;
+      unrealized = Math.round((shares * derivedPrice - cost) * 100) / 100;
+    }
+
+    return {
+      ...p,
+      unrealized_pnl_derived: unrealized,
+      current_price_derived: currentPrice
+    };
+  });
+
   return {
-    count: active.length,
-    unrealizedPnl: active.reduce((s, p) => s + parseFloat(p.unrealized_pnl || 0), 0),
+    count: enrichedActive.length,
+    unrealizedPnl: enrichedActive.reduce((s, p) => s + parseFloat(p.unrealized_pnl_derived || 0), 0),
+    activeList: enrichedActive,
   };
 }
 
 function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
+  const clData    = state?.chainlinkPrices?.[asset] || state?.pythPrices?.[asset];
+  const clPrice   = clData?.price;
+
   const key        = `${asset}/${tf}`;
-  const stats      = getAssetStats(key, positions);
+  const stats      = getAssetStats(key, positions, clPrice);
   const candleInfo = (candles || []).find(c => c.asset === asset && c.tf === tf);
   const serverSecs = candleInfo ? candleInfo.secs : null;
   const [localSecs, setLocalSecs] = useState(null);
   const [hovered, setHovered] = useState(false);
-
-  const clData    = state?.chainlinkPrices?.[asset] || state?.pythPrices?.[asset];
-  const clPrice   = clData?.price;
   const clAge     = clData?.timestamp ? Math.max(0, Math.floor(Date.now() / 1000) - clData.timestamp) : null;
   const fresh     = clAge !== null && clAge < 15;
 
@@ -53,13 +86,13 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
   const timerColor = localSecs === null ? '#3f3f46'
     : localSecs < 15  ? '#ef4444'
     : localSecs < 60  ? '#f97316'
-    : '#10b981';
+    : '#71717a';
 
   const fmtSecs  = s => s === null ? '—' : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
   const fmtPrice = p => !p ? '—' : p < 1.0 ? `$${p.toFixed(4)}` : `$${p.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const hasOpen = stats.count > 0;
-  const pnlColor = stats.unrealizedPnl >= 0 ? '#10b981' : '#ef4444';
+  const pnlColor = '#71717a';
 
   return (
     <div
@@ -69,13 +102,13 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
       style={{
         background: `linear-gradient(135deg, rgba(22,22,25,0.85) 0%, rgba(12,12,14,0.92) 100%)`,
         borderRadius: 12,
-        border: `1px solid ${hovered ? '#00cbd6' : hasOpen ? color + '55' : 'rgba(255,255,255,0.06)'}`,
+        border: `1px solid ${hovered ? '#71717a' : hasOpen ? color + '55' : 'rgba(255,255,255,0.06)'}`,
         padding: '12px 14px',
         minWidth: 160, flex: '1 1 calc(16% - 8px)',
         display: 'flex', flexDirection: 'column', gap: 8,
         backdropFilter: 'blur(12px)',
         boxShadow: hovered
-          ? `0 8px 28px rgba(0,0,0,0.55), 0 0 20px rgba(0,203,214,0.22)`
+          ? `0 8px 28px rgba(0,0,0,0.55), 0 0 20px rgba(113,113,122,0.22)`
           : hasOpen ? `0 0 12px ${color}22` : '0 2px 8px rgba(0,0,0,0.3)',
         transform: hovered ? 'translateY(-3px)' : 'translateY(0)',
         transition: 'all 0.25s cubic-bezier(0.4,0,0.2,1)',
@@ -107,7 +140,10 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
           }} />
           <span style={{ fontSize: 7, color: '#3f3f46', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Chainlink oracle</span>
         </div>
-        <span style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 800, color: 'var(--color-text-primary)' }}>
+        <span
+          id={tf === '5m' ? `spot-ticker-${asset.toLowerCase()}` : `spot-ticker-${asset.toLowerCase()}-${tf.toLowerCase()}`}
+          style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 800, color: 'var(--color-text-primary)' }}
+        >
           {fmtPrice(clPrice)}
         </span>
       </div>
@@ -119,9 +155,21 @@ function AssetCard({ asset, tf, color, tier, positions, candles, state }) {
           <div style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 800, color: hasOpen ? color : '#3f3f46' }}>
             {stats.count}
             {hasOpen && (
-              <span style={{ fontSize: 10, fontWeight: 700, color: pnlColor, marginLeft: 5 }}>
-                {stats.unrealizedPnl >= 0 ? '+' : ''}${stats.unrealizedPnl.toFixed(2)}
-              </span>
+              <>
+                <span
+                  id={tf === '5m' ? `unreal_pnl-${asset.toLowerCase()}` : `unreal_pnl-${asset.toLowerCase()}-${tf.toLowerCase()}`}
+                  style={{ fontSize: 10, fontWeight: 700, color: pnlColor, marginLeft: 5 }}
+                >
+                  {stats.unrealizedPnl >= 0 ? '+' : ''}${stats.unrealizedPnl.toFixed(2)}
+                </span>
+                <div style={{ fontSize: 8, color: '#52525b', marginTop: 2, textTransform: 'none', letterSpacing: 'normal', fontWeight: 600 }}>
+                  {stats.activeList.map(p => {
+                    const dir = p.direction || 'YES';
+                    const price = p.current_price_derived !== undefined && p.current_price_derived !== null ? `${(p.current_price_derived * 100).toFixed(0)}¢` : '—';
+                    return `${dir}: ${price}`;
+                  }).join(' | ')}
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -140,7 +188,11 @@ export default function AssetCards({ positions, candles, state }) {
   const [expanded, setExpanded]       = useState(false);
   const [btnHovered, setBtnHovered]   = useState(false);
 
-  const withOpen = ASSETS.filter(a => getAssetStats(`${a.asset}/${a.tf}`, positions).count > 0);
+  const withOpen = ASSETS.filter(a => {
+    const clData = state?.chainlinkPrices?.[a.asset] || state?.pythPrices?.[a.asset];
+    const clPrice = clData?.price;
+    return getAssetStats(`${a.asset}/${a.tf}`, positions, clPrice).count > 0;
+  });
   const fallback = ASSETS.filter(a => ['BTC', 'ETH', 'SOL'].includes(a.asset) && a.tf === '5m');
   const core     = withOpen.length > 0 ? withOpen : fallback;
   const display  = expanded ? ASSETS : core;
@@ -154,8 +206,8 @@ export default function AssetCards({ positions, candles, state }) {
           <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15 }}>Scanning Grid</span>
           <span style={{
             fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-            color: '#00cbd6', background: 'rgba(0,203,214,0.1)',
-            border: '1px solid rgba(0,203,214,0.25)', borderRadius: 6, padding: '2px 8px',
+            color: '#71717a', background: 'rgba(113,113,122,0.1)',
+            border: '1px solid rgba(113,113,122,0.25)', borderRadius: 6, padding: '2px 8px',
           }}>
             {expanded ? `${ASSETS.length} assets` : `${display.length} active`}
           </span>

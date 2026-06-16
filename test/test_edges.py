@@ -168,9 +168,10 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(allowed2)
         self.assertAlmostEqual(details2["bet_usd"], 50.00) # capped to global max $50
         
-        # Test SIGNAL specific Cap ($10.00)
-        # Let's say we have high balance, e.g. $200. 6% of balance is $12.00.
-        # But this is a SIG trade, so it should be capped to $10.00.
+        # Test SIGNAL specific Cap
+        # Let's say we have high balance, e.g. $200. Standard cap is min(12%, 40%) -> 12% -> $24.00.
+        # Signal cap is 20% -> $40.00.
+        # So it should be capped to $24.00.
         signal_sig = {
             "direction": "UP",
             "score": 0.85,
@@ -184,7 +185,7 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
             context, engine, "BTC", "5m", 5, signal_sig, current_balance=200.0
         )
         self.assertTrue(allowed3)
-        self.assertAlmostEqual(details3["bet_usd"], 10.00) # capped to signal limit $10
+        self.assertAlmostEqual(details3["bet_usd"], 24.00) # capped to standard max $24
 
     @patch("core.engine.updown_engine._fetch_klines_async")
     @patch("core.engine.updown_engine._cache")

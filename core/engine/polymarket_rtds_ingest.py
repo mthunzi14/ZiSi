@@ -104,6 +104,28 @@ class PolymarketRTDSIngest:
                 with open(pyth_temp, "w") as f:
                     json.dump(cache_copy, f, indent=2)
                 os.replace(pyth_temp, pyth_target)
+
+                # Query active position L2 prices from WebSocket cache and dump to clob_prices.json
+                clob_prices = {}
+                try:
+                    from core.engine.trader import _open_positions, GLOBAL_POSITIONS_LOCK
+                    from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
+                    with GLOBAL_POSITIONS_LOCK:
+                        for pos_id, pos in _open_positions.items():
+                            if pos.get("status") not in ("CLOSED", "CANCELLED") and pos.get("market") == "POLYMARKET":
+                                m_id = pos.get("market_id")
+                                if m_id:
+                                    mid_val, _ = polymarket_l2_gateway.get_price(m_id)
+                                    if mid_val is not None:
+                                        clob_prices[m_id] = round(mid_val, 4)
+                except Exception as ex:
+                    log.debug("[RTDS-WS] Failed to query active positions L2 prices: %s", ex)
+                
+                clob_temp = os.path.join(base_dir, "clob_prices.json.tmp")
+                clob_target = os.path.join(base_dir, "clob_prices.json")
+                with open(clob_temp, "w") as f:
+                    json.dump(clob_prices, f, indent=2)
+                os.replace(clob_temp, clob_target)
             except Exception as e:
                 log.debug("[RTDS-WS] Failed to dump prices to disk: %s", e)
             await asyncio.sleep(0.5)
@@ -219,13 +241,30 @@ class PolymarketRTDSIngest:
         except Exception as e:
             log.debug("[RTDS-WS] Binance fallback failed: %s", e)
 
-    async def _process_message(self, data: dict):
+    async def _process_message(self, data):
+        if isinstance(data, list):
+            for item in data:
+                await self._process_message(item)
+            return
+
+        if not isinstance(data, dict):
+            return
+
         topic = data.get("topic")
         # Accept both crypto_prices_chainlink and crypto_prices (since Chainlink updates return topic: crypto_prices)
         if topic not in ("crypto_prices_chainlink", "crypto_prices"):
             return
             
         payload = data.get("payload", {})
+        if isinstance(payload, list):
+            for p in payload:
+                await self._process_single_payload(p)
+        else:
+            await self._process_single_payload(payload)
+
+    async def _process_single_payload(self, payload: dict):
+        if not isinstance(payload, dict):
+            return
         symbol = payload.get("symbol", "").upper()
         # Slash guard: only process slash-separated symbols (Chainlink feeds like BTC/USD)
         # to avoid mixing/overwriting cache with Binance data (which has no slash)
@@ -234,7 +273,7 @@ class PolymarketRTDSIngest:
             
         asset = symbol.split("/")[0].upper()
             
-        value = float(payload.get("value", 0.0))
+        value = float(payload.get("value", payload.get("price", 0.0)))
         
         if value <= 0:
             return

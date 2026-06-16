@@ -33,8 +33,65 @@ export default function App() {
   const [statsExpanded, setStatsExpanded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const esRef = useRef(null);
+  const domUpdatesCacheRef = useRef({ prices: {}, unrealPnl: {} });
+  const pendingStateRef = useRef(null);
+  const pendingPositionsRef = useRef(null);
+
+  // Periodically flush throttled updates to React state (1.5s interval) to prevent thrashing
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (pendingStateRef.current) {
+        setState(s => ({ ...s, ...pendingStateRef.current }));
+        pendingStateRef.current = null;
+      }
+      if (pendingPositionsRef.current) {
+        setPositions(pendingPositionsRef.current);
+        pendingPositionsRef.current = null;
+      }
+    }, 1500);
+    return () => clearInterval(interval);
+  }, []);
 
   const [isPrivate, setIsPrivate] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const tick = () => {
+      if (!active) return;
+      const cache = domUpdatesCacheRef.current;
+      
+      // Update prices
+      for (const [asset, price] of Object.entries(cache.prices)) {
+        const assetLower = asset.toLowerCase();
+        const formattedPrice = !price ? '—' : price < 1.0 ? `$${price.toFixed(4)}` : `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const elements = document.querySelectorAll(`[id^="spot-ticker-${assetLower}"]`);
+        elements.forEach(el => {
+          if (el.textContent !== formattedPrice) {
+            el.textContent = formattedPrice;
+          }
+        });
+        delete cache.prices[asset];
+      }
+      
+      // Update unrealized P&Ls
+      for (const [asset, pnl] of Object.entries(cache.unrealPnl)) {
+        const assetLower = asset.toLowerCase();
+        const formattedPnl = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+        const elements = document.querySelectorAll(`[id^="unreal_pnl-${assetLower}"]`);
+        elements.forEach(el => {
+          if (el.textContent !== formattedPnl) {
+            el.textContent = formattedPnl;
+            el.style.color = pnl > 0 ? 'var(--color-profit)' : pnl < 0 ? 'var(--color-loss)' : '#71717a';
+          }
+        });
+        delete cache.unrealPnl[asset];
+      }
+      
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -95,23 +152,49 @@ export default function App() {
       ws.onmessage = (e) => {
         try {
           const event = JSON.parse(e.data);
+          
+          // Direct DOM telemetry updates
+          if (event.type === 'position_update' || event.type === 'positions_snapshot') {
+            const payload = event.payload || {};
+            const active = payload.active || [];
+            const pnlByAsset = {};
+            ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'].forEach(a => { pnlByAsset[a] = 0; });
+            active.forEach(p => {
+              const title = (p.event_title || '').toUpperCase();
+              const assetMatch = title.match(/\[(BTC|ETH|SOL|XRP|DOGE)\]/);
+              if (assetMatch) {
+                const asset = assetMatch[1];
+                pnlByAsset[asset] = (pnlByAsset[asset] || 0) + parseFloat(p.unrealized_pnl || 0);
+              }
+            });
+            for (const [asset, pnl] of Object.entries(pnlByAsset)) {
+              domUpdatesCacheRef.current.unrealPnl[asset] = pnl;
+            }
+          }
+
           if (event.type === 'position_update') {
             const payload = event.payload || {};
-            setPositions({
+            pendingPositionsRef.current = {
               active: payload.active || [],
-              closed: payload.closed || [],
+              closed: (payload.closed || []).slice(0, 500),
               summary: payload.summary || {}
-            });
+            };
           } else if (event.type === 'positions_snapshot') {
             const payload = event.payload || {};
-            setPositions(p => ({
-              active: payload.active || p.active || [],
-              closed: payload.closed || p.closed || [],
-              summary: { ...(p.summary || {}), ...(payload.summary || {}) }
-            }));
+            pendingPositionsRef.current = {
+              active: payload.active || [],
+              closed: (payload.closed || []).slice(0, 500),
+              summary: payload.summary || {}
+            };
           } else if (event.type === 'balance_update') {
             if (event.payload) {
-              setState(s => ({ ...s, ...event.payload }));
+              pendingStateRef.current = event.payload;
+              const prices = event.payload.chainlinkPrices || {};
+              for (const [asset, data] of Object.entries(prices)) {
+                if (data && data.price) {
+                  domUpdatesCacheRef.current.prices[asset] = data.price;
+                }
+              }
             }
           } else if (event.type === 'candle_boundary') {
             setCandles(event.payload || []);
@@ -228,13 +311,13 @@ export default function App() {
                 width: '26px',
                 height: '26px',
                 borderRadius: '50%',
-                background: 'rgba(0, 203, 214, 0.18)',
+                background: 'rgba(113, 113, 122, 0.18)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 opacity: 0.55,
-                boxShadow: '0 0 6px rgba(0, 203, 214, 0.3)',
-                border: '1px solid rgba(0, 203, 214, 0.35)',
+                boxShadow: '0 0 6px rgba(113, 113, 122, 0.3)',
+                border: '1px solid rgba(113, 113, 122, 0.35)',
                 transition: 'all 200ms ease'
               }}
             >
@@ -258,7 +341,7 @@ export default function App() {
           <button 
             onClick={() => setActiveTab('overview')}
             className={`nav-item ${activeTab === 'overview' ? 'nav-item-active nav-active-glow' : ''}`}
-            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'overview' ? 'rgba(0,203,214,0.08)' : undefined, borderRadius: '10px' }}
+            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'overview' ? 'rgba(113,113,122,0.08)' : undefined, borderRadius: '10px' }}
             title="Overview"
           >
             <svg style={{ width: '16px', height: '16px', opacity: !isVisuallyExpanded ? 0.7 : 1 }} fill="none" stroke="currentColor" strokeWidth={activeTab === 'overview' ? 2.5 : 1.8} viewBox="0 0 24 24">
@@ -270,7 +353,7 @@ export default function App() {
           <button 
             onClick={() => setActiveTab('analytics')}
             className={`nav-item ${activeTab === 'analytics' ? 'nav-item-active nav-active-glow' : ''}`}
-            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'analytics' ? 'rgba(0,203,214,0.08)' : undefined, borderRadius: '10px' }}
+            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'analytics' ? 'rgba(113,113,122,0.08)' : undefined, borderRadius: '10px' }}
             title="Analytics"
           >
             <svg style={{ width: '16px', height: '16px', opacity: !isVisuallyExpanded ? 0.7 : 1 }} fill="none" stroke="currentColor" strokeWidth={activeTab === 'analytics' ? 2.5 : 1.8} viewBox="0 0 24 24">
@@ -282,7 +365,7 @@ export default function App() {
           <button 
             onClick={() => setActiveTab('settings')}
             className={`nav-item ${activeTab === 'settings' ? 'nav-item-active nav-active-glow' : ''}`}
-            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'settings' ? 'rgba(0,203,214,0.08)' : undefined, borderRadius: '10px' }}
+            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'settings' ? 'rgba(113,113,122,0.08)' : undefined, borderRadius: '10px' }}
             title="Settings"
           >
             <svg style={{ width: '16px', height: '16px', opacity: !isVisuallyExpanded ? 0.7 : 1 }} fill="none" stroke="currentColor" strokeWidth={activeTab === 'settings' ? 2.5 : 1.8} viewBox="0 0 24 24">

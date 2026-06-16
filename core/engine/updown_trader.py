@@ -77,8 +77,8 @@ BLOWOFF_MIN_MOVE      = 0.08 # last-minute move > 0.08% = vertical exhaustion
 # Min liquidity for Up/Down market to be tradeable (env override: UPDOWN_MIN_LIQUIDITY)
 UPDOWN_MIN_LIQUIDITY = float(os.getenv("UPDOWN_MIN_LIQUIDITY", "200.0"))
 
-# Coins we trade
-UPDOWN_COINS = ["BTC", "ETH", "SOL", "XRP"]
+# Coins we trade (dynamically loaded from config ASSETS to support alternative sources)
+from config import ASSETS as UPDOWN_COINS
 
 # Max windows to trade per coin per cycle (normal)
 MAX_WINDOWS_PER_COIN = 2
@@ -89,11 +89,11 @@ MAX_CASCADE_WINDOWS  = 3
 CORR_CAP_PER_COIN_DIRECTION = 2
 
 # Per-coin consecutive loss tracking (resets to 0 on win)
-_consecutive_losses: dict = {"BTC": 0, "ETH": 0, "SOL": 0, "XRP": 0}
+_consecutive_losses: dict = {coin: 0 for coin in UPDOWN_COINS}
 
 # Auto-cooldown: skip a coin for N cycles after MAX_CONSEC_LOSSES consecutive losses
 MAX_CONSEC_LOSSES = 4
-_coin_cooldown_until: dict = {"BTC": 0, "ETH": 0, "SOL": 0, "XRP": 0}
+_coin_cooldown_until: dict = {coin: 0 for coin in UPDOWN_COINS}
 
 # Session-wide win streak for compounding multiplier
 _session_win_streak: int = 0
@@ -1156,7 +1156,8 @@ def _fetch_active_updown_markets(coin: str) -> list:
                     dn_market = mkt
                     break
 
-        if up_price >= 0.90 or up_price <= 0.10:
+        from config import MIN_ENTRY_PRICE, MAX_ENTRY_PRICE
+        if up_price >= MAX_ENTRY_PRICE or up_price <= MIN_ENTRY_PRICE:
             return None
         return {
             "id":           ev.get("id", ""),
@@ -1172,7 +1173,7 @@ def _fetch_active_updown_markets(coin: str) -> list:
             "coin":         coin,
         }
 
-    for dur_min in (5, 10, 15, 60):
+    for dur_min in (5,):
         interval = dur_min * 60
         boundary = ((now_ts + interval) // interval) * interval
         max_offsets = 2 if dur_min == 60 else 4
@@ -1244,26 +1245,65 @@ def check_updown_early_exits(get_all_trades_fn, execute_exit_fn, place_paper_tra
 
             exit_reason = None
 
-            if current_price >= 0.88:
-                _expiry_ts = int(trade.get("expiry_ts", 0))
-                _secs_left = _expiry_ts - int(time.time()) if _expiry_ts else 999
-                if _secs_left > 120:
-                    exit_reason = "EARLY_EXIT_88PCT"
-                    log.info(
-                        "[UPDOWN] EARLY EXIT trigger: %s | price=%.3f ≥ 0.88 — locking in gain (%ds left)",
-                        order_id[:20], current_price, _secs_left,
-                    )
+            # Import refactored parameters
+            from config import SHORT_TF_SALVAGE_ENABLED, SALVAGE_FLOOR_PRICE, DYNAMIC_DECAY_THRESHOLD, MAX_HOLD_TIME_SECONDS
+
+            # Check hold duration
+            try:
+                _dt_str = trade.get("DateTime") or trade.get("timestamp")
+                if _dt_str:
+                    if isinstance(_dt_str, (int, float)):
+                        _open_ts = _dt_str
+                    else:
+                        _dt_str = str(_dt_str).replace("Z", "+00:00")
+                        _open_ts = datetime.fromisoformat(_dt_str).timestamp()
                 else:
+                    _open_ts = 0.0
+            except Exception:
+                _open_ts = 0.0
+
+            if _open_ts > 0:
+                _held_secs = time.time() - _open_ts
+                if _held_secs >= MAX_HOLD_TIME_SECONDS:
+                    exit_reason = "TIME_EXPIRED"
                     log.info(
-                        "[UPDOWN] HOLD to expiry: %s | price=%.3f ≥ 0.88 but only %ds left — riding to 0.99",
-                        order_id[:20], current_price, _secs_left,
+                        "[UPDOWN] TIME EXPIRED: %s | held %.1fs >= max %ds — killing decay trap",
+                        order_id[:20], _held_secs, MAX_HOLD_TIME_SECONDS
                     )
-            elif _hwm >= 0.75 and current_price < 0.55:
-                exit_reason = "TRAILING_FLOOR_55"
-                log.info(
-                    "[UPDOWN] TRAILING FLOOR: %s | HWM=%.3f ≥ 0.75 but price dropped to %.3f < 0.55 — exit",
-                    order_id[:20], _hwm, current_price,
-                )
+
+            if not exit_reason:
+                if current_price >= 0.88:
+                    _expiry_ts = int(trade.get("expiry_ts", 0))
+                    _secs_left = _expiry_ts - int(time.time()) if _expiry_ts else 999
+                    if _secs_left > 120:
+                        exit_reason = "EARLY_EXIT_88PCT"
+                        log.info(
+                            "[UPDOWN] EARLY EXIT trigger: %s | price=%.3f ≥ 0.88 — locking in gain (%ds left)",
+                            order_id[:20], current_price, _secs_left,
+                        )
+                    else:
+                        log.info(
+                            "[UPDOWN] HOLD to expiry: %s | price=%.3f ≥ 0.88 but only %ds left — riding to 0.99",
+                            order_id[:20], current_price, _secs_left,
+                        )
+                elif _hwm >= 0.75 and current_price < 0.55:
+                    exit_reason = "TRAILING_FLOOR_55"
+                    log.info(
+                        "[UPDOWN] TRAILING FLOOR: %s | HWM=%.3f ≥ 0.75 but price dropped to %.3f < 0.55 — exit",
+                        order_id[:20], _hwm, current_price,
+                    )
+                elif ("5M" in title or "5m" in title or "5m" in str(trade.get("type", "")).lower() or trade.get("timeframe") == "5m" or trade.get("type") == "5m") and current_price <= 0.30:
+                    exit_reason = "SALVAGE_EXIT"
+                    log.info(
+                        "[UPDOWN] STRICT 5M SALVAGE: %s | price=%.3f <= 0.30 — early salvage exit",
+                        order_id[:20], current_price
+                    )
+                elif SHORT_TF_SALVAGE_ENABLED and (current_price <= SALVAGE_FLOOR_PRICE or current_price <= entry_price * DYNAMIC_DECAY_THRESHOLD):
+                    exit_reason = "SALVAGE_EXIT"
+                    log.info(
+                        "[UPDOWN] SALVAGE EXIT: %s | price=%.3f (entry=%.3f) triggered salvage (floor=%.3f, decay=%.2f) — early salvage exit to recover capital",
+                        order_id[:20], current_price, entry_price, SALVAGE_FLOOR_PRICE, DYNAMIC_DECAY_THRESHOLD
+                    )
 
             if exit_reason:
                 try:
@@ -1759,6 +1799,17 @@ def run_updown_cycle(
                     _max_size   = balance * UPDOWN_CAP_LOW
                 raw_size = balance * _kelly_frac * size_multiplier * _ob_boost * _vol_mult
                 size     = round(max(UPDOWN_MIN_USD, min(_max_size, raw_size)), 2)
+
+                # ── Sprint 13 / Seven-Fleet Sizing Overrides ──────────────────
+                title = f"[UPDOWN] {best.get('title', '')}"
+                from core.engine.trader import _derive_pillar_and_type, staking_engine
+                _, t_type = _derive_pillar_and_type(title)
+                if t_type in ("REV_SNIPE", "SIG"):
+                    size = staking_engine.get_current_size()
+                    log.info(f"[STAKING-GATE] UPDOWN T1 trade {t_type} -> overridden size: ${size:.2f}")
+                elif t_type == "SWEEP":
+                    size = round(balance * 0.20, 2)
+                    log.info(f"[STAKING-GATE] UPDOWN SWEEP trade -> flat size: ${size:.2f}")
 
                 market_id = market_obj.get("up_token_id") if direction == "UP" else market_obj.get("dn_token_id")
                 if not market_id: market_id = market_obj.get("conditionId") or market_obj.get("id", "")

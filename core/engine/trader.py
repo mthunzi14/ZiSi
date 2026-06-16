@@ -47,6 +47,90 @@ _reconcile_stop    = threading.Event()
 # and any background thread (e.g. reconciliation, future async work).
 # GLOBAL_POSITIONS_LOCK is imported from state_manager.py
 
+# ── Thread-Safe File I/O Lock (Sprint 13 / TASK 3) ───────────────────────────
+FILE_IO_LOCK = threading.Lock()
+
+# ── Progressive Staking Engine (Sprint 13 / TASK 1) ─────────────────────────
+class ProgressiveStakingEngine:
+    def __init__(self, state_file=None):
+        if state_file is None:
+            self.state_file = Path(__file__).parent.parent.parent / "data" / "staking_state.json"
+        else:
+            self.state_file = Path(state_file)
+        self.step_index = 0  # 0-indexed (Step 1 = $10.00)
+        self.last_loss_timestamp = 0.0
+        self.load()
+
+    def load(self):
+        try:
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            if self.state_file.exists():
+                with open(self.state_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                self.step_index = data.get("step_index", 0)
+                self.last_loss_timestamp = data.get("last_loss_timestamp", 0.0)
+                log.info(f"[STAKING] Loaded staking state: step={self.step_index + 1} size=${self.get_current_size():.2f}")
+        except Exception as e:
+            log.warning(f"[STAKING] Failed to load staking state: {e}")
+
+    def save(self):
+        try:
+            # Task 3: Wrap all JSON writes/updates inside thread-safe Lock context
+            with FILE_IO_LOCK:
+                with open(self.state_file, 'w', encoding='utf-8') as f:
+                    json.dump({
+                        "step_index": self.step_index,
+                        "last_loss_timestamp": self.last_loss_timestamp
+                    }, f, indent=2)
+        except Exception as e:
+            log.warning(f"[STAKING] Failed to save staking state: {e}")
+
+    def get_current_size(self) -> float:
+        from core.engine.state_manager import get_current_balance
+        balance = get_current_balance()
+        ratios = [0.15, 0.25, 0.40, 0.65, 0.90]
+        return round(balance * ratios[self.step_index], 2)
+
+    def is_frozen(self, ignore_order_id=None) -> bool:
+        now_ts = time.time()
+        for oid, pos in _open_positions.items():
+            if oid == ignore_order_id:
+                continue
+            if pos.get("status") not in ("CLOSED", "CANCELLED"):
+                title = pos.get("event_title") or ""
+                _, t_type = _derive_pillar_and_type(title)
+                if t_type in ("REV_SNIPE", "SIG"):
+                    expiry_ts = pos.get("expiry_ts", 0)
+                    if expiry_ts > 0 and now_ts >= expiry_ts:
+                        return True
+        return False
+
+    def record_win(self, order_id=None):
+        if self.is_frozen(ignore_order_id=order_id):
+            log.info("[STAKING] Staking index transition frozen due to pending Tier 1 resolutions.")
+            return
+        self.step_index = min(4, self.step_index + 1)
+        self.save()
+        log.info(f"[STAKING] Step index advanced to Step {self.step_index + 1} (${self.get_current_size():.2f})")
+
+    def record_loss(self, timestamp: float, order_id=None):
+        if self.is_frozen(ignore_order_id=order_id):
+            log.info("[STAKING] Staking index transition frozen due to pending Tier 1 resolutions.")
+            return
+        
+        # 15-second timestamp verification barrier
+        if timestamp - self.last_loss_timestamp <= 15.0:
+            log.info(f"[STAKING] Cooldown active (delta {timestamp - self.last_loss_timestamp:.1f}s <= 15s) - suppressing step-back")
+            return
+        
+        self.last_loss_timestamp = timestamp
+        self.step_index = max(0, self.step_index - 2)
+        self.save()
+        log.info(f"[STAKING] Step index retreated to Step {self.step_index + 1} (${self.get_current_size():.2f})")
+
+staking_engine = ProgressiveStakingEngine()
+
+
 
 def _get_config() -> dict:
     return load_config()
@@ -140,7 +224,10 @@ def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, ti
             return target, 0.20
 
         # Sweeper entries at 90-99¢: target is resolution (0.99), no stop — hold to expiry
-        if entry_price >= 0.90 or "T2_SWEEPER" in _title_upper or "SWEEP" in _title_upper:
+        cfg = _get_config()
+        sweeper_enabled = cfg.get("SWEEPER_MODE_ENABLED", True)
+        certainty_thresh = cfg.get("CERTAINTY_PRICE_THRESHOLD", 0.90)
+        if sweeper_enabled and (entry_price >= certainty_thresh or "T2_SWEEPER" in _title_upper or "SWEEP" in _title_upper):
             log.info("[SL-CALIB] Sweeper/near-certain trade '%s' entry=%.2f -> target 0.99, hold to expiry", title, entry_price)
             return 0.99, -1.0
         _is_short_tf = "5M" in _title_upper or "15M" in _title_upper or "UPDOWN" in _title_upper
@@ -458,6 +545,7 @@ def place_order(
     expiry_ts: int = 0,
     market: str = "POLYMARKET",
     hold_to_expiry: bool = False,
+    is_resting_order: bool = False,
 ) -> Optional[dict]:
     """
     Place a BUY order for the given Polymarket market.
@@ -477,6 +565,197 @@ def place_order(
     """
     cfg = _get_config()
     mode = cfg["BOT_MODE"]
+
+    # ── Sprint 13 / Seven-Fleet Sizing and Safety Interceptor ────────────────
+    # Determine the trade type
+    pillar, t_type = _derive_pillar_and_type(event_title or "")
+    
+    # Extract asset cluster
+    title_upper = (event_title or "").upper()
+    asset = "BTC"
+    for a in ["BTC", "ETH", "SOL", "XRP", "DOGE"]:
+        if a in title_upper:
+            asset = a
+            break
+
+    # Fetch current spot price for the asset cluster
+    from core.engine.spot_websocket_ingest import _market_books
+    book = _market_books.get(asset)
+    entry_spot = 0.0
+    if book:
+        bid = book.get("bid_price", 0.0)
+        ask = book.get("ask_price", 0.0)
+        if bid > 0 and ask > 0:
+            entry_spot = round((bid + ask) / 2.0, 4)
+
+    # TASK 1 & 2: Route sizing
+    if t_type in ("REV_SNIPE", "SIG"):
+        # Bound Tier 1 to ProgressiveStakingEngine
+        amount_dollars = staking_engine.get_current_size()
+        log.info(f"[STAKING-GATE] Route T1 trade {t_type} -> overridden size: ${amount_dollars:.2f}")
+    elif t_type in ("LAT_ARB", "SWEEP", "NCS", "REV_STREAK", "FV"):
+        # Enforce strictly 5-minute timeframe for Tier 2 strategies
+        # Allow only if "5m" or "[5m]" or "5M" is in title
+        if "5M" not in title_upper:
+            log.warning(f"[SANDBOX-GATE] Rejecting Tier 2 trade {t_type}: strictly bound to 5m timeframe (Title: {event_title})")
+            return None
+
+        # Sandbox Liquidity Cap: T2 cumulative open exposure must not exceed 30% of wallet balance
+        wallet_balance = get_current_balance()
+        tier2_exposure = 0.0
+        for pos_id, pos_data in _open_positions.items():
+            if pos_data.get("status") not in ("CLOSED", "CANCELLED"):
+                _, pt = _derive_pillar_and_type(pos_data.get("event_title") or "")
+                if pt in ("LAT_ARB", "SWEEP", "NCS", "REV_STREAK", "FV"):
+                    tier2_exposure += pos_data.get("amount_spent", 0.0)
+        
+        if tier2_exposure + amount_dollars > 0.30 * wallet_balance:
+            log.warning(
+                f"[SANDBOX-CAP] Rejecting T2 trade {t_type}: T2 exposure ${tier2_exposure:.2f} + "
+                f"proposed ${amount_dollars:.2f} exceeds 30% of balance ${wallet_balance:.2f} (cap: ${0.30 * wallet_balance:.2f})"
+            )
+            return None
+
+        # Strategy-specific gateway checks
+        if t_type == "LAT_ARB":
+            # Compare global spot WS timestamp against Polymarket public orderbook inbound packet log timestamp
+            spot_ws_timestamp = 0.0
+            from core.engine.spot_websocket_ingest import _market_books
+            book = _market_books.get(asset)
+            if book:
+                spot_ws_timestamp = book.get("timestamp", 0.0)
+            
+            polymarket_packet_timestamp = 0.0
+            from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
+            poly_entry = polymarket_l2_gateway.l2_cache.get(market_id)
+            if poly_entry:
+                polymarket_packet_timestamp = poly_entry.get("ts", 0.0)
+                
+            if spot_ws_timestamp > 0 and polymarket_packet_timestamp > 0:
+                delta_ms = abs(spot_ws_timestamp - polymarket_packet_timestamp) * 1000.0
+                if delta_ms > 800.0:
+                    log.warning(f"[LAT-ARB-ABORT] WebSocket and Polymarket packet timestamp delta {delta_ms:.1f}ms exceeds 800ms limit.")
+                    return None
+
+        elif t_type == "SWEEP":
+            # SWEEP: time-to-resolution <= 120s, price entry >= 94c, sizing flat $10
+            time_to_res = expiry_ts - time.time()
+            if time_to_res > 120 or time_to_res < 0:
+                log.warning(f"[SWEEP-ABORT] Time to resolution {time_to_res:.1f}s is > 120s limit.")
+                return None
+            if entry_price < 0.94:
+                log.warning(f"[SWEEP-ABORT] Price entry {entry_price:.3f} is < 94¢ threshold.")
+                return None
+            amount_dollars = round(get_current_balance() * 0.20, 2)
+
+        elif t_type == "NCS":
+            # NCS: reject if average entry slippage price > 96c or available depth at target price level < 3x intended order size
+            from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
+            poly_entry = polymarket_l2_gateway.l2_cache.get(market_id)
+            if poly_entry:
+                asks = poly_entry.get("asks", [])
+                valid_asks = []
+                for ask in asks:
+                    try:
+                        p = float(ask.get("price") or 0.0)
+                        sz = float(ask.get("size") or ask.get("qty") or ask.get("amount") or 0.0)
+                        if p > 0 and sz > 0:
+                            valid_asks.append((p, sz))
+                    except Exception:
+                        pass
+                valid_asks.sort(key=lambda x: x[0])
+                
+                # Available depth at target level (asks <= entry_price)
+                depth_at_target = sum(sz for p, sz in valid_asks if p <= entry_price + 0.0001)
+                target_shares = amount_dollars / entry_price if entry_price > 0 else 1
+                
+                if depth_at_target < 3.0 * target_shares:
+                    log.warning(f"[NCS-ABORT] Insufficient depth at target level: {depth_at_target:.1f} < 3x intended order size {3.0 * target_shares:.1f}.")
+                    return None
+                
+                # Check slippage
+                shares_filled = 0.0
+                total_cost = 0.0
+                for p, sz in valid_asks:
+                    needed = target_shares - shares_filled
+                    if needed <= 0:
+                        break
+                    take = min(needed, sz)
+                    shares_filled += take
+                    total_cost += take * p
+                
+                if shares_filled < target_shares:
+                    log.warning(f"[NCS-ABORT] Insufficient order book asks to fill {target_shares:.1f} shares.")
+                    return None
+                
+                avg_price = total_cost / shares_filled if shares_filled > 0 else 0.0
+                if avg_price > 0.96:
+                    log.warning(f"[NCS-ABORT] Slippage average price {avg_price:.3f} exceeds 96¢ limit.")
+                    return None
+
+        elif t_type == "REV_STREAK":
+            # REV_STREAK: check 4 consecutive 1m candles moving violently against macro average
+            # and cap open exposure to exactly 1 active position per asset cluster
+            active_streak_positions = 0
+            for pos_id, pos_data in _open_positions.items():
+                if pos_data.get("status") not in ("CLOSED", "CANCELLED"):
+                    title = pos_data.get("event_title") or ""
+                    _, pt = _derive_pillar_and_type(title)
+                    if pt == "REV_STREAK":
+                        pos_asset = "BTC"
+                        for a in ["BTC", "ETH", "SOL", "XRP", "DOGE"]:
+                            if a in title.upper():
+                                pos_asset = a
+                                break
+                        if pos_asset == asset:
+                            active_streak_positions += 1
+            if active_streak_positions >= 1:
+                log.warning(f"[REV-STREAK-ABORT] Already have {active_streak_positions} active REV_STREAK position for {asset} cluster.")
+                return None
+
+            try:
+                from core.engine.updown_trader import _fetch_binance_klines
+                klines = _fetch_binance_klines(asset, interval="1m", limit=30)
+                if len(klines) >= 30:
+                    closes = [float(k[4]) for k in klines]
+                    macro_mean = sum(closes) / len(closes)
+                    last_4 = klines[-4:]
+                    all_green = all(float(k[4]) > float(k[1]) for k in last_4)
+                    all_red = all(float(k[4]) < float(k[1]) for k in last_4)
+                    current_price = closes[-1]
+                    
+                    is_streak_valid = False
+                    macro_trend_up = macro_mean > closes[0]
+                    if (macro_trend_up and all_red) or (not macro_trend_up and all_green):
+                        is_streak_valid = True
+                    
+                    if not is_streak_valid:
+                        log.warning(f"[REV-STREAK-ABORT] Last 4 1m candles are not moving against macro trend.")
+                        return None
+            except Exception as e:
+                log.warning(f"[REV-STREAK] Failed to verify 1m candles, aborting: {e}")
+                return None
+
+        elif t_type == "FV":
+            # FV: z-score >= 2.5 SD, targets directly at 0.5 SD midpoint
+            try:
+                from core.engine.updown_trader import _fetch_binance_klines
+                klines = _fetch_binance_klines(asset, interval="1m", limit=30)
+                if len(klines) >= 30:
+                    closes = [float(k[4]) for k in klines]
+                    mean = sum(closes) / len(closes)
+                    variance = sum((x - mean) ** 2 for x in closes) / len(closes)
+                    std = variance ** 0.5
+                    current_spot = closes[-1]
+                    
+                    if std > 0:
+                        z = (current_spot - mean) / std
+                        if abs(z) < 2.5:
+                            log.warning(f"[FV-ABORT] Spot price z-score {z:.2f} is < 2.5 SD threshold.")
+                            return None
+            except Exception as e:
+                log.warning(f"[FV] Failed to verify fair value, aborting: {e}")
+                return None
 
     # Shares-first sizing (ZiSi sovereign pattern): avoids USD→shares rounding drift at low prices.
     # Polymarket uses whole shares — round to nearest integer, minimum 1.
@@ -544,6 +823,7 @@ def place_order(
                 "amount_spent": actual_cost,
                 "shares_acquired": shares,
                 "entry_price": entry_price,
+                "entry_spot": entry_spot,
                 "timestamp": timestamp,
                 "status": api_status.upper(),
                 "market": "KALSHI",
@@ -572,6 +852,14 @@ def place_order(
             direction, shares, entry_price, actual_cost,
             _display_title[:55],
         )
+        if is_resting_order:
+            import random
+            if random.random() < 0.5:
+                log.info("[PAPER-RESTING] Resting order failed to fill (50% probability check). Cancelled.")
+                return None
+            else:
+                log.info("[PAPER-RESTING] Paper resting order filled successfully!")
+
         order = {
             "order_id": order_id,
             "event_id": event_id,
@@ -581,6 +869,7 @@ def place_order(
             "amount_spent": actual_cost,
             "shares_acquired": shares,
             "entry_price": entry_price,
+            "entry_spot": entry_spot,
             "timestamp": timestamp,
             "status": "FILLED",
             "market": market,
@@ -588,6 +877,8 @@ def place_order(
         }
         tp, sl = _calculate_exit_targets_fallback(entry_price, actual_cost, _display_title, direction)
         pillar, t_type = _derive_pillar_and_type(_display_title)
+        if t_type == "FV":
+            tp = round(entry_price + 0.3 * (1.0 - entry_price), 2)
         _open_positions[order_id] = {
             **order,
             "target_price": tp,
@@ -620,6 +911,8 @@ def place_order(
             "[TRADE] Order placement timed out for market %s — "
             "registering for reconciliation (0x_Punisher pattern)", market_id,
         )
+        if is_resting_order:
+            return None
         _register_pending_order(order_id, market_id, event_id, direction, amount_dollars, entry_price)
         return None
 
@@ -634,6 +927,19 @@ def place_order(
             log.error("[TRADE] Live transaction %s failed confirmation status. Discarding order state.", tx_id)
             return None
 
+    if is_resting_order:
+        time.sleep(2)
+        api_status = _poll_order_status_live(resolved_id)
+        if api_status != "FILLED":
+            try:
+                _retry_request("DELETE", f"{clob_url}/orders/{resolved_id}")
+                log.info("[RESTING-ORDER] Cancelled unfilled resting order %s", resolved_id)
+            except Exception as e:
+                log.warning("[RESTING-ORDER] Failed to delete resting order %s: %s", resolved_id, e)
+            return None
+        else:
+            log.info("[RESTING-ORDER] Live resting order %s filled successfully!", resolved_id)
+
     order = {
         "order_id":        resolved_id,
         "event_id":        event_id,
@@ -642,6 +948,7 @@ def place_order(
         "amount_spent":    amount_dollars,
         "shares_acquired": shares,
         "entry_price":     entry_price,
+        "entry_spot":      entry_spot,
         "timestamp":       timestamp,
         "status":          api_status,
         "market":          market,
@@ -655,12 +962,16 @@ def place_order(
 
         if verified_status not in ("FILLED",):
             # Still not confirmed — register for background reconciliation
+            if is_resting_order:
+                return None
             _register_pending_order(
                 resolved_id, market_id, event_id, direction, amount_dollars, entry_price, event_title
             )
 
     tp, sl = _calculate_exit_targets_fallback(entry_price, amount_dollars, event_title, direction)
     pillar, t_type = _derive_pillar_and_type(event_title or "")
+    if t_type == "FV":
+        tp = round(entry_price + 0.3 * (1.0 - entry_price), 2)
     _open_positions[order["order_id"]] = {
         **order,
         "event_title":  event_title or event_id,
@@ -1041,6 +1352,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
 
     now = datetime.now(timezone.utc)
     closed = []
+    prices_updated = False
 
     for order_id, pos in list(_open_positions.items()):
         if pos.get("status") in ("CLOSED", "CANCELLED"):
@@ -1065,6 +1377,11 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         else:
             effective_max_minutes = max_hold_minutes
 
+        # Enforce strict maximum holding horizon from configuration to kill decay traps
+        max_hold_time_seconds = cfg.get("MAX_HOLD_TIME_SECONDS", 300)
+        max_hold_time_minutes = max_hold_time_seconds / 60.0
+        effective_max_minutes = min(effective_max_minutes, max_hold_time_minutes)
+
         entry_price = pos["entry_price"]
         _is_short_tf = "5M" in _ev_title or "15M" in _ev_title or "UPDOWN" in _ev_title
 
@@ -1072,8 +1389,10 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         _is_ncs_or_sweep = _trade_type in ("NCS", "SWEEP")
 
         target_price = pos.get("target_price")
+        sweeper_enabled = cfg.get("SWEEPER_MODE_ENABLED", True)
+        certainty_thresh = cfg.get("CERTAINTY_PRICE_THRESHOLD", 0.90)
         if _is_short_tf:
-            if _is_ncs_or_sweep:
+            if _is_ncs_or_sweep or (sweeper_enabled and entry_price >= certainty_thresh):
                 target_price = 0.99
             elif not target_price or target_price <= 0:
                 _is_5m = "][5M]" in _ev_title
@@ -1095,7 +1414,8 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         _expiry_ts = pos.get("expiry_ts")
         if is_updown and _expiry_ts:
             # Polymarket contract resolves after the interval finishes (expiry_ts)
-            is_expired = now.timestamp() >= float(_expiry_ts)
+            # Cap by maximum holding horizon if it is active
+            is_expired = now.timestamp() >= float(_expiry_ts) or age_minutes >= effective_max_minutes
         else:
             is_expired = age_minutes >= effective_max_minutes
 
@@ -1189,29 +1509,70 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         is_stop_hit = exit_price <= stop_loss if (not _is_short_tf or (stop_loss is not None and stop_loss > 0)) else False
         is_time_decay_hit = is_updown and not _is_short_tf and not is_expired and age_minutes >= 0.7 * effective_max_minutes
 
-        # SALVAGE_EXIT (short-TF only): if within 90s of the real market expiry_ts
-        # AND the contract price has collapsed below 20¢, exit immediately to recover
-        # whatever value remains instead of riding it to 1¢.
-        # Uses expiry_ts (actual Polymarket close) NOT age-from-entry, eliminating the
-        # ~90s blind spot that was causing full losses on the reconciliation path.
         is_salvage_exit = False
-        # Salvage exits disabled for short-TF to hold to resolution
+        from config import SHORT_TF_SALVAGE_ENABLED, SHORT_TF_STOP_LOSS_ENABLED, SHORT_TF_STOP_LOSS_PCT
+        try:
+            from config import SALVAGE_FLOOR_PRICE
+            effective_salvage_floor = SALVAGE_FLOOR_PRICE
+        except ImportError:
+            effective_salvage_floor = 0.30
 
-        # 80% drawdown stop-loss: if price dropped to ≤20% of entry, position is
-        # almost certainly wrong direction. Exit now to save 80% of stake.
-        # Applies to ALL timeframes including short-TF (which normally has stop_loss=-1).
-        _drawdown_floor = entry_price * 0.20
-        if not _is_short_tf and not is_expired and exit_price is not None and 0.005 < exit_price <= _drawdown_floor:
+        try:
+            from config import DYNAMIC_DECAY_THRESHOLD
+            effective_decay_threshold = DYNAMIC_DECAY_THRESHOLD
+        except ImportError:
+            effective_decay_threshold = 0.70
+        
+        # Salvage exit: trigger on absolute floor (30c) OR dynamic decay threshold (e.g. 70% of entry price)
+        if _is_short_tf and SHORT_TF_SALVAGE_ENABLED and exit_price is not None:
+            is_absolute_salvage = exit_price <= effective_salvage_floor
+            is_decay_salvage = exit_price <= entry_price * effective_decay_threshold
+            
+            if is_absolute_salvage or is_decay_salvage:
+                log.info(
+                    "[SALVAGE-EXIT] %s: exit price %.4f (entry %.4f) triggered salvage (abs_floor=%.2f, decay_thresh=%.2f) — early flatten",
+                    order_id, exit_price, entry_price, effective_salvage_floor, effective_decay_threshold
+                )
+                is_salvage_exit = True
+
+        _is_5m = "5M" in _ev_title or pos.get("timeframe") == "5m" or pos.get("type") == "5m" or "5M" in str(pos.get("type", "")).upper()
+        if _is_5m and exit_price is not None and exit_price <= 0.30:
             log.info(
-                "[STOP-LOSS] %s: %.0fc ≤ 20%% of entry %.0fc — early exit saving %.0f%% of stake",
-                order_id, exit_price * 100, entry_price * 100,
+                "[SALVAGE-EXIT-5M] %s: exit price %.4f <= 0.30 on 5m contract — forcing early salvage exit",
+                order_id, exit_price
+            )
+            is_salvage_exit = True
+
+        # PRE-EMPTIVE TIMEOUT: In the execution block, if we are within 3 seconds of market expiration (T-3),
+        # immediately execute an aggressive market-sweep order to completely flatten risk.
+        is_preemptive_timeout = False
+        if is_updown and _expiry_ts and not is_expired:
+            time_left = float(_expiry_ts) - now.timestamp()
+            if 0 < time_left <= 3.0:
+                log.info(
+                    "[PRE-EMPTIVE-TIMEOUT] %s: Market resolves in %.1fs (T-3 gate) — sweeping book to flatten risk",
+                    order_id, time_left
+                )
+                is_preemptive_timeout = True
+                is_salvage_exit = True
+
+        # Drawdown stop-loss: if price dropped below the threshold percentage of entry, position is
+        # almost certainly wrong direction. Exit now to save remaining stake.
+        _drawdown_floor = entry_price * SHORT_TF_STOP_LOSS_PCT
+        _allow_stop = not _is_short_tf or SHORT_TF_STOP_LOSS_ENABLED
+        if _allow_stop and not is_expired and exit_price is not None and 0.005 < exit_price <= _drawdown_floor:
+            log.info(
+                "[STOP-LOSS] %s: %.0fc <= %.0f%% of entry %.0fc — early exit saving %.0f%% of stake",
+                order_id, exit_price * 100, SHORT_TF_STOP_LOSS_PCT * 100, entry_price * 100,
                 (exit_price / max(entry_price, 0.001)) * 100,
             )
             is_stop_hit = True
 
         if not (is_expired or is_target_hit or is_stop_hit or is_time_decay_hit or is_salvage_exit):
             # Update local current_price in memory and continue
-            pos["current_price"] = exit_price
+            if pos.get("current_price") != exit_price:
+                pos["current_price"] = exit_price
+                prices_updated = True
             continue
 
         # ATM hold-to-expiry: if the position has the flag set and target was hit,
@@ -1247,7 +1608,10 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
                 order_id, age_minutes, effective_max_minutes
             )
         elif is_salvage_exit:
-            exit_reason = "SALVAGE_EXIT"
+            if "is_preemptive_timeout" in locals() and is_preemptive_timeout:
+                exit_reason = "RESOLUTION_PROXIMITY"
+            else:
+                exit_reason = "SALVAGE_EXIT"
         else:
             exit_reason = "MARKET_EXPIRED"
 
@@ -1259,7 +1623,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
             )
             closed.append({"order_id": order_id, **result})
 
-    if closed:
+    if closed or prices_updated:
         persist_positions()
 
     return closed
@@ -1384,7 +1748,11 @@ def check_exit_condition(
             except Exception:
                 pass
 
-    if current_price >= effective_target_price:
+    _is_5m = "5M" in _ev_title or pos.get("timeframe") == "5m" or pos.get("type") == "5m" or "5M" in str(pos.get("type", "")).upper()
+    if _is_5m and current_price <= 0.30:
+        should_exit = True
+        reason = "SALVAGE_EXIT"
+    elif current_price >= effective_target_price:
         should_exit = True
         reason = "TARGET_HIT"
     elif current_price <= effective_stop_loss if (not _is_short_tf or effective_stop_loss > 0) else False:
@@ -1430,6 +1798,22 @@ def execute_exit(order_id: str, current_price: float, exit_reason: str = "UNKNOW
     if pos is None:
         log.debug("Cannot exit: order %s not found in open positions (likely pre-restart ghost)", order_id)
         return None
+
+    title = pos.get("event_title", "")
+    _title_upper = title.toUpperCase() if hasattr(title, "toUpperCase") else title.upper()
+    _is_5m = "5M" in _title_upper or pos.get("timeframe") == "5m" or pos.get("type") == "5m" or "5M" in str(pos.get("type", "")).upper()
+
+    if _is_5m:
+        try:
+            from core.engine.data_fetcher import get_event_current_price
+            price_data = get_event_current_price(pos["market_id"])
+            if price_data and isinstance(price_data.get("price"), (int, float)):
+                _live = float(price_data["price"])
+                if 0.01 <= _live <= 0.99:
+                    current_price = round(_live, 4)
+                    log.info("[EXECUTE-EXIT] REST fallback updated exit price to %.4f", current_price)
+        except Exception as e:
+            log.warning("[EXECUTE-EXIT] Failed to fetch REST fallback price: %s", e)
 
     shares = pos["shares_acquired"]
     entry_value = pos["amount_spent"]
@@ -1479,6 +1863,9 @@ def execute_exit(order_id: str, current_price: float, exit_reason: str = "UNKNOW
                 "amount": shares,
                 "price_limit": current_price,
             }
+            if _is_5m and (current_price <= 0.30 or exit_reason == "SALVAGE_EXIT"):
+                payload["price_limit"] = 0.01
+                payload["order_type"] = "IOC"
             resp = _retry_request("POST", f"{clob_url}/orders", json_body=payload)
             if resp is None:
                 log.error("Exit order failed for %s — position still open", order_id)
@@ -1499,8 +1886,17 @@ def execute_exit(order_id: str, current_price: float, exit_reason: str = "UNKNOW
         "status": "FILLED",
     }
 
-    title_short = (pos.get("event_title") or order_id)[:50]
+    # Update Tier 1 Progressive Staking Engine state
+    pillar, t_type = _derive_pillar_and_type(pos.get("event_title") or "")
+    if t_type in ("REV_SNIPE", "SIG"):
+        is_win = (exit_reason == "TARGET_HIT" or profit > 0)
+        is_loss = (exit_reason == "SALVAGE_EXIT" or profit < 0)
+        if is_win:
+            staking_engine.record_win(order_id=order_id)
+        elif is_loss:
+            staking_engine.record_loss(timestamp=time.time(), order_id=order_id)
 
+    title_short = (pos.get("event_title") or order_id)[:50]
     update_trade_record(order_id, exit_data)
     persist_positions()
 
@@ -1658,6 +2054,7 @@ def persist_positions() -> None:
                     "direction":        pos.get("direction", "?"),
                     "entry_price":      round(entry_price, 4),
                     "exit_price":       round(pos.get("exit_price", 0.0), 4),
+                    "entry_spot":       pos.get("entry_spot"),
                     "size":             round(size, 2),
                     "realized_pnl":     round(float(pos.get("profit", 0.0) or 0), 2),
                     "realized_pnl_pct": round(float(pos.get("profit_percent", 0.0) or 0), 2),
@@ -1681,6 +2078,7 @@ def persist_positions() -> None:
                     "direction":      pos.get("direction", "?"),
                     "entry_price":    round(entry_price, 4),
                     "current_price":  round(current_price, 4),
+                    "entry_spot":     pos.get("entry_spot"),
                     "size":           round(size, 2),
                     "shares":         round(shares, 4),
                     "entry_time":     open_time.isoformat() if isinstance(open_time, datetime) else str(open_time),
@@ -1785,13 +2183,14 @@ def persist_positions() -> None:
         }
 
         with GLOBAL_POSITIONS_LOCK:
-            try:
-                tmp_path = out_path.with_suffix(".tmp")
-                tmp_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-                import os as _os
-                _os.replace(tmp_path, out_path)
-            except Exception as exc:
-                log.warning("[POSITIONS] Failed to persist: %s", exc)
+            with FILE_IO_LOCK:
+                try:
+                    tmp_path = out_path.with_suffix(".tmp")
+                    tmp_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+                    import os as _os
+                    _os.replace(tmp_path, out_path)
+                except Exception as exc:
+                    log.warning("[POSITIONS] Failed to persist: %s", exc)
 
     # 3. Spawn background writer thread
     threading.Thread(target=_threaded_writer, args=(open_positions_snapshot,), daemon=True).start()

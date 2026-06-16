@@ -70,9 +70,23 @@ function parseMeta(p) {
   };
 }
 
+function getTimestampMs(ts) {
+  if (!ts) return 0;
+  if (typeof ts === 'string') {
+    return new Date(ts).getTime();
+  }
+  if (typeof ts === 'number') {
+    if (ts < 20000000000) {
+      return ts * 1000;
+    }
+    return ts;
+  }
+  return 0;
+}
+
 function fmtLocal(ts) {
   if (!ts) return '--:--:--';
-  const d = new Date(ts);
+  const d = new Date(getTimestampMs(ts));
   return d.getHours().toString().padStart(2,'0') + ':' +
          d.getMinutes().toString().padStart(2,'0') + ':' +
          d.getSeconds().toString().padStart(2,'0');
@@ -81,7 +95,7 @@ function fmtLocal(ts) {
 // Entry timestamp with date prepended: "05/29 10:30:05"
 function fmtLocalDT(ts) {
   if (!ts) return '--/-- --:--:--';
-  const d = new Date(ts);
+  const d = new Date(getTimestampMs(ts));
   const mm = (d.getMonth() + 1).toString().padStart(2,'0');
   const dd = d.getDate().toString().padStart(2,'0');
   const hh = d.getHours().toString().padStart(2,'0');
@@ -275,7 +289,7 @@ function CandleCountdownBar({ assetMacro = {} }) {
   const dColor  = d => d === 'UP' ? '#10b981' : d === 'DOWN' ? '#ef4444' : '#52525b';
   const dGlyph  = d => d === 'UP' ? '↑' : d === 'DOWN' ? '↓' : '→';
 
-  const timerColor = p => p < 15 ? '#ef4444' : p < 30 ? '#f97316' : '#00cbd6';
+  const timerColor = p => p < 15 ? '#ef4444' : p < 30 ? '#f97316' : '#71717a';
 
   return (
     <div style={{
@@ -463,7 +477,7 @@ function SessionAnalytics({ closed }) {
   const maxDDColor= maxDD > 8 ? '#ef4444' : maxDD > 4 ? '#f97316' : '#10b981';
 
   return (
-    <CollapsiblePanel title="Session Analytics" defaultOpen={true} accentColor="#00cbd6">
+    <CollapsiblePanel title="Session Analytics" defaultOpen={true} accentColor="#71717a">
       <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         {/* Drawdown stats */}
         <div style={{ display: 'flex', gap: 16 }}>
@@ -706,7 +720,7 @@ const GATE_META = {
   'DIR-COOLDOWN': { color: '#2b7fff', label: 'COOLDOWN' },
   'TREND-CONFIRM':{ color: '#a855f7', label: 'TREND-CF' },
   'TREND-GATE':   { color: '#ef4444', label: 'TREND' },
-  'FV-EDGE-GATE': { color: '#00cbd6', label: 'FV-EDGE' },
+  'FV-EDGE-GATE': { color: '#71717a', label: 'FV-EDGE' },
   'CORROBORATE':  { color: '#6b7280', label: 'CORR' },
   'VOL-SURGE':    { color: '#ec4899', label: 'VOL-SURGE' },
 };
@@ -772,9 +786,9 @@ function fmtHoldMins(mins) {
 
 function reasonBadge(reason) {
   if (!reason) return { label: '—', color: 'var(--color-text-muted)' };
-  if (reason === 'TARGET_HIT')  return { label: 'TARGET', color: 'var(--color-profit)' };
-  if (reason === 'STOP_HIT')    return { label: 'STOP',   color: 'var(--color-loss)' };
-  if (reason === 'TIME_EXPIRED') return { label: 'EXPIRY', color: 'var(--color-amber)' };
+  if (reason === 'TARGET_HIT')  return { label: 'TARGET', color: 'var(--color-text-secondary)' };
+  if (reason === 'STOP_HIT')    return { label: 'STOP',   color: 'var(--color-text-muted)' };
+  if (reason === 'TIME_EXPIRED') return { label: 'EXPIRY', color: 'var(--color-text-muted)' };
   return { label: reason.replace(/_/g, ' '), color: 'var(--color-text-muted)' };
 }
 
@@ -794,7 +808,7 @@ function CountdownTimer({ expiry_ts }) {
     return () => clearInterval(id);
   }, [expiry_ts]);
 
-  const color = secs < 15 ? 'var(--color-loss)' : secs < 60 ? 'var(--color-amber)' : 'var(--color-profit)';
+  const color = secs < 15 ? 'var(--color-loss)' : secs < 60 ? 'var(--color-amber)' : 'var(--color-text-muted)';
   const pulse = secs < 15 ? { animation: 'pulse 0.8s infinite' } : {};
   return (
     <span style={{ fontFamily: 'var(--font-mono)', color, fontSize: 11, ...pulse }}>
@@ -813,16 +827,16 @@ const OPEN_GRID    = '66px 55px 42px 50px 40px 48px 48px 52px 48px 68px 48px 80p
 
 // ── Row components ────────────────────────────────────────────────────────────
 
-function ClosedRow({ p }) {
+function ClosedRow({ p, index }) {
   const meta   = parseMeta(p);
   const dir    = dirStr(p.direction);
   const pnl    = parseFloat(p.realized_pnl ?? 0);
   const pct    = parseFloat(p.realized_pnl_pct ?? 0);
   const size   = parseFloat(p.size ?? 0);
   const result = pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'EVEN';
-  const rColor = result === 'WIN' ? 'var(--color-profit)' : result === 'LOSS' ? 'var(--color-loss)' : 'rgba(9,9,11,0.25)';
+  const rColor = 'var(--color-text-muted)';
   const rb     = reasonBadge(p.exit_reason);
-  const pnlColor = pnl > 0 ? 'var(--color-profit)' : pnl < 0 ? 'var(--color-loss)' : 'var(--color-text-muted)';
+  const pnlColor = 'var(--color-text-secondary)';
 
   return (
     <div style={{
@@ -831,6 +845,7 @@ function ClosedRow({ p }) {
       borderLeft: `3px solid ${rColor}`,
       borderBottom: '1px solid var(--color-border-subtle)',
       fontSize: 11,
+      background: index % 2 === 0 ? '#18181b' : '#27272a',
     }}>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtLocalDT(p.entry_time)}</span>
       <span style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: 13, color: 'var(--color-text-primary)' }}>{meta.asset}</span>
@@ -858,7 +873,7 @@ function ClosedRow({ p }) {
   );
 }
 
-function OpenRow({ p }) {
+function OpenRow({ p, index }) {
   const meta    = parseMeta(p);
   const dir     = dirStr(p.direction);
   const entry   = parseFloat(p.entry_price || 0);
@@ -877,6 +892,7 @@ function OpenRow({ p }) {
       borderLeft: `3px solid ${isDual ? 'var(--color-accent)' : 'var(--color-text-muted)'}`,
       borderBottom: '1px solid var(--color-border-subtle)',
       fontSize: 11, fontStyle: 'italic', opacity: 0.9,
+      background: index % 2 === 0 ? '#18181b' : '#27272a',
     }}>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtLocal(p.entry_time)}</span>
       <span style={{ fontFamily: 'var(--font-display)', fontWeight: 900, fontSize: 13, color: 'var(--color-text-primary)' }}>{meta.asset}</span>
@@ -888,18 +904,18 @@ function OpenRow({ p }) {
         {entryTypeCfg(meta.type || p.entry_type).label}
       </span>
       <span style={{ fontFamily: 'var(--font-mono)' }}>{(entry * 100).toFixed(0)}¢</span>
-      <span style={{ fontFamily: 'var(--font-mono)', color: cur >= entry ? 'var(--color-profit)' : 'var(--color-loss)' }}>
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)' }}>
         {(cur * 100).toFixed(0)}¢
       </span>
-      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-profit)', fontSize: 10 }}>
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)', fontSize: 10 }}>
         {target > 0 ? `${(target * 100).toFixed(0)}¢` : '—'}
       </span>
-      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-loss)', fontSize: 10 }}>
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)', fontSize: 10 }}>
         {stop > 0 ? `${(stop * 100).toFixed(0)}¢` : '—'}
       </span>
       <span style={{
         fontFamily: 'var(--font-mono)', fontWeight: 700,
-        color: unrPnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)',
+        color: 'var(--color-text-secondary)',
       }}>{unrPnl >= 0 ? '+' : ''}${unrPnl.toFixed(2)}</span>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtHoldMins(holdMin)}</span>
       {p.status === 'RESOLVING' ? (
@@ -942,7 +958,7 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
         height: '24px',
         background: 'var(--color-cream-dark)',
         borderRadius: '48px',
-        transition: 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1), width 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+        transition: 'none',
         zIndex: 0,
         pointerEvents: 'none'
       }} />
@@ -962,7 +978,7 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
           padding: '4px 14px',
           borderRadius: '48px',
           zIndex: 1,
-          transition: 'color 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+          transition: 'none',
           display: 'inline-flex',
           alignItems: 'center',
           gap: '6px'
@@ -1057,7 +1073,7 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
         top: '3px',
         bottom: '3px',
         borderRadius: '6px',
-        transition: 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1), width 200ms cubic-bezier(0.22, 1, 0.36, 1), background 200ms, border 200ms',
+        transition: 'none',
         zIndex: 0,
         pointerEvents: 'none'
       }} />
@@ -1076,7 +1092,7 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
           color: activeFilter === 'ALL' ? '#fff' : 'var(--color-text-muted)',
           cursor: 'pointer',
           display: 'flex', alignItems: 'center', gap: 4,
-          transition: 'color 0.15s',
+          transition: 'none',
           whiteSpace: 'nowrap',
           zIndex: 1,
         }}
@@ -1131,7 +1147,7 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
               }}>
                 {count}
                 {pnl !== null && (
-                  <span style={{ marginLeft: 3, color: pnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)' }}>
+                  <span style={{ marginLeft: 3, color: 'var(--color-text-secondary)' }}>
                     {pnl >= 0 ? '+' : ''}${Math.abs(pnl).toFixed(1)}
                   </span>
                 )}
@@ -1254,7 +1270,7 @@ function ClosedSummary({ closed }) {
   // Loss cluster alert: 3+ trades settled ≤10¢ in last 20 min
   const now20min = Date.now() - 20 * 60 * 1000;
   const recentFullLosses = closed.filter(t => {
-    const exitTs = (t.exit_time || t.closed_at || 0) * 1000;
+    const exitTs = getTimestampMs(t.exit_time || t.closed_at || 0);
     const exitPrice = parseFloat(t.exit_price ?? 1.0);
     return exitTs >= now20min && exitPrice <= 0.10;
   }).length;
@@ -1266,7 +1282,7 @@ function ClosedSummary({ closed }) {
 
   function getSessionLabel(entryTs) {
     if (!entryTs) return null;
-    const d   = new Date(entryTs * 1000);
+    const d   = new Date(getTimestampMs(entryTs));
     const day = d.getUTCDay();
     if (day === 0 || day === 6) return 'Weekend';
     const h = d.getUTCHours() + d.getUTCMinutes() / 60;
@@ -1297,19 +1313,19 @@ function ClosedSummary({ closed }) {
         <>{wr}%<span style={{ fontSize: 9, fontWeight: 500, color: 'var(--color-text-muted)', marginLeft: 4 }}>
           {wrN > 4 ? `${ciLo.toFixed(0)}–${ciHi.toFixed(0)}%` : 'n<5'}
         </span></>
-      ), color: parseFloat(wr) >= 62 ? 'var(--color-profit)' : parseFloat(wr) >= 45 ? 'var(--color-amber)' : 'var(--color-loss)' },
+      ), color: 'var(--color-text-secondary)' },
     { label: 'W / L / E', val: `${wins} / ${losses} / ${evens}`, color: 'var(--color-text-secondary)' },
-    { label: 'Total P&L', val: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)' },
-    { label: 'P&L Rate',  val: velStr, color: pnlVelocity !== null ? (pnlVelocity >= 0 ? 'var(--color-profit)' : 'var(--color-loss)') : 'var(--color-text-muted)' },
-    { label: 'Profit Factor', val: pf, color: parseFloat(pf) >= 1.5 ? 'var(--color-profit)' : parseFloat(pf) >= 1 ? 'var(--color-amber)' : 'var(--color-loss)' },
-    { label: 'Avg Win',   val: avgWin > 0 ? `+$${avgWin.toFixed(2)}` : '—', color: 'var(--color-profit)' },
-    { label: 'Avg Loss',  val: avgLoss > 0 ? `-$${avgLoss.toFixed(2)}` : '—', color: 'var(--color-loss)' },
-    { label: 'Best',  val: bestPnl > 0 ? `+$${bestPnl.toFixed(2)}` : '—', color: 'var(--color-profit)' },
-    { label: 'Worst', val: worstPnl < 0 ? `-$${Math.abs(worstPnl).toFixed(2)}` : '—', color: 'var(--color-loss)' },
+    { label: 'Total P&L', val: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: 'var(--color-text-secondary)' },
+    { label: 'P&L Rate',  val: velStr, color: 'var(--color-text-secondary)' },
+    { label: 'Profit Factor', val: pf, color: 'var(--color-text-secondary)' },
+    { label: 'Avg Win',   val: avgWin > 0 ? `+$${avgWin.toFixed(2)}` : '—', color: 'var(--color-text-secondary)' },
+    { label: 'Avg Loss',  val: avgLoss > 0 ? `-$${avgLoss.toFixed(2)}` : '—', color: 'var(--color-text-secondary)' },
+    { label: 'Best',  val: bestPnl > 0 ? `+$${bestPnl.toFixed(2)}` : '—', color: 'var(--color-text-secondary)' },
+    { label: 'Worst', val: worstPnl < 0 ? `-$${Math.abs(worstPnl).toFixed(2)}` : '—', color: 'var(--color-text-secondary)' },
     { label: 'Streak', val: streak > 1
         ? <span style={{ letterSpacing: 0 }}>{streakWin ? '🔥' : '❄️'} {streak}{streakWin ? 'W' : 'L'}</span>
         : `${streakWin ? 'W' : 'L'}`,
-      color: streakWin ? 'var(--color-profit)' : 'var(--color-loss)' },
+      color: 'var(--color-text-secondary)' },
   ];
 
   return (
@@ -1501,15 +1517,16 @@ function SrcPill({ src, active, count, pnl, onClick }) {
 export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {} }) {
   const [tab, setTab] = useState('open');
   const [srcFilter, setSrcFilter] = useState('ALL');
-  const [limit, setLimit] = useState(10);
+  const [limit, setLimit] = useState(500);
   const [engineStatus, setEngineStatus] = useState({ status: 'SCANNING', detail: '' });
-  const [isLedgerCollapsed, setIsLedgerCollapsed] = useState(false);
   const [btnHovered, setBtnHovered] = useState(false);
 
-  // Reset limit to 10 when the filter source or tab changes
+  // Reset limit to 500 when the filter source or tab changes
   useEffect(() => {
-    setLimit(10);
+    setLimit(500);
   }, [srcFilter, tab]);
+
+
 
   useEffect(() => {
     const poll = () =>
@@ -1544,6 +1561,14 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
     return filterBySrc(closed, srcFilter);
   }, [closed, srcFilter]);
 
+  // Scroll-triggered lazy load — fires when within 120px of bottom
+  const handleLedgerScroll = useCallback((e) => {
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) {
+      setLimit(prev => Math.min(prev + 20, filteredClosed.length));
+    }
+  }, [filteredClosed.length]);
+
   const visibleClosed = useMemo(() => {
     return filteredClosed.slice(0, limit);
   }, [filteredClosed, limit]);
@@ -1555,7 +1580,7 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
         style={{ padding: 'var(--spacing-20)', display: 'flex', flexDirection: 'column' }}
       >
         {/* Header: title + pills + tabs */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isLedgerCollapsed ? 0 : 10, flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, letterSpacing: '-0.01em' }}>
               Trade Ledger
@@ -1563,35 +1588,12 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
             <MarketSessionPill />
             <RegimePill />
             <MacroTrendArrow />
-            <button
-              onClick={() => setIsLedgerCollapsed(c => !c)}
-              onMouseEnter={() => setBtnHovered(true)}
-              onMouseLeave={() => setBtnHovered(false)}
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: 4,
-                background: btnHovered ? 'rgba(192,192,215,0.08)' : 'rgba(255,255,255,0.04)',
-                border: `1px solid ${btnHovered ? 'rgba(192,192,215,0.35)' : 'rgba(255,255,255,0.08)'}`,
-                boxShadow: btnHovered ? '0 0 10px rgba(192,192,215,0.15), inset 0 1px 0 rgba(255,255,255,0.08)' : 'none',
-                borderRadius: 6, padding: '2px 8px', cursor: 'pointer',
-                fontSize: 9, fontWeight: 700,
-                color: btnHovered ? '#d4d4e8' : '#a1a1aa',
-                transition: 'all 0.2s',
-                marginLeft: 4
-              }}
-            >
-              <span style={{ display: 'inline-block', transform: isLedgerCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.25s' }}>▾</span>
-              {isLedgerCollapsed ? 'Expand' : 'Collapse'}
-            </button>
           </div>
-          {!isLedgerCollapsed && (
-            <SlidingTabs activeTab={tab} setActiveTab={setTab} activeCount={active.length} historyCount={closed.length} />
-          )}
+          <SlidingTabs activeTab={tab} setActiveTab={setTab} activeCount={active.length} historyCount={closed.length} />
         </div>
 
-        {!isLedgerCollapsed && (
-          <>
-            {/* Candle countdown + per-asset macro bar */}
-            <CandleCountdownBar assetMacro={assetMacro} />
+        {/* Candle countdown + per-asset macro bar */}
+        <CandleCountdownBar assetMacro={assetMacro} />
 
         {/* Gate Event Log lives in Analytics tab (not here) */}
 
@@ -1622,7 +1624,7 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
             <div style={{ overflowY: 'auto', maxHeight: 300 }}>
               {active.length === 0
                 ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>No open positions</div>
-                : active.map((p, i) => <OpenRow key={p.order_id || i} p={p} />)
+                : active.map((p, i) => <OpenRow key={p.order_id || i} p={p} index={i} />)
               }
             </div>
           </>
@@ -1662,90 +1664,32 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
             <EngineStatusPill
               status={engineStatus.status}
               detail={engineStatus.detail}
-              lastTradeAgo={closed.length > 0 ? Math.floor((Date.now() / 1000 - (typeof closed[0].exit_time === 'string' ? new Date(closed[0].exit_time).getTime() / 1000 : Number(closed[0].exit_time || 0))) / 60) : 999}
+              lastTradeAgo={closed.length > 0 ? Math.floor((Date.now() - getTimestampMs(closed[0].exit_time)) / 60000) : 999}
             />
 
-            {/* Trade rows */}
+            {/* Trade rows — GPU-accelerated virtualized scroll window */}
             <ColHeaders cols={CLOSED_COLS} grid={CLOSED_GRID} />
-            <div style={{ overflowY: 'auto', maxHeight: 380, flex: 1 }}>
+            <div
+              style={{
+                overflowY: 'auto',
+                maxHeight: 380,
+                flex: 1,
+                /* GPU compositing layer — prevents layout thrashing at 120Hz */
+                transform: 'translate3d(0,0,0)',
+                willChange: 'transform',
+                WebkitOverflowScrolling: 'touch',
+                contain: 'strict',
+              }}
+            >
               {visibleClosed.length === 0
                 ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>
                     {srcFilter === 'ALL' ? 'No closed trades yet' : `No ${srcFilter} trades yet`}
                   </div>
-                : (
-                  <>
-                    {visibleClosed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} />)}
-                    {filteredClosed.length > limit ? (
-                      <div style={{ display: 'flex', gap: 8, margin: '12px 8px' }}>
-                        <button
-                          onClick={() => setLimit(prev => prev + 10)}
-                          style={{
-                            flex: 1,
-                            padding: '8px 12px',
-                            borderRadius: '4px',
-                            fontWeight: '700',
-                            fontSize: '10px',
-                            fontFamily: 'var(--font-mono)',
-                            textAlign: 'center',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.08em',
-                            color: 'var(--color-accent)',
-                          }}
-                          className="load-more-btn metal-fx"
-                        >
-                          Load More (+10)
-                        </button>
-                        <button
-                          onClick={() => setLimit(filteredClosed.length)}
-                          style={{
-                            flex: 1,
-                            padding: '8px 12px',
-                            borderRadius: '4px',
-                            fontWeight: '700',
-                            fontSize: '10px',
-                            fontFamily: 'var(--font-mono)',
-                            textAlign: 'center',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.08em',
-                            color: 'var(--color-accent)',
-                          }}
-                          className="load-more-btn metal-fx"
-                        >
-                          Expand All ({filteredClosed.length})
-                        </button>
-                      </div>
-                    ) : (
-                      limit > 10 && (
-                        <button
-                          onClick={() => setLimit(10)}
-                          style={{
-                            width: 'calc(100% - 16px)',
-                            margin: '12px 8px',
-                            padding: '8px 12px',
-                            borderRadius: '4px',
-                            fontWeight: '700',
-                            fontSize: '10px',
-                            fontFamily: 'var(--font-mono)',
-                            textAlign: 'center',
-                            display: 'block',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.08em',
-                            color: 'var(--color-accent)',
-                          }}
-                          className="load-more-btn metal-fx"
-                        >
-                          Collapse List (Show 10)
-                        </button>
-                      )
-                    )}
-                  </>
-                )
+                : visibleClosed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} index={i} />)
               }
             </div>
           </>
         )}
-      </>
-    )}
       </div>
     </SpotlightMask>
   );

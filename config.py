@@ -9,18 +9,24 @@ import logging
 from dotenv import load_dotenv
 
 # Core active trading assets that have live markets on Polymarket
-ASSETS: list = ["BTC", "ETH", "SOL", "XRP", "DOGE"]
+ASSETS: list = ["BTC", "ETH", "SOL", "XRP", "DOGE", "Alternative", "Sports", "Politics", "Gaming"]
 
 # Inactive/Future altcoins supported by indicators but dormant to prevent rate-limit congestion
 FUTURE_ASSETS: list = []
 
 TIMEFRAMES: dict = {
-    "BTC": ["5m", "15m", "1h"],   # 1h = BoneReaper hourly markets
-    "ETH": ["5m", "15m", "1h"],   # 1h = BoneReaper hourly markets
-    "SOL": ["5m", "15m"],
-    "XRP": ["5m", "15m"],
-    "DOGE": ["5m", "15m"],
+    "BTC": ["5m"],
+    "ETH": ["5m"],
+    "SOL": ["5m"],
+    "XRP": ["5m"],
+    "DOGE": ["5m"],
+    "Alternative": ["5m"],
+    "Sports": ["5m"],
+    "Politics": ["5m"],
+    "Gaming": ["5m"],
 }
+
+ALLOWED_TIMEFRAMES: list = ["5m"]
 
 # Active trading window (UTC hours, inclusive start/exclusive end) - set to 24/7
 TIME_GATE_UTC: tuple = (0, 24)
@@ -63,9 +69,33 @@ OVERLAY_C_SPEC_BUDGET_PCT: float = 0.01          # 1.0% of total balance
 OVERLAY_C_MAX_UNDERDOG_PRICE: float = 0.20        # contracts priced <= 20c
 
 OVERLAY_B_ENABLED: bool = True
-OVERLAY_B_FREEZE_MIDPOINTS: bool = True           # freeze 40c-60c contracts during breakout
+OVERLAY_B_FREEZE_MIDPOINTS: bool = False          # DO NOT freeze 40c-60c contracts during breakout (allows PBOT midpoint execution)
 OVERLAY_B_TREND_ALIGNMENT_THRESHOLD: int = 4      # requires 4/4 alignment across timeframes
 OVERLAY_B_ADX_THRESHOLD: float = 25.0             # ADX threshold for breakout strength
+
+# Dynamic Pricing and Liquidation Rules (Mentor Emulation)
+MIN_ENTRY_PRICE: float = 0.01                    # Allow options <= 20c (ritb123)
+MAX_ENTRY_PRICE: float = 0.99                    # Allow certainty snipes >= 90c (bonereaper)
+SWEEPER_MODE_ENABLED: bool = True                # Mentor emulation: sweep high-certainty contracts
+CERTAINTY_PRICE_THRESHOLD: float = 0.90          # Target the 99.6¢ premium sweeps (bonereaper)
+MAX_HOLD_TIME_SECONDS: int = 300                 # Strict 5-min absolute liquidation cap
+SHORT_TF_SALVAGE_ENABLED: bool = True            # Allow early exit on 5m/15m contracts
+SALVAGE_FLOOR_PRICE: float = 0.30               # Certova’s dynamic 30¢ early mitigation barrier
+DYNAMIC_DECAY_THRESHOLD: float = 0.70           # Dynamic decay ratio threshold
+SHORT_TF_SALVAGE_FLOOR: float = 0.30            # Legacy compat salvage floor
+SHORT_TF_STOP_LOSS_ENABLED: bool = True          # Activate stop-loss floor on short-tf
+SHORT_TF_STOP_LOSS_PCT: float = 0.20            # Cut at 20% of entry price
+
+# ── Tiered Capital Isolation Layer Configuration (Sprint 13 / Seven-Fleet) ──
+PROGRESSIVE_STAKING_SIZES = [10.00, 15.00, 25.00, 40.00, 60.00]
+PROGRESSIVE_STAKING_TYPES = ["REV_SNIPE", "SIG"]
+TIER2_SANDBOX_TYPES = ["LAT_ARB", "SWEEP", "NCS", "REV_STREAK", "FV"]
+TIER2_SANDBOX_EXPOSURE_CAP = 0.30
+TIER2_SWEEPER_SIZE = 10.00
+TIER2_LATENCY_ARB_MAX_DELTA_MS = 800.0
+TIER2_NCS_SLIPPAGE_CAP = 0.96
+TIER2_FV_Z_THRESHOLD = 2.5
+TIER2_FV_TARGET_Z = 0.5
 
 # ── Backward-compat aliases (old modules still import these) ─────────────────
 PEAK_TRADING_HOURS_UTC    = TIME_GATE_UTC  # replaced by TIME_GATE_UTC in new code
@@ -204,9 +234,32 @@ def load_config() -> dict:
         "OVERLAY_C_SPEC_BUDGET_PCT": float(os.getenv("OVERLAY_C_SPEC_BUDGET_PCT", "0.01")),
         "OVERLAY_C_MAX_UNDERDOG_PRICE": float(os.getenv("OVERLAY_C_MAX_UNDERDOG_PRICE", "0.20")),
         "OVERLAY_B_ENABLED": os.getenv("OVERLAY_B_ENABLED", "true").lower() == "true",
-        "OVERLAY_B_FREEZE_MIDPOINTS": os.getenv("OVERLAY_B_FREEZE_MIDPOINTS", "true").lower() == "true",
+        "OVERLAY_B_FREEZE_MIDPOINTS": os.getenv("OVERLAY_B_FREEZE_MIDPOINTS", "false").lower() == "true", # default false
         "OVERLAY_B_TREND_ALIGNMENT_THRESHOLD": int(os.getenv("OVERLAY_B_TREND_ALIGNMENT_THRESHOLD", "4")),
         "OVERLAY_B_ADX_THRESHOLD": float(os.getenv("OVERLAY_B_ADX_THRESHOLD", "25.0")),
+
+        # Mentor parameters
+        "MIN_ENTRY_PRICE": float(os.getenv("MIN_ENTRY_PRICE", str(MIN_ENTRY_PRICE))),
+        "MAX_ENTRY_PRICE": float(os.getenv("MAX_ENTRY_PRICE", str(MAX_ENTRY_PRICE))),
+        "SWEEPER_MODE_ENABLED": os.getenv("SWEEPER_MODE_ENABLED", str(SWEEPER_MODE_ENABLED)).lower() == "true",
+        "CERTAINTY_PRICE_THRESHOLD": float(os.getenv("CERTAINTY_PRICE_THRESHOLD", str(CERTAINTY_PRICE_THRESHOLD))),
+        "MAX_HOLD_TIME_SECONDS": int(os.getenv("MAX_HOLD_TIME_SECONDS", str(MAX_HOLD_TIME_SECONDS))),
+        "SALVAGE_FLOOR_PRICE": float(os.getenv("SALVAGE_FLOOR_PRICE", str(SALVAGE_FLOOR_PRICE))),
+        "DYNAMIC_DECAY_THRESHOLD": float(os.getenv("DYNAMIC_DECAY_THRESHOLD", str(DYNAMIC_DECAY_THRESHOLD))),
+        "SHORT_TF_SALVAGE_ENABLED": os.getenv("SHORT_TF_SALVAGE_ENABLED", str(SHORT_TF_SALVAGE_ENABLED)).lower() == "true",
+        "SHORT_TF_SALVAGE_FLOOR": float(os.getenv("SHORT_TF_SALVAGE_FLOOR", str(SHORT_TF_SALVAGE_FLOOR))),
+        "SHORT_TF_STOP_LOSS_ENABLED": os.getenv("SHORT_TF_STOP_LOSS_ENABLED", str(SHORT_TF_STOP_LOSS_ENABLED)).lower() == "true",
+        "SHORT_TF_STOP_LOSS_PCT": float(os.getenv("SHORT_TF_STOP_LOSS_PCT", str(SHORT_TF_STOP_LOSS_PCT))),
+        "ALLOWED_TIMEFRAMES": ALLOWED_TIMEFRAMES,
+        "PROGRESSIVE_STAKING_SIZES": PROGRESSIVE_STAKING_SIZES,
+        "PROGRESSIVE_STAKING_TYPES": PROGRESSIVE_STAKING_TYPES,
+        "TIER2_SANDBOX_TYPES": TIER2_SANDBOX_TYPES,
+        "TIER2_SANDBOX_EXPOSURE_CAP": TIER2_SANDBOX_EXPOSURE_CAP,
+        "TIER2_SWEEPER_SIZE": TIER2_SWEEPER_SIZE,
+        "TIER2_LATENCY_ARB_MAX_DELTA_MS": TIER2_LATENCY_ARB_MAX_DELTA_MS,
+        "TIER2_NCS_SLIPPAGE_CAP": TIER2_NCS_SLIPPAGE_CAP,
+        "TIER2_FV_Z_THRESHOLD": TIER2_FV_Z_THRESHOLD,
+        "TIER2_FV_TARGET_Z": TIER2_FV_TARGET_Z,
     }
 
     # Check required keys

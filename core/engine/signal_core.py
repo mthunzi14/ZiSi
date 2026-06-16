@@ -121,6 +121,7 @@ def decide_signal(
     use_session_scaling: bool = False,
     atr_percentile: Optional[float] = None,
     bbw_percentile: Optional[float] = None,
+    strategy: Optional[str] = None,
 ) -> dict:
     """Return {"direction": "UP"|"DOWN"|None, "score": float, "is_reversal": bool, "blocked": bool}."""
     if params is None:
@@ -188,6 +189,12 @@ def decide_signal(
         or (rsi < rsi_dn_soft_eff and mom <= p["mom_dn_soft"] and ofi < p["ofi_confirm_dn"])
     )
 
+    if strategy in ("NCS", "FV", "LAT_ARB", "SWEEP") and 40.0 <= rsi <= 60.0:
+        if ofi > 0:
+            up_trigger = True
+        elif ofi < 0:
+            dn_trigger = True
+
     if up_trigger:
         # Overextension block REMOVED — was blocking RSI 60-80 UP signals in MEAN_REVERTING
         # if (regime or "").upper() == "MEAN_REVERTING" and rsi > 60.0:
@@ -205,6 +212,8 @@ def decide_signal(
         rsi_eff = max(rsi, rsi_up_eff)
         res["direction"] = "UP"
         res["score"] = min(0.85, 0.50 + (rsi_eff - rsi_up_eff) / max(1.0, 100.0 - rsi_up_eff) * 0.35)
+        if 40.0 <= rsi <= 60.0:
+            res["score"] = max(res["score"], 0.58)
         return res
 
     if dn_trigger:
@@ -224,6 +233,8 @@ def decide_signal(
         rsi_eff = min(rsi, rsi_dn_eff)
         res["direction"] = "DOWN"
         res["score"] = min(0.85, 0.50 + (rsi_dn_eff - rsi_eff) / max(1.0, rsi_dn_eff) * 0.35)
+        if 40.0 <= rsi <= 60.0:
+            res["score"] = max(res["score"], 0.58)
         return res
 
     return res

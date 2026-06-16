@@ -149,15 +149,8 @@ app.get('/api/control/system/status', systemAuthMiddleware, (req, res) => {
       isRunning = botProcess && !botProcess.killed;
       pid = botProcess ? botProcess.pid : null;
     } else {
-      try {
-        const stdout = execSync('pm2 jlist').toString();
-        const list = JSON.parse(stdout);
-        const bot = list.find(app => app.name === 'ZiSi-Core-Engine');
-        isRunning = bot ? bot.pm2_env.status === 'online' : false;
-        pid = bot ? bot.pid : null;
-      } catch (e) {
-        console.error('[PM2] Failed to check status:', e.message);
-      }
+      isRunning = cachedIsRunning;
+      pid = cachedPid;
     }
     res.json({
       isRunning: !!isRunning,
@@ -314,11 +307,12 @@ function stopBot() {
     }
   } else {
     console.log('[DASHBOARD] Directing PM2 to stop ZiSi-Core-Engine...');
-    try {
-      execSync('pm2 stop ZiSi-Core-Engine');
-    } catch (e) {
-      console.error('[DASHBOARD] Failed to stop bot via PM2:', e.message);
-    }
+    import('child_process').then(({ exec }) => {
+      exec('pm2 stop ZiSi-Core-Engine', (err) => {
+        if (err) console.error('[DASHBOARD] Failed to stop bot via PM2:', err.message);
+        updatePm2StatusCache();
+      });
+    }).catch(() => {});
   }
 }
 
@@ -363,6 +357,124 @@ const accountStatePath = path.join(BOT_ROOT, 'data', 'account_state.json');
 const positionsStatePath = path.join(BOT_ROOT, 'data', 'positions_state.json');
 const chainlinkPricesPath = path.join(BOT_ROOT, 'data', 'chainlink_prices.json');
 const pythPricesPath = path.join(BOT_ROOT, 'data', 'pyth_prices.json');
+const clobPricesPath = path.join(BOT_ROOT, 'data', 'clob_prices.json');
+
+let lastPositionsWrite = 0;
+let lastBalanceWrite = 0;
+let lastClobPricesWrite = 0;
+
+// ── Performance Optimization: RAM Cache Layer to avoid 100% event loop deadlock ──
+let cachedIsRunning = false;
+let cachedPm2Uptime = null;
+let cachedPid = null;
+
+let cachedPositions = { active: [], closed: [], summary: {} };
+let cachedAccountState = { balance: 50.00, starting_balance: 50.00 };
+let cachedRuntimeTracking = { runtime_hours: 0, progress_percent: 0, goal_hours: 336, status: 'tracking' };
+let cachedChainlinkPrices = {};
+let cachedPythPrices = {};
+let cachedClobPrices = {};
+
+async function loadPositionsAsync() {
+  try {
+    if (fs.existsSync(positionsStatePath)) {
+      const raw = await fs.promises.readFile(positionsStatePath, 'utf-8');
+      cachedPositions = JSON.parse(raw.replace(/^\uFEFF/, ''));
+    }
+  } catch (err) {}
+}
+
+async function loadAccountStateAsync() {
+  try {
+    if (fs.existsSync(accountStatePath)) {
+      const raw = await fs.promises.readFile(accountStatePath, 'utf-8');
+      cachedAccountState = JSON.parse(raw.replace(/^\uFEFF/, ''));
+    }
+  } catch (err) {}
+}
+
+async function loadRuntimeTrackingAsync() {
+  try {
+    const rtFile = path.join(BOT_ROOT, 'data', 'runtime_tracking.json');
+    if (fs.existsSync(rtFile)) {
+      const raw = await fs.promises.readFile(rtFile, 'utf-8');
+      cachedRuntimeTracking = JSON.parse(raw.replace(/^\uFEFF/, ''));
+    }
+  } catch (err) {}
+}
+
+async function loadChainlinkPricesAsync() {
+  try {
+    if (fs.existsSync(chainlinkPricesPath)) {
+      const raw = await fs.promises.readFile(chainlinkPricesPath, 'utf-8');
+      cachedChainlinkPrices = JSON.parse(raw.replace(/^\uFEFF/, ''));
+    }
+  } catch (err) {}
+}
+
+async function loadPythPricesAsync() {
+  try {
+    if (fs.existsSync(pythPricesPath)) {
+      const raw = await fs.promises.readFile(pythPricesPath, 'utf-8');
+      cachedPythPrices = JSON.parse(raw.replace(/^\uFEFF/, ''));
+    }
+  } catch (err) {}
+}
+
+async function loadClobPricesAsync() {
+  try {
+    if (fs.existsSync(clobPricesPath)) {
+      const raw = await fs.promises.readFile(clobPricesPath, 'utf-8');
+      cachedClobPrices = JSON.parse(raw.replace(/^\uFEFF/, ''));
+    }
+  } catch (err) {}
+}
+
+function updatePm2StatusCache() {
+  if (process.platform === 'win32') {
+    cachedIsRunning = !!(botProcess && !botProcess.killed);
+    cachedPid = botProcess ? botProcess.pid : null;
+    return;
+  }
+  // Linux/Unix PM2 status check
+  import('child_process').then(({ exec }) => {
+    exec('pm2 jlist', (error, stdout, stderr) => {
+      if (error) {
+        cachedIsRunning = false;
+        cachedPid = null;
+        return;
+      }
+      try {
+        const list = JSON.parse(stdout);
+        const bot = list.find(app => app.name === 'ZiSi-Core-Engine');
+        cachedIsRunning = bot ? bot.pm2_env.status === 'online' : false;
+        cachedPid = bot ? bot.pid : null;
+        if (bot && bot.pm2_env && bot.pm2_env.pm_uptime) {
+          cachedPm2Uptime = bot.pm2_env.pm_uptime;
+        }
+      } catch (e) {
+        cachedIsRunning = false;
+        cachedPid = null;
+      }
+    });
+  }).catch(() => {});
+}
+
+// Prime the cache on bootup
+Promise.all([
+  loadPositionsAsync(),
+  loadAccountStateAsync(),
+  loadRuntimeTrackingAsync(),
+  loadChainlinkPricesAsync(),
+  loadPythPricesAsync(),
+  loadClobPricesAsync()
+]).then(() => {
+  updatePm2StatusCache();
+}).catch(() => {});
+
+// Background async polling intervals
+setInterval(updatePm2StatusCache, 5000);
+setInterval(loadRuntimeTrackingAsync, 10000);
 
 function broadcastWS(eventObj) {
   const msg = JSON.stringify(eventObj);
@@ -383,6 +495,15 @@ const _entrySpotCache = new Map();
 
 async function _fetchClobPrice(marketId, pos) {
   if (!marketId || marketId === 'test_market_abc') return null;
+
+  // Check memory/file cache first
+  if (cachedClobPrices && cachedClobPrices[marketId] !== undefined) {
+    const price = cachedClobPrices[marketId];
+    if (price > 0.01 && price < 0.99) {
+      return price;
+    }
+  }
+
   const cached = _priceCache.get(marketId);
   if (cached && Date.now() - cached.ts < PRICE_CACHE_TTL_MS) return cached.price;
   
@@ -425,25 +546,7 @@ async function _fetchClobPrice(marketId, pos) {
       else if (title.includes('HYPE')) asset = 'HYPE';
 
       if (asset) {
-        let currentSpot = null;
-        // Try Pyth cache first
-        const pythFile = path.join(BOT_ROOT, 'pyth_prices.json');
-        if (fs.existsSync(pythFile)) {
-          const pythData = JSON.parse(fs.readFileSync(pythFile, 'utf-8'));
-          if (pythData[asset] && typeof pythData[asset].price === 'number') {
-            currentSpot = pythData[asset].price;
-          }
-        }
-        // Try Chainlink second
-        if (currentSpot == null) {
-          const clFile = path.join(BOT_ROOT, 'chainlink_prices.json');
-          if (fs.existsSync(clFile)) {
-            const clData = JSON.parse(fs.readFileSync(clFile, 'utf-8'));
-            if (clData[asset] && typeof clData[asset].price === 'number') {
-              currentSpot = clData[asset].price;
-            }
-          }
-        }
+        let currentSpot = cachedPythPrices[asset]?.price ?? cachedChainlinkPrices[asset]?.price ?? null;
 
         if (currentSpot != null) {
           const orderId = pos.order_id || marketId;
@@ -490,22 +593,20 @@ async function _fetchClobPrice(marketId, pos) {
 
 async function getEnrichedPositionsPayload() {
   const fallback = { summary: {}, active: [], closed: [] };
-  if (!fs.existsSync(positionsStatePath)) {
-    return fallback;
-  }
   try {
-    const raw = fs.readFileSync(positionsStatePath, 'utf-8').trim();
-    if (!raw) return fallback;
-    const positions = JSON.parse(raw.replace(/^﻿/, ''));
+    const positions = cachedPositions;
     const active = positions.active || [];
-    const closed = positions.closed || [];
+    // Cap closed list to 500 items in the backend payload
+    const closed = (positions.closed || []).slice(0, 500);
     const summary = positions.summary || {};
     
     let liveUnrealized = 0;
     const enrichedActive = await Promise.all(active.map(async (pos) => {
+      const orderId = pos.order_id || pos.market_id;
+      const entry_spot = pos.entry_spot || _entrySpotCache.get(orderId) || null;
       if (pos.market !== 'POLYMARKET') {
         liveUnrealized += parseFloat(pos.unrealized_pnl || 0);
-        return pos;
+        return { ...pos, entry_spot };
       }
       const marketId = pos.market_id || pos.order_id;
       const livePrice = await _fetchClobPrice(marketId, pos);
@@ -515,11 +616,11 @@ async function getEnrichedPositionsPayload() {
         const unrealizedPnl = Math.round((shares * livePrice - cost) * 100) / 100;
         liveUnrealized += unrealizedPnl;
         // price_source: 'clob' = live order-book price, 'spot_fallback' = oracle-derived
-        const price_source = _priceCache.has(marketId) ? 'clob' : 'spot_fallback';
-        return { ...pos, current_price: livePrice, unrealized_pnl: unrealizedPnl, price_source };
+        const price_source = (cachedClobPrices && cachedClobPrices[marketId] !== undefined) ? 'clob' : (_priceCache.has(marketId) ? 'clob' : 'spot_fallback');
+        return { ...pos, current_price: livePrice, unrealized_pnl: unrealizedPnl, price_source, entry_spot };
       }
       liveUnrealized += parseFloat(pos.unrealized_pnl || 0);
-      return pos;
+      return { ...pos, entry_spot };
     }));
     
     return {
@@ -531,7 +632,7 @@ async function getEnrichedPositionsPayload() {
       closed
     };
   } catch (err) {
-    console.error('[SERVER] Failed to parse positions_state.json, returning fallback:', err.message);
+    console.error('[SERVER] Failed to parse positions cache, returning fallback:', err.message);
     return fallback;
   }
 }
@@ -540,45 +641,19 @@ function getBalancePayload() {
   const fallback = { balance: 50.00, starting_balance: 50.00, positions: { active: [], closed: [] }, running: false, minutesAgo: null, last_update_minutes_ago: null, chainlinkPrices: {}, pythPrices: {} };
   let isRunning = false;
   let pm2Uptime = null;
-  try {
-    if (process.platform === 'win32') {
-      isRunning = !!(botProcess && !botProcess.killed);
-    } else {
-      try {
-        const stdout = execSync('pm2 jlist').toString();
-        const list = JSON.parse(stdout);
-        const bot = list.find(app => app.name === 'ZiSi-Core-Engine');
-        isRunning = bot ? bot.pm2_env.status === 'online' : false;
-        if (bot && bot.pm2_env && bot.pm2_env.pm_uptime) {
-          pm2Uptime = bot.pm2_env.pm_uptime;
-        }
-      } catch (e) {
-        // console.error('[PM2] Failed to check status:', e.message);
-      }
-    }
-  } catch (_) {}
-
-  let chainlinkPrices = {};
-  try {
-    if (fs.existsSync(chainlinkPricesPath)) {
-      chainlinkPrices = JSON.parse(fs.readFileSync(chainlinkPricesPath, 'utf-8'));
-    }
-  } catch (_) {}
-
-  let pythPrices = {};
-  try {
-    if (fs.existsSync(pythPricesPath)) {
-      pythPrices = JSON.parse(fs.readFileSync(pythPricesPath, 'utf-8'));
-    }
-  } catch (_) {}
-
-  if (!fs.existsSync(accountStatePath)) {
-    return { ...fallback, running: isRunning, chainlinkPrices, pythPrices };
+  
+  if (process.platform === 'win32') {
+    isRunning = !!(botProcess && !botProcess.killed);
+  } else {
+    isRunning = cachedIsRunning;
+    pm2Uptime = cachedPm2Uptime;
   }
+
+  let chainlinkPrices = cachedChainlinkPrices || {};
+  let pythPrices = cachedPythPrices || {};
+
   try {
-    const raw = fs.readFileSync(accountStatePath, 'utf-8').trim();
-    if (!raw) return { ...fallback, running: isRunning, chainlinkPrices, pythPrices };
-    const parsed = JSON.parse(raw.replace(/^﻿/, ''));
+    const parsed = cachedAccountState;
     if (parsed.balance === undefined || parsed.balance === null) {
       parsed.balance = 50.00;
     }
@@ -592,20 +667,6 @@ function getBalancePayload() {
       minutesAgo = Math.floor((new Date() - lastUpdate) / 60000);
     }
 
-    let runtime = { hours: 0, days: 0, progressPercent: 0, goalHours: 336, status: 'tracking', start_time: null };
-    try {
-      const runtimeFile = path.join(BOT_ROOT, 'runtime_tracking.json');
-      if (fs.existsSync(runtimeFile)) {
-        const rt = JSON.parse(fs.readFileSync(runtimeFile, 'utf-8').replace(/^﻿/, ''));
-        const hours = rt.runtime_hours || 0;
-        runtime = {
-          hours: Math.round(hours * 10) / 10,
-          days: Math.floor(hours / 24),
-          progressPercent: rt.progress_percent || 0,
-          goalHours: rt.goal_hours || 336,
-          status: rt.status || 'tracking',
-          start_time: rt.start_time || null,
-        };
       }
     } catch (_) {}
 
@@ -681,63 +742,67 @@ async function sendInitialState(ws) {
   } catch (err) {}
 }
 
-let lastPositionsWrite = 0;
-let lastBalanceWrite = 0;
-
-if (fs.existsSync(positionsStatePath)) {
-  fs.watch(positionsStatePath, (eventType) => {
-    if (eventType === 'change') {
-      const now = Date.now();
-      if (now - lastPositionsWrite > 250) {
-        lastPositionsWrite = now;
-        setTimeout(pushPositionsUpdate, 50);
-      }
-    }
-  });
-}
-
-if (fs.existsSync(accountStatePath)) {
-  fs.watch(accountStatePath, (eventType) => {
-    if (eventType === 'change') {
-      const now = Date.now();
-      if (now - lastBalanceWrite > 250) {
-        lastBalanceWrite = now;
-        setTimeout(pushBalanceUpdate, 50);
-      }
-    }
-  });
-}
-
 let lastPricesPush = 0;
-function setupPriceWatches() {
-  const watchFile = (filePath) => {
-    if (fs.existsSync(filePath)) {
-      try {
-        fs.watch(filePath, (eventType) => {
-          if (eventType === 'change') {
-            const now = Date.now();
-            if (now - lastPricesPush > 250) {
-              lastPricesPush = now;
-              setTimeout(() => {
-                Promise.all([pushBalanceUpdate(), pushPositionsUpdate()]).catch((err) => {
-                  console.error('[SERVER] Price watch broadcast failed:', err.message);
-                });
-              }, 50);
-            }
-          }
-        });
-        console.log(`👁️  Watching price file: ${filePath}`);
-      } catch (e) {
-        console.error(`⚠️  Failed to watch ${filePath}:`, e.message);
+const dataDir = path.join(BOT_ROOT, 'data');
+if (fs.existsSync(dataDir)) {
+  try {
+    fs.watch(dataDir, (eventType, filename) => {
+      if (!filename) return;
+      const now = Date.now();
+      
+      if (filename === 'positions_state.json') {
+        if (now - lastPositionsWrite > 50) {
+          lastPositionsWrite = now;
+          setImmediate(async () => {
+            await loadPositionsAsync();
+            pushPositionsUpdate();
+          });
+        }
+      } else if (filename === 'account_state.json') {
+        if (now - lastBalanceWrite > 50) {
+          lastBalanceWrite = now;
+          setImmediate(async () => {
+            await loadAccountStateAsync();
+            pushBalanceUpdate();
+          });
+        }
+      } else if (filename === 'clob_prices.json') {
+        if (now - lastClobPricesWrite > 50) {
+          lastClobPricesWrite = now;
+          setImmediate(async () => {
+            await loadClobPricesAsync();
+            pushPositionsUpdate();
+          });
+        }
+      } else if (filename === 'chainlink_prices.json') {
+        if (now - lastPricesPush > 50) {
+          lastPricesPush = now;
+          setImmediate(async () => {
+            await loadChainlinkPricesAsync();
+            Promise.all([pushBalanceUpdate(), pushPositionsUpdate()]).catch((err) => {
+              console.error('[SERVER] Chainlink price watch broadcast failed:', err.message);
+            });
+          });
+        }
+      } else if (filename === 'pyth_prices.json') {
+        if (now - lastPricesPush > 50) {
+          lastPricesPush = now;
+          setImmediate(async () => {
+            await loadPythPricesAsync();
+            Promise.all([pushBalanceUpdate(), pushPositionsUpdate()]).catch((err) => {
+              console.error('[SERVER] Pyth price watch broadcast failed:', err.message);
+            });
+          });
+        }
       }
-    } else {
-      setTimeout(() => watchFile(filePath), 5000);
-    }
-  };
-  watchFile(chainlinkPricesPath);
-  watchFile(pythPricesPath);
+    });
+    console.log(`👁️  Directory watcher active on: ${dataDir}`);
+  } catch (err) {
+    console.error(`⚠️  Failed to set up directory watcher on ${dataDir}:`, err.message);
+  }
+} else {
+  console.error(`❌  Data directory not found at ${dataDir}`);
 }
-setupPriceWatches();
 
 setInterval(() => {
   if (wsClients.size > 0) {

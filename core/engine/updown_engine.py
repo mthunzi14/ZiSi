@@ -394,6 +394,7 @@ class UpDownEngine:
 
     async def generate_signal(self, session: aiohttp.ClientSession) -> Optional[dict]:
         """Return {direction, score, price_up, price_dn, market} or None."""
+        vol_surge_detected = False
         if self.skip_windows > 0:
             log.info("[ENGINE] %s/%s: skipping window (circuit breaker active)", self.asset, self.timeframe)
             return None
@@ -461,6 +462,7 @@ class UpDownEngine:
 
         # Retrieve real-time Spot Order Flow Imbalance (OFI)
         ofi = await get_current_ofi(self.asset)
+        self._last_ofi = ofi
 
         # Fetch market L2 quotes early
         market = await self._fetch_market(session)
@@ -593,9 +595,9 @@ class UpDownEngine:
                     "edge_context": edge_ctx,
                     "entry_source": "REVERSAL_STREAK",
                     "corroboration_multiplier": 1.0,
-                    "whale_aligned": _whale_aligned,
                     "confluence_score": _confluence_score,
                     "is_reversal": True,
+                    "vol_surge_detected": False,
                 }
 
 
@@ -873,11 +875,10 @@ class UpDownEngine:
                 _roll_avg_vol = sum(volumes[-7:-2]) / 5
                 if _roll_avg_vol > 0 and cur_vol > 4.0 * _roll_avg_vol:
                     log.info(
-                        "[VOL-SURGE] %s/%s: spike %.0f > 4x avg %.0f — 2-candle pause",
+                        "[VOL-SURGE] %s/%s: spike %.0f > 4x avg %.0f — flagging volume surge (resting order placement active)",
                         self.asset, self.timeframe, cur_vol, _roll_avg_vol,
                     )
-                    self._choppy_candles = max(self._choppy_candles, 2)
-                    return None
+                    vol_surge_detected = True
 
             # Check if there is a strong 4/4 trend agreement for RSI trigger loosening (Sprint 11)
             trend_up_agreement = False
@@ -916,6 +917,10 @@ class UpDownEngine:
 
             # Raw direction from the shared signal core
             from core.engine.signal_core import decide_signal
+            from core.engine.trader import _derive_pillar_and_type
+            _, t_type = _derive_pillar_and_type(market.get("event_title", ""))
+            if is_fv_trade:
+                t_type = "FV"
             _dec = decide_signal(
                 rsi,
                 mom,
@@ -927,6 +932,7 @@ class UpDownEngine:
                 use_session_scaling=True,
                 atr_percentile=_atr_pct,
                 bbw_percentile=_bbw_pct,
+                strategy=t_type,
             )
             if _dec["blocked"]:
                 log.info("[ENGINE] %s/%s: Spot OFI divergence — blocking entry.", self.asset, self.timeframe)
@@ -950,12 +956,13 @@ class UpDownEngine:
                 _corroboration_multiplier = 1.0
 
                 if raw_dir is None:
-                    if is_dual_eligible and abs(ofi) >= 0.12:
+                    is_special_strategy = t_type in ("NCS", "FV", "LAT_ARB", "SWEEP")
+                    if (is_dual_eligible or is_special_strategy) and abs(ofi) >= 0.05:
                         raw_dir = "UP" if ofi >= 0 else "DOWN"
-                        score_base = 0.62
+                        score_base = 0.58
                         log.info(
-                            "[ENGINE] %s/%s: Dual-eligible (sum=%.4f) neutral RSI — OFI → %s",
-                            self.asset, self.timeframe, (up_price + dn_price), raw_dir,
+                            "[ENGINE] %s/%s: Special/Dual bypass (t_type=%s) neutral RSI — OFI → %s",
+                            self.asset, self.timeframe, t_type, raw_dir,
                         )
                     else:
                         return None
@@ -1371,6 +1378,7 @@ class UpDownEngine:
             _whale_aligned = True   # default allow if no edge context
             _confluence_score = 2   # default allow
 
+        self._last_entry_source = entry_source
         return {
             "asset":        self.asset,
             "timeframe":    self.timeframe,
@@ -1389,6 +1397,7 @@ class UpDownEngine:
             "fv_archetype": _fv_archetype,
             "whale_aligned": _whale_aligned,
             "confluence_score": _confluence_score,
+            "vol_surge_detected": vol_surge_detected,
         }
 
 
@@ -1692,7 +1701,7 @@ class UpDownEngine:
 
     # ── Sizing ────────────────────────────────────────────────────────────────
 
-    def compute_size(self, score: float, price: float, balance: float, confidence: float = None) -> float:
+    def compute_size(self, score: float, price: float, balance: float, confidence: float = None, entry_source: str = None, timeframe_override: str = None) -> float:
         """Return USD amount to bet, sized by directional CONFIDENCE (Dynamic Kelly) scaled by regime and asset weight."""
         # ── Edge Architecture Adaptive Kelly Sizer (Advancement D) ──
         if getattr(self, "last_edge_context", None):
@@ -1700,11 +1709,18 @@ class UpDownEngine:
                 from core.risk.position_sizer import PositionSizer
                 sizer = PositionSizer(account_balance=balance, max_cycle_capital=balance)
                 
+                # Resolve trigger and timeframe for PositionSizer's Aggressive Floor Override.
+                # Without these, trigger_upper is "" and the $15.00 override never fires.
+                _trigger = (entry_source or getattr(self, '_last_entry_source', None) or "SIG").upper()
+                _tf = timeframe_override or getattr(self, 'timeframe', "5m") or "5m"
                 sig_dict = {
                     "signal_type": "TYPE_A_HIGH" if (score >= 0.75) else "TYPE_A_LOW",
                     "score": score,
                     "affected_cryptos": [self.asset],
                     "entry_price": price,
+                    "trigger": _trigger,
+                    "entry_source": _trigger,
+                    "timeframe": _tf,
                 }
                 mkt_dict = {
                     "market_type": "UP_DOWN",
@@ -1743,6 +1759,36 @@ class UpDownEngine:
                     max_bankroll_fraction=_bk_frac,
                 )
                 
+                # Flatline RSI bypass scaling (V3 engine update)
+                _rsi_val = getattr(self, "_last_rsi", None)
+                if _rsi_val is not None and 40.0 <= _rsi_val <= 60.0:
+                    _strategy_type = "SIG"
+                    _es = str(entry_source or getattr(self, '_last_entry_source', None) or "SIG").upper()
+                    if "FV" in _es or "FAIR_VAL" in _es:
+                        _strategy_type = "FV"
+                    elif "NCS" in _es or "CLOSE" in _es:
+                        _strategy_type = "NCS"
+                    elif "SWEEP" in _es:
+                        _strategy_type = "SWEEP"
+                    elif "LAT" in _es or "ARB" in _es:
+                        _strategy_type = "LAT_ARB"
+                    elif "REV_SNIPE" in _es or "REVERSAL" in _es:
+                        _strategy_type = "REV_SNIPE"
+
+                    if _strategy_type in ("NCS", "FV", "LAT_ARB", "SWEEP", "REV_SNIPE"):
+                        # Check if OFI is present (abs(ofi) >= 0.01)
+                        _ofi_val = getattr(self, "_last_ofi", 0.0)
+                        if abs(_ofi_val) >= 0.01:
+                            # Enforce absolute volume execution floor of 0.75x maximum session risk (balance * 0.08 * 0.75)
+                            _floor_size = balance * 0.08 * 0.75
+                            if usd_size < _floor_size:
+                                log.info("[SIZE] Flatline RSI + OFI present -> clamping usd_size to floor of %.2f", _floor_size)
+                                usd_size = _floor_size
+                        else:
+                            # Scale down by 50%
+                            log.info("[SIZE] Flatline RSI + Zero OFI -> scaling down size by 50% from %.2f", usd_size)
+                            usd_size *= 0.50
+                
                 # Retrieve and apply session sizing multiplier (Sprint 11)
                 session_sizing_mult = 1.0
                 try:
@@ -1780,6 +1826,14 @@ class UpDownEngine:
                 # (mentors put the biggest dollar size on BTC).
                 _asset_w = {"BTC": 1.0, "ETH": 0.85, "SOL": 0.70, "XRP": 0.65, "DOGE": 0.55}.get(self.asset, 0.70)
                 usd_size *= _asset_w
+
+                # Confluence score scaling: 25% risk weight if confluence score is <= 2
+                confluence_score = 4
+                if getattr(self, "last_edge_context", None) and isinstance(self.last_edge_context, dict):
+                    confluence_score = self.last_edge_context.get("confluence_score", 4)
+                if confluence_score <= 2:
+                    log.info("[SIZE] Confluence score %d <= 2 -> scaling down to 25%% risk weight", confluence_score)
+                    usd_size *= 0.25
 
                 shares = round(usd_size / price) if price > 0 else 0
                 actual_cost = shares * price
@@ -1853,6 +1907,14 @@ class UpDownEngine:
             log.info("[SIZE] Fallback Kelly scaled by session multiplier %.2fx -> $%.2f", session_sizing_mult, raw_usd)
         except Exception as e:
             log.warning("[SIZE] Failed to scale by session multiplier: %s", e)
+
+        # Confluence score scaling: 25% risk weight if confluence score is <= 2
+        confluence_score = 4
+        if getattr(self, "last_edge_context", None) and isinstance(self.last_edge_context, dict):
+            confluence_score = self.last_edge_context.get("confluence_score", 4)
+        if confluence_score <= 2:
+            log.info("[SIZE] Fallback Confluence score %d <= 2 -> scaling down to 25%% risk weight", confluence_score)
+            raw_usd *= 0.25
 
         usd = max(MIN_USD, min(raw_usd, max_usd_cap))
 

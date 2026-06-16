@@ -144,8 +144,9 @@ def decide_value_entry(fp_up: float, up_price: float, dn_price: float,
             return _none
         direction, edge, fp, price = "DOWN", edge_dn, (1.0 - fp_up), dn_price
 
-    # Price boundary gate: 10c floor (below = lottery payout), 82c ceiling (above = NCS territory).
-    if not (0.10 <= price <= 0.82):
+    # Price boundary gate (emulating mentor parameters from config)
+    from config import MIN_ENTRY_PRICE, MAX_ENTRY_PRICE
+    if not (MIN_ENTRY_PRICE <= price <= MAX_ENTRY_PRICE):
         return _none
 
     t_frac = (t_min / total_min) if total_min > 0 else 0.0

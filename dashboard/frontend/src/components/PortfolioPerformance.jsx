@@ -7,14 +7,14 @@ import {
 } from 'recharts';
 
 const ASSET_COLORS = {
-  'BTC/5m':  '#f7931a',
-  'BTC/15m': '#ffb042',
-  'ETH/5m':  '#627eea',
-  'SOL/5m':  '#14f195',
-  'XRP/5m':  '#00aae4',
-  'DOGE/5m': '#e1b303',
-  'LINK/5m': '#2b7fff',
-  'BNB/5m':  '#f3ba2f',
+  'BTC/5m':  '#e4e4e7',
+  'BTC/15m': '#d4d4d8',
+  'ETH/5m':  '#a1a1aa',
+  'SOL/5m':  '#71717a',
+  'XRP/5m':  '#52525b',
+  'DOGE/5m': '#3f3f46',
+  'LINK/5m': '#27272a',
+  'BNB/5m':  '#18181b',
 };
 
 const ASSETS = ['BTC/5m', 'BTC/15m', 'ETH/5m', 'SOL/5m', 'XRP/5m', 'DOGE/5m', 'LINK/5m', 'BNB/5m'];
@@ -70,6 +70,8 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
   const [history,   setHistory]     = useState([]);
   const [expanded,  setExpanded]    = useState(true);
 
+  const closedCount = (positions?.closed || []).length;
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -79,9 +81,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
       } catch { /* offline */ }
     };
     load();
-    const id = setInterval(load, 10000);
-    return () => clearInterval(id);
-  }, []);
+  }, [closedCount]);
 
   const getFilteredData = () => {
     const bal   = parseFloat(state.balance || state.starting_balance || 0);
@@ -147,7 +147,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
   };
 
   const { pnl: tfPnl, pct: tfPct } = getPnlMetrics();
-  const pnlColor = tfPnl >= 0 ? '#10b981' : '#ef4444';
+  const pnlColor = '#71717a';
 
   // Per-trade stats
   const closed    = positions?.closed || [];
@@ -175,9 +175,9 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
     if (!active || !payload?.length) return null;
     const d      = payload[0].payload;
     const pnlVal = parseFloat(d.pnl || 0);
-    const c      = pnlVal >= 0 ? '#10b981' : '#ef4444';
+    const c      = '#71717a';
     return (
-      <div style={{ background: 'rgba(12,12,14,0.96)', backdropFilter: 'blur(12px)', border: '1px solid #00cbd655', borderRadius: 8, padding: '10px 14px' }}>
+      <div style={{ background: 'rgba(12,12,14,0.96)', backdropFilter: 'blur(12px)', border: '1px solid #71717a55', borderRadius: 8, padding: '10px 14px' }}>
         <div style={{ color: '#52525b', fontSize: 10, marginBottom: 4 }}>{new Date(d.timestamp).toLocaleString()}</div>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 11, margin: '2px 0' }}>
           <span style={{ color: '#71717a' }}>Balance</span>
@@ -216,7 +216,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
           <span style={{
             fontFamily: 'monospace', fontSize: 11, fontWeight: 800,
             color: pnlColor,
-            background: tfPnl >= 0 ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
+            background: tfPnl >= 0 ? 'rgba(255,255,255,0.06)' : 'rgba(113,113,122,0.08)',
             border: `1px solid ${pnlColor}30`,
             borderRadius: 6, padding: '2px 8px',
           }}>
@@ -231,8 +231,8 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
               {TF_PILLS.map(tf => (
                 <button key={tf} onClick={() => setTimeframe(tf)} style={{
                   padding: '2px 8px', borderRadius: 4, border: 'none',
-                  background: timeframe === tf ? 'rgba(0,203,214,0.15)' : 'transparent',
-                  color: timeframe === tf ? '#00cbd6' : '#52525b',
+                  background: timeframe === tf ? 'rgba(113,113,122,0.15)' : 'transparent',
+                  color: timeframe === tf ? '#71717a' : '#52525b',
                   fontSize: 9, fontFamily: 'monospace', fontWeight: 700, cursor: 'pointer', transition: 'all 0.15s',
                 }}>{tf}</button>
               ))}
@@ -268,10 +268,10 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
               {/* Quick stats */}
               {[
                 { label: 'Trades', val: closed.length },
-                { label: 'WR', val: wr === '—' ? '—' : `${wr}%`, color: parseFloat(wr) >= 65 ? '#10b981' : parseFloat(wr) >= 50 ? '#f97316' : '#ef4444' },
-                { label: 'PF', val: pf, color: parseFloat(pf) >= 1.5 || pf === '∞' ? '#10b981' : parseFloat(pf) >= 1 ? '#f97316' : '#ef4444' },
-                { label: 'Avg W', val: avgW !== '—' ? `+$${avgW}` : '—', color: '#10b981' },
-                { label: 'Avg L', val: avgL !== '—' ? `-$${avgL}` : '—', color: '#ef4444' },
+                { label: 'WR', val: wr === '—' ? '—' : `${wr}%`, color: '#71717a' },
+                { label: 'PF', val: pf, color: '#71717a' },
+                { label: 'Avg W', val: avgW !== '—' ? `+$${avgW}` : '—', color: '#71717a' },
+                { label: 'Avg L', val: avgL !== '—' ? `-$${avgL}` : '—', color: '#71717a' },
               ].map(({ label, val, color }) => (
                 <div key={label} style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: 8, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>{label}</div>
@@ -286,8 +286,8 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
                 <AreaChart data={filteredHistory} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}>
                   <defs>
                     <linearGradient id="eqGlow" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor={pnlColor} stopOpacity={0.22} />
-                      <stop offset="95%" stopColor={pnlColor} stopOpacity={0.0} />
+                      <stop offset="5%"  stopColor="#71717a" stopOpacity={0.20} />
+                      <stop offset="95%" stopColor="#71717a" stopOpacity={0.0} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" vertical={false} />
@@ -303,7 +303,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
                     tickFormatter={v => `$${v.toFixed(0)}`}
                     tick={{ fill: '#3f3f46', fontSize: 9 }} axisLine={false} tickLine={false} />
                   <Tooltip content={<TooltipContent />} />
-                  <Area type="monotone" dataKey="balance" stroke={pnlColor} strokeWidth={2}
+                  <Area type="monotone" dataKey="balance" stroke="#52525b" strokeWidth={2}
                     fillOpacity={1} fill="url(#eqGlow)" isAnimationActive={false} />
                 </AreaChart>
               </ResponsiveContainer>
@@ -329,8 +329,8 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
                     <Tooltip formatter={(v, n) => [`${(v*100).toFixed(1)}%`, n]}
                       contentStyle={{ background: 'rgba(12,12,14,0.96)', border: '1px solid #27272a', borderRadius: 8, fontSize: 11 }} />
                     <Legend wrapperStyle={{ fontSize: 9, color: '#52525b', paddingTop: 8 }} iconSize={7} />
-                    <ReferenceLine y={0.62} stroke="rgba(43,127,255,0.35)" strokeDasharray="4 3" label={{ value: 'Edge 62%', fill: '#2b7fff', fontSize: 8 }} />
-                    <ReferenceLine y={0.50} stroke="rgba(249,115,22,0.35)" strokeDasharray="4 3" label={{ value: 'Breakeven', fill: '#f97316', fontSize: 8 }} />
+                    <ReferenceLine y={0.62} stroke="rgba(255,255,255,0.25)" strokeDasharray="4 3" label={{ value: 'Edge 62%', fill: '#a1a1aa', fontSize: 8 }} />
+                    <ReferenceLine y={0.50} stroke="rgba(113,113,122,0.25)" strokeDasharray="4 3" label={{ value: 'Breakeven', fill: '#71717a', fontSize: 8 }} />
                     {ASSETS.map(key => (
                       <Line key={key} type="monotone" dataKey={key} stroke={ASSET_COLORS[key]}
                         strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />

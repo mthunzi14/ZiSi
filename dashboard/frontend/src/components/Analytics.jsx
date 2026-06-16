@@ -687,11 +687,11 @@ function LogViewer() {
             onClick={() => setCollapsed(c => !c)}
             style={{
               display: 'flex', alignItems: 'center', gap: 5,
-              background: collapsed ? 'rgba(0,203,214,0.1)' : 'rgba(255,255,255,0.04)',
-              border: `1px solid ${collapsed ? 'rgba(0,203,214,0.35)' : 'rgba(255,255,255,0.08)'}`,
+              background: collapsed ? 'rgba(113,113,122,0.1)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${collapsed ? 'rgba(113,113,122,0.35)' : 'rgba(255,255,255,0.08)'}`,
               borderRadius: 8, padding: '5px 11px', cursor: 'pointer',
               fontSize: 10, fontWeight: 700,
-              color: collapsed ? '#00cbd6' : '#a1a1aa',
+              color: collapsed ? '#71717a' : '#a1a1aa',
               transition: 'all 0.2s',
             }}
           >

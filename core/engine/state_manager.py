@@ -6,72 +6,179 @@ Saves account balance to disk so it survives restarts.
 import json
 import logging
 import threading
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional, Tuple
 
 log = logging.getLogger("zisi.state")
 
 _STATE_FILE       = Path(__file__).parent.parent.parent / "data" / "account_state.json"
 _POSITIONS_FILE   = Path(__file__).parent.parent.parent / "data" / "positions_state.json"
 _DEFAULT_BALANCE  = 50.0
-_lock             = threading.Lock()
-GLOBAL_POSITIONS_LOCK = threading.Lock()
+
+# ── Hybrid Sync/Async Lock for Thread-Safe/Async Concurrency ──────────────────
+class AsyncThreadSafeLock:
+    def __init__(self):
+        self._async_lock = asyncio.Lock()
+        self._sync_lock = threading.Lock()
+
+    async def acquire(self):
+        await self._async_lock.acquire()
+        self._sync_lock.acquire()
+
+    def release(self):
+        self._sync_lock.release()
+        self._async_lock.release()
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self.release()
+
+    def __enter__(self):
+        self._sync_lock.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._sync_lock.release()
+
+# Global locks
+_lock = asyncio.Lock()
+GLOBAL_POSITIONS_LOCK = AsyncThreadSafeLock()
+
+# ── In-Memory RAM State Cache ────────────────────────────────────────────────
+_STATE_RAM = {
+    "balance": _DEFAULT_BALANCE,
+    "starting_balance": _DEFAULT_BALANCE,
+    "pnl": 0.0,
+    "trades_executed": 0,
+    "paused": False,
+    "active_positions": [],
+    "closed_positions": [],
+    "last_updated": "",
+    "last_change_reason": ""
+}
+
+# Legacy module-level variables (kept synchronized)
 _balance: float          = _DEFAULT_BALANCE
 _starting_balance: float = _DEFAULT_BALANCE
 
+# Positions file change tracking
+_last_positions_load_time = 0.0
+_last_positions_mtime = 0.0
 
-def _read_starting_balance() -> float:
+async def _ensure_positions_loaded() -> None:
+    """Ensure in-memory position state is fresh compared to disk modifications."""
+    global _last_positions_load_time, _last_positions_mtime
+    import time
+    now = time.time()
+    
+    # Throttle stat check to twice per second to prevent event loop delay
+    if now - _last_positions_load_time < 0.5:
+        return
+        
+    try:
+        if _POSITIONS_FILE.exists():
+            mtime = _POSITIONS_FILE.stat().st_mtime
+            if mtime != _last_positions_mtime:
+                import aiofiles
+                async with GLOBAL_POSITIONS_LOCK:
+                    async with aiofiles.open(_POSITIONS_FILE, mode='r', encoding='utf-8') as f:
+                        content = await f.read()
+                    pos = json.loads(content)
+                _STATE_RAM["active_positions"] = pos.get("active", [])
+                _STATE_RAM["closed_positions"] = pos.get("closed", [])
+                _last_positions_mtime = mtime
+                
+                # Derive balance from active/closed realized pnl
+                summary = pos.get("summary") or {}
+                realized_pnl = float(summary.get("realized_pnl", 0) or 0)
+                _STATE_RAM["balance"] = round(_STATE_RAM["starting_balance"] + realized_pnl, 2)
+    except Exception as exc:
+        log.warning("[STATE] Failed to check/reload positions: %s", exc)
+    _last_positions_load_time = now
+
+
+async def _read_starting_balance() -> float:
     """Read starting_balance from account_state.json, fall back to _DEFAULT_BALANCE."""
     try:
         if _STATE_FILE.exists():
-            data = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+            import aiofiles
+            async with aiofiles.open(_STATE_FILE, mode='r', encoding='utf-8') as f:
+                content = await f.read()
+            data = json.loads(content)
             return float(data.get("starting_balance", _DEFAULT_BALANCE))
     except Exception:
         pass
     return _DEFAULT_BALANCE
 
 
-def _balance_from_positions() -> float | None:
+async def _balance_from_positions() -> float | None:
     """
     Derive the correct account balance from positions_state.json.
     Returns None if the file is missing or unreadable.
-    Always reads starting_balance from disk so clean_slate resets are respected
-    even when called before initialize_state() sets the module-level variable.
     """
     if not _POSITIONS_FILE.exists():
         return None
     try:
-        with GLOBAL_POSITIONS_LOCK:
-            pos     = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
+        import aiofiles
+        async with GLOBAL_POSITIONS_LOCK:
+            async with aiofiles.open(_POSITIONS_FILE, mode='r', encoding='utf-8') as f:
+                content = await f.read()
+            pos = json.loads(content)
         summary = pos.get("summary") or {}
         realized_pnl = float(summary.get("realized_pnl", 0) or 0)
-        starting = _read_starting_balance()
+        starting = await _read_starting_balance()
         return round(starting + realized_pnl, 2)
     except Exception:
         return None
 
 
-
-def initialize_state() -> float:
+async def initialize_state() -> float:
     """Load account balance from disk, then reconcile with positions_state.json."""
     global _balance, _starting_balance
-    with _lock:
+    async with _lock:
         disk_balance = _DEFAULT_BALANCE
         if _STATE_FILE.exists():
             try:
-                data = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+                import aiofiles
+                async with aiofiles.open(_STATE_FILE, mode='r', encoding='utf-8') as f:
+                    content = await f.read()
+                data = json.loads(content)
                 disk_balance = float(data["balance"])
                 _starting_balance = float(data.get("starting_balance", _DEFAULT_BALANCE))
+                
+                # Update RAM state
+                _STATE_RAM["balance"] = disk_balance
+                _STATE_RAM["starting_balance"] = _starting_balance
+                _STATE_RAM["pnl"] = float(data.get("pnl", 0.0))
+                _STATE_RAM["trades_executed"] = int(data.get("trades_executed", 0))
+                _STATE_RAM["paused"] = bool(data.get("paused", False))
+                _STATE_RAM["last_updated"] = data.get("last_updated", "")
+                _STATE_RAM["last_change_reason"] = data.get("last_change_reason", "")
             except (KeyError, ValueError, json.JSONDecodeError, OSError) as exc:
                 log.warning(
                     "Corrupted state file (%s) — resetting to default $%.2f",
                     exc, _DEFAULT_BALANCE,
                 )
 
-        # Always reconcile against positions_state.json — it is the authoritative
-        # source of truth. If the disk value diverges by more than 5%, use the
-        # positions-computed value to prevent drift from removed markets (e.g. Kalshi).
-        computed = _balance_from_positions()
+        # Load positions
+        if _POSITIONS_FILE.exists():
+            try:
+                import aiofiles
+                async with GLOBAL_POSITIONS_LOCK:
+                    async with aiofiles.open(_POSITIONS_FILE, mode='r', encoding='utf-8') as f:
+                        content = await f.read()
+                    pos = json.loads(content)
+                _STATE_RAM["active_positions"] = pos.get("active", [])
+                _STATE_RAM["closed_positions"] = pos.get("closed", [])
+            except Exception as exc:
+                log.warning("Failed to load positions on init: %s", exc)
+
+        computed = await _balance_from_positions()
         if computed is not None:
             gap_pct = abs(disk_balance - computed) / max(1.0, abs(computed))
             if gap_pct > 0.05:
@@ -80,89 +187,90 @@ def initialize_state() -> float:
                     "(%.1f%% gap) — using positions value",
                     disk_balance, computed, gap_pct * 100,
                 )
-                _balance = computed
+                _STATE_RAM["balance"] = computed
             else:
-                _balance = disk_balance
+                _STATE_RAM["balance"] = disk_balance
         else:
-            _balance = disk_balance
+            _STATE_RAM["balance"] = disk_balance
 
-        _write_state("Initialized — reconciled with positions_state")
-        log.info("Account state initialized: $%.2f", _balance)
-        return _balance
+        _balance = _STATE_RAM["balance"]
+        _starting_balance = _STATE_RAM["starting_balance"]
+
+        await _write_state("Initialized — reconciled with positions_state")
+        log.info("Account state initialized: $%.2f", _STATE_RAM["balance"])
+        return _STATE_RAM["balance"]
 
 
-def update_balance(new_balance: float, reason: str = "") -> None:
+async def update_balance(new_balance: float, reason: str = "") -> None:
     """Save updated balance to disk and update in-memory value."""
     global _balance
-    with _lock:
-        _balance = round(new_balance, 2)
-        _write_state(reason)
+    async with _lock:
+        _STATE_RAM["balance"] = round(new_balance, 2)
+        _balance = _STATE_RAM["balance"]
+        await _write_state(reason)
     log.info(
         "Account balance updated: $%.2f%s",
-        _balance, f" ({reason})" if reason else "",
+        _STATE_RAM["balance"], f" ({reason})" if reason else "",
     )
 
 
 def get_current_balance() -> float:
-    """Return the authoritative balance derived from positions_state.json.
-
-    Falls back to the in-memory value only if positions_state.json is unavailable.
-    This prevents any caller from seeing the stale accumulated value.
-    """
-    computed = _balance_from_positions()
-    return computed if computed is not None else _balance
+    """Return the authoritative balance from RAM state instantly."""
+    return _STATE_RAM["balance"]
 
 
-def reset_account(to_amount: float = 100.0) -> None:
+async def reset_account(to_amount: float = 100.0) -> None:
     """Reset account to specified amount (emergency use only)."""
     global _balance
-    with _lock:
-        _balance = round(to_amount, 2)
-        _write_state("Manual account reset")
-    log.warning("ACCOUNT RESET TO $%.2f", _balance)
+    async with _lock:
+        _STATE_RAM["balance"] = round(to_amount, 2)
+        _balance = _STATE_RAM["balance"]
+        await _write_state("Manual account reset")
+    log.warning("ACCOUNT RESET TO $%.2f", _STATE_RAM["balance"])
 
 
-def update_heartbeat(trades_executed: int = 0, paused: bool = False, reason: str = "heartbeat") -> None:
+async def update_heartbeat(trades_executed: int = 0, paused: bool = False, reason: str = "heartbeat") -> None:
     """Write timestamp every bot cycle so the dashboard can detect liveness."""
     global _balance
-    with _lock:
+    async with _lock:
         existing: dict = {}
+        import aiofiles
         if _STATE_FILE.exists():
             try:
-                existing = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+                async with aiofiles.open(_STATE_FILE, mode='r', encoding='utf-8') as f:
+                    existing = json.loads(await f.read())
             except Exception:
                 pass
         starting = float(existing.get("starting_balance", _DEFAULT_BALANCE))
 
-        # Always derive from positions_state.json — prevents stale in-memory drift
-        computed = _balance_from_positions()
+        computed = await _balance_from_positions()
         if computed is not None:
+            _STATE_RAM["balance"] = computed
             _balance = computed
 
-        existing["balance"]             = _balance
-        existing["pnl"]                 = round(_balance - starting, 2)
+        _STATE_RAM["trades_executed"] = trades_executed
+        _STATE_RAM["paused"] = paused
+        _STATE_RAM["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _STATE_RAM["last_change_reason"] = reason
+
+        existing["balance"]             = _STATE_RAM["balance"]
+        existing["pnl"]                 = round(_STATE_RAM["balance"] - starting, 2)
         existing["trades_executed"]     = trades_executed
         existing["paused"]              = paused
-        existing["last_updated"]        = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        existing["last_updated"]        = _STATE_RAM["last_updated"]
         existing["last_change_reason"]  = reason
-        import os
+        
         tmp_file = _STATE_FILE.with_suffix(".tmp")
-        tmp_file.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        async with aiofiles.open(tmp_file, mode='w', encoding='utf-8') as f:
+            await f.write(json.dumps(existing, indent=2))
+        import os
         os.replace(tmp_file, _STATE_FILE)
-        _record_history(_balance, round(_balance - starting, 2))
+        _record_history(_STATE_RAM["balance"], round(_STATE_RAM["balance"] - starting, 2))
 
 
 def get_progress_toward_phase2() -> dict:
-    """Return trade collection progress (20 trades = logistic regression upgrade threshold)."""
-    if _STATE_FILE.exists():
-        try:
-            data = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
-            trades = int(data.get("trades_executed", 0))
-        except Exception:
-            trades = 0
-    else:
-        trades = 0
-
+    """Return trade collection progress from RAM (20 trades = logistic regression upgrade threshold)."""
+    trades = _STATE_RAM["trades_executed"]
     return {
         "trades_collected": trades,
         "trades_needed": 20,
@@ -174,12 +282,7 @@ def get_progress_toward_phase2() -> dict:
 
 def _get_trades_count() -> int:
     try:
-        if not _POSITIONS_FILE.exists():
-            return 0
-        with GLOBAL_POSITIONS_LOCK:
-            pos = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
-        summary = pos.get("summary") or {}
-        return int(summary.get("closed_count", 0))
+        return len(_STATE_RAM["closed_positions"])
     except Exception:
         return 0
 
@@ -187,7 +290,6 @@ def _get_trades_count() -> int:
 def _record_history(balance: float, pnl: float) -> None:
     try:
         import sys
-        import os
         from pathlib import Path
         root = Path(__file__).parent.parent.parent
         sys.path.insert(0, str(root))
@@ -198,32 +300,102 @@ def _record_history(balance: float, pnl: float) -> None:
         log.warning("[STATE] Failed to record balance history: %s", e)
 
 
-def _write_state(reason: str = "") -> None:
+async def _write_state(reason: str = "") -> None:
     global _balance
-    # Merge with existing file so we never lose fields written by other functions
     existing: dict = {}
+    import aiofiles
     if _STATE_FILE.exists():
         try:
-            existing = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+            async with aiofiles.open(_STATE_FILE, mode='r', encoding='utf-8') as f:
+                existing = json.loads(await f.read())
         except Exception:
             pass
     starting = float(existing.get("starting_balance", _starting_balance))
 
-    # Derive balance from positions_state.json (single source of truth).
-    # Keeps disk in sync even if _balance drifted due to a removed market.
-    computed = _balance_from_positions()
+    computed = await _balance_from_positions()
     if computed is not None:
-        _balance = computed   # keep in-memory value authoritative too
+        _STATE_RAM["balance"] = computed
+        _balance = computed
 
-    existing["balance"] = _balance
-    existing["pnl"]     = round(_balance - starting, 2)
+    existing["balance"] = _STATE_RAM["balance"]
+    existing["pnl"]     = round(_STATE_RAM["balance"] - starting, 2)
     existing["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     existing["last_change_reason"] = reason
-    import os
+    
     tmp_file = _STATE_FILE.with_suffix(".tmp")
-    tmp_file.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    async with aiofiles.open(tmp_file, mode='w', encoding='utf-8') as f:
+        await f.write(json.dumps(existing, indent=2))
+    import os
     os.replace(tmp_file, _STATE_FILE)
-    _record_history(_balance, round(_balance - starting, 2))
+    _record_history(_STATE_RAM["balance"], round(_STATE_RAM["balance"] - starting, 2))
+
+
+# ── Fire-and-forget background synchronization helper ────────────────────────
+async def _bg_sync_state_to_disk(reason: str) -> None:
+    try:
+        await _write_state(reason)
+    except Exception as e:
+        log.warning("[STATE] Background write state failed: %s", e)
+
+
+# ── HFT STATE FIREWALL RESYNC ───────────────────────────────────────────────
+async def check_and_reserve_capital(
+    asset: str,
+    timeframe: str,
+    size_requested: float,
+    max_total_open: int,
+    max_open_per_asset: int
+) -> Tuple[bool, float]:
+    """Atomically validates and reserves margin capital under GLOBAL_POSITIONS_LOCK."""
+    # Step 1: Calculate in-flight counts BEFORE acquiring locks to avoid latency bottlenecks
+    from core.engine.session_governor import get_in_flight_count_internal
+    in_flight_total, in_flight_asset = await get_in_flight_count_internal(asset)
+
+    # Step 2: Acquire locks
+    async with GLOBAL_POSITIONS_LOCK:
+        async with _lock:
+            # Sync cache if changes occurred on disk
+            await _ensure_positions_loaded()
+
+            positions = _STATE_RAM["active_positions"]
+            total_open = len(positions)
+
+            effective_total = total_open + in_flight_total
+            if effective_total >= max_total_open:
+                return False, 0.0
+
+            # Count open positions for this specific asset
+            import re
+            asset_upper = asset.upper()
+            asset_open = 0
+            for p in positions:
+                t = p.get("event_title") or ""
+                p_asset = p.get("asset") or ""
+                if not p_asset:
+                    m = re.search(r"\[(BTC|ETH|SOL|XRP|DOGE|ADA|AVAX|SUI)\]", t, re.IGNORECASE)
+                    p_asset = m.group(1).upper() if m else ""
+                if p_asset.upper() == asset_upper:
+                    asset_open += 1
+
+            effective_asset = asset_open + in_flight_asset
+            if effective_asset >= max_open_per_asset:
+                return False, 0.0
+
+            balance = _STATE_RAM["balance"]
+            if size_requested > balance:
+                return False, 0.0
+
+            # Reserve balance instantly in RAM
+            _STATE_RAM["balance"] = round(balance - size_requested, 2)
+            global _balance
+            _balance = _STATE_RAM["balance"]
+            
+            _STATE_RAM["last_change_reason"] = f"Reserved capital for {asset_upper} {timeframe}"
+
+            # Step 3: Trigger fire-and-forget task to sync state on disk asynchronously
+            asyncio.create_task(_bg_sync_state_to_disk(_STATE_RAM["last_change_reason"]))
+
+            return True, size_requested
 
 
 # ── Runtime tracking ─────────────────────────────────────────────────────────
@@ -307,45 +479,24 @@ def get_runtime_summary() -> dict | None:
         return None
 
 
-# ── Reconciliation helpers ────────────────────────────────────────────────────
+# ── Reconciliation helpers (RAM caching reads) ────────────────────────────────
 
 def get_open_positions() -> list:
-    """Return all active (open) positions from positions_state.json."""
-    if not _POSITIONS_FILE.exists():
-        return []
-    try:
-        with GLOBAL_POSITIONS_LOCK:
-            data = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
-        return data.get("active", [])
-    except Exception:
-        return []
+    """Return all active (open) positions from RAM state cache."""
+    return _STATE_RAM["active_positions"]
 
 
 def get_closed_positions(limit: int | None = None) -> list:
-    """Return closed positions from positions_state.json, newest first."""
-    if not _POSITIONS_FILE.exists():
-        return []
-    try:
-        with GLOBAL_POSITIONS_LOCK:
-            data = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
-        closed = data.get("closed", [])
-        return closed[:limit] if limit is not None else closed
-    except Exception:
-        return []
+    """Return closed positions from RAM state cache, newest first."""
+    closed = _STATE_RAM["closed_positions"]
+    return closed[:limit] if limit is not None else closed
 
 
 def is_confirmed(position_id: str) -> bool:
     """Return True if this position has been confirmed (marked filled)."""
-    if not _POSITIONS_FILE.exists():
-        return False
-    try:
-        with GLOBAL_POSITIONS_LOCK:
-            data = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
-        for pos in data.get("active", []):
-            if pos.get("id") == position_id or pos.get("order_id") == position_id:
-                return bool(pos.get("confirmed", False))
-    except Exception:
-        pass
+    for pos in _STATE_RAM["active_positions"]:
+        if pos.get("id") == position_id or pos.get("order_id") == position_id:
+            return bool(pos.get("confirmed", False))
     return False
 
 
@@ -364,27 +515,32 @@ def force_confirm(position: dict) -> None:
             tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
             import os as _os
             _os.replace(tmp_path, _POSITIONS_FILE)
+            
+            # Sync in-memory RAM copy
+            _STATE_RAM["active_positions"] = data.get("active", [])
+            _STATE_RAM["closed_positions"] = data.get("closed", [])
     except Exception as exc:
         log.warning("[STATE] force_confirm failed: %s", exc)
 
 
-def cleanup_expired_positions() -> int:
+async def cleanup_expired_positions() -> int:
     """
     Move open positions whose expiry_ts passed more than 90 seconds ago to the
     closed list with an estimated outcome (entry ≥ 0.90 → WIN, else LOSS).
     Returns count of cleaned positions.
     """
     import time as _time
-    from datetime import timezone
+    import aiofiles
     now = _time.time()
     cutoff = now - 90.0
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    with GLOBAL_POSITIONS_LOCK:
+    async with GLOBAL_POSITIONS_LOCK:
         if not _POSITIONS_FILE.exists():
             return 0
         try:
-            data = json.loads(_POSITIONS_FILE.read_text(encoding="utf-8"))
+            async with aiofiles.open(_POSITIONS_FILE, mode='r', encoding='utf-8') as f:
+                data = json.loads(await f.read())
         except Exception:
             return 0
 
@@ -445,13 +601,17 @@ def cleanup_expired_positions() -> int:
 
         try:
             tmp_path = _POSITIONS_FILE.with_suffix(".tmp")
-            tmp_path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+            async with aiofiles.open(tmp_path, mode='w', encoding='utf-8') as f:
+                await f.write(json.dumps(data, indent=2, default=str))
             import os as _os
             _os.replace(tmp_path, _POSITIONS_FILE)
         except Exception as exc:
             log.warning("[STATE] Failed to save cleanup state atomically: %s", exc)
-            _POSITIONS_FILE.write_text(
-                json.dumps(data, indent=2, default=str),
-                encoding="utf-8",
-            )
+            async with aiofiles.open(_POSITIONS_FILE, mode='w', encoding='utf-8') as f:
+                await f.write(json.dumps(data, indent=2, default=str))
+        
+        # Sync RAM
+        _STATE_RAM["active_positions"] = survivors
+        _STATE_RAM["closed_positions"] = closed_list[:300]
+        
         return len(zombies)

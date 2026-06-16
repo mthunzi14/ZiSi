@@ -175,6 +175,9 @@ def _json_default(obj):
     return str(obj)
 
 
+import threading
+_LOGGER_FILE_LOCK = threading.Lock()
+
 def _log_locally(data: dict) -> None:
     """Fallback: append JSON line to local file, or route to stdout logger under ZERO_DISK_LOGGING."""
     cfg = load_config()
@@ -182,8 +185,9 @@ def _log_locally(data: dict) -> None:
         logging.getLogger("zisi.local_trades").info(data)
         return
     try:
-        with _LOCAL_LOG.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(data, default=_json_default) + "\n")
+        with _LOGGER_FILE_LOCK:
+            with _LOCAL_LOG.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(data, default=_json_default) + "\n")
     except Exception as exc:
         log.error("Local log write failed: %s", exc)
 

@@ -868,24 +868,40 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             # Primary: 0.85→0.70 (less certainty needed to trigger) + 0.002→0.001 (smaller move).
             # Secondary (half-size): kept at 0.60 with slightly relaxed move threshold 0.003→0.002.
             # More opportunities surface while size discipline prevents overexposure.
+            _th1 = -0.000069 if timeframe == "5m" else -0.001
+            _th2 = 0.000069 if timeframe == "5m" else 0.001
+            _th3 = -0.000069 if timeframe == "5m" else -0.002
+            _th4 = 0.000069 if timeframe == "5m" else 0.002
+
             _snipe_size_mult = 1.0
-            if up_price >= 0.70 and dn_price <= 0.30 and pct_move <= -0.001:
+            if up_price >= 0.70 and dn_price <= 0.30 and pct_move <= _th1:
                 snipe_direction = "DOWN"
                 snipe_price = dn_price
-            elif dn_price >= 0.70 and up_price <= 0.30 and pct_move >= 0.001:
+            elif dn_price >= 0.70 and up_price <= 0.30 and pct_move >= _th2:
                 snipe_direction = "UP"
                 snipe_price = up_price
-            elif up_price >= 0.60 and dn_price <= 0.40 and pct_move <= -0.002:
+            elif up_price >= 0.60 and dn_price <= 0.40 and pct_move <= _th3:
                 snipe_direction = "DOWN"
                 snipe_price = dn_price
                 _snipe_size_mult = 0.5
-            elif dn_price >= 0.60 and up_price <= 0.40 and pct_move >= 0.002:
+            elif dn_price >= 0.60 and up_price <= 0.40 and pct_move >= _th4:
                 snipe_direction = "UP"
                 snipe_price = up_price
                 _snipe_size_mult = 0.5
 
             if not snipe_direction:
                 return
+
+            # Require aligned order-flow imbalance
+            from core.engine.updown_engine import get_current_ofi
+            ofi = await get_current_ofi(asset)
+            if ofi is not None:
+                if snipe_direction == "UP" and ofi <= 0:
+                    log.info("[REVERSAL-SNIPE] Aborted %s/%s: UP signal but OFI is not aligned (ofi=%.4f)", asset, timeframe, ofi)
+                    return
+                elif snipe_direction == "DOWN" and ofi >= 0:
+                    log.info("[REVERSAL-SNIPE] Aborted %s/%s: DOWN signal but OFI is not aligned (ofi=%.4f)", asset, timeframe, ofi)
+                    return
 
             # Skip if already in this market for REVERSAL-SNIPE
             import core.engine.state_manager as state_mgr
@@ -900,8 +916,8 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
 
             from core.engine.state_manager import get_current_balance
             balance = get_current_balance()
-            # Dynamic fractional size with a $1.50 floor to prevent silents rejections
-            usd_size = max(1.50, min(balance * 0.005, 5.0)) * _snipe_size_mult  # $1.50 floor clears Polymarket $1 CLOB minimum
+            # Dynamic fractional size with a $1.50 floor and balance * 0.10 ceiling
+            usd_size = max(1.50, min(balance * 0.005, balance * 0.10)) * _snipe_size_mult  # $1.50 floor clears Polymarket $1 CLOB minimum
 
             market_id = market["dn_market"]["id"] if snipe_direction == "DOWN" else market["up_market"]["id"]
 
@@ -942,8 +958,8 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
                 next_close = ((int(now) // interval_secs) + 1) * interval_secs
                 time_left = next_close - now
 
-                # T-90s to T-45s window
-                if 45.0 <= time_left <= 90.0:
+                # T-90s to T-45s window (exempting 5m which runs instantly)
+                if (45.0 <= time_left <= 90.0) or (timeframe == "5m"):
                     if last_scanned.get((asset, timeframe)) == next_close:
                         continue
                     last_scanned[(asset, timeframe)] = next_close

@@ -1,5 +1,6 @@
 import express from 'express';
 import fs from 'fs';
+import { promises as fsPromises } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { readTradesFile } from '../utils/fileReader.js';
@@ -7,14 +8,118 @@ import { readTradesFile } from '../utils/fileReader.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
 
-const readJSON = (fp) => JSON.parse(fs.readFileSync(fp, 'utf-8').replace(/^﻿/, ''));
-
-router.get('/', (req, res) => {
+// Helper to safely read JSON files asynchronously
+async function readJSONAsync(fp) {
   try {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    const data = await fsPromises.readFile(fp, 'utf-8');
+    return JSON.parse(data.replace(/^\uFEFF/, ''));
+  } catch (err) {
+    throw err;
+  }
+}
+
+// Global cached health response
+let cachedHealthResponse = {
+  status: 'offline',
+  running: false,
+  balance: 50.00,
+  account_balance: 50.00,
+  pnl: 0,
+  realTrades: 0,
+  totalSignals: 0,
+  dailySignals: 0,
+  dailyTrades: 0,
+  dailyPnL: 0,
+  winRate: 0,
+  byCoin: [],
+  byStrength: [],
+  minutesAgo: null,
+  last_update_minutes_ago: null,
+  tradesExecuted: 0,
+  trades_executed: 0,
+  phase: 'phase_1',
+  cycles_completed: 0,
+  runtime: { hours: 0, days: 0, progressPercent: 0, goalHours: 336, status: 'tracking', start_time: null },
+  error: 'Cache not primed'
+};
+
+// yieldToEventLoop to break up heavy array processing
+const yieldToEventLoop = () => new Promise(resolve => setImmediate(resolve));
+
+// Helper function to read trades asynchronously
+async function readTradesFileAsync() {
+  try {
+    const filePath = path.join(__dirname, '../../../data/zisi_local_trades.jsonl');
+    try {
+      await fsPromises.access(filePath);
+    } catch {
+      return [];
+    }
+
+    const content = await fsPromises.readFile(filePath, 'utf-8');
+    const lines = content.split('\n');
+    const trades = [];
+    
+    // Process in batches yielding to the event loop
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0 && i % 200 === 0) {
+        await yieldToEventLoop();
+      }
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        const raw = JSON.parse(line);
+        if (raw.type === 'signal' && Array.isArray(raw.row)) {
+          const [ts, source, headline, sentiment, score, reasoning, coins, price, status] = raw.row;
+          trades.push({
+            order_id: `sig_${ts}_${Math.random().toString(36).slice(2, 7)}`,
+            event_title: headline,
+            source,
+            sentiment,
+            signal_confidence: parseInt(score) || 7,
+            reasoning,
+            coins_mentioned: coins,
+            entry_price: parseFloat(price) || 0,
+            exit_price: 0,
+            profit: 0,
+            profit_percent: 0,
+            status: status || 'SIGNAL',
+            timestamp_open: ts,
+            timestamp: ts,
+            _type: 'signal'
+          });
+        } else {
+          trades.push({ ...raw, timestamp: raw.timestamp_open || raw.timestamp, _type: 'trade' });
+        }
+      } catch (e) {
+        // ignore parse error
+      }
+    }
+    return trades;
+  } catch (error) {
+    print("Error reading trades async:", error)
+    return [];
+  }
+}
+
+// Background worker to update health cache
+let _updatingCache = false;
+async function updateHealthCache() {
+  if (_updatingCache) return;
+  _updatingCache = true;
+
+  try {
     const stateFile = path.join(__dirname, '../../../data/account_state.json');
     const runtimeFile = path.join(__dirname, '../../../data/runtime_tracking.json');
     const pauseFlag = path.join(__dirname, '../../../bot_paused.flag');
+    const evalFile = path.join(__dirname, '../../../../signal_evaluations.jsonl');
+    const mlFile = path.join(__dirname, '../../../../ml_progress.json');
+    const edgeFile = path.join(__dirname, '../../../../edge_status.json');
+    const regimeFile = path.join(__dirname, '../../../../regime_status.json');
+    const posFile = path.join(__dirname, '../../../data/positions_state.json');
+    const clFile = path.join(__dirname, '../../../../chainlink_prices.json');
+    const pythFile = path.join(__dirname, '../../../../pyth_prices.json');
+    const mfFile = path.join(__dirname, '../../../../macro_context.json');
 
     const defaultRuntime = {
       hours: 0,
@@ -25,8 +130,14 @@ router.get('/', (req, res) => {
       start_time: null,
     };
 
-    if (!fs.existsSync(stateFile)) {
-      return res.json({
+    let stateExists = false;
+    try {
+      await fsPromises.access(stateFile);
+      stateExists = true;
+    } catch {}
+
+    if (!stateExists) {
+      cachedHealthResponse = {
         status: 'offline',
         running: false,
         balance: 50.00,
@@ -48,16 +159,24 @@ router.get('/', (req, res) => {
         cycles_completed: 0,
         runtime: defaultRuntime,
         error: 'State file not found',
-      });
+      };
+      _updatingCache = false;
+      return;
     }
 
-    const state = readJSON(stateFile);
+    const state = await readJSONAsync(stateFile);
     const lastUpdate = new Date(state.last_updated);
     const now = new Date();
     const minutesAgo = Math.floor((now - lastUpdate) / 60000);
 
+    let isPaused = false;
+    try {
+      await fsPromises.access(pauseFlag);
+      isPaused = true;
+    } catch {}
+
     let status;
-    if (fs.existsSync(pauseFlag) || state.paused) {
+    if (isPaused || state.paused) {
       status = 'paused';
     } else if (minutesAgo < 45) {
       status = 'running';
@@ -73,21 +192,20 @@ router.get('/', (req, res) => {
 
     // Runtime tracking
     let runtime = defaultRuntime;
-    if (fs.existsSync(runtimeFile)) {
-      try {
-        const rt = readJSON(runtimeFile);
-        const hours = rt.runtime_hours || 0;
-        runtime = {
-          hours: Math.round(hours * 10) / 10,
-          days: Math.floor(hours / 24),
-          progressPercent: rt.progress_percent || 0,
-          goalHours: rt.goal_hours || 336,
-          status: rt.status || 'tracking',
-          start_time: rt.start_time || null,
-        };
-      } catch (rtErr) {
-        console.warn('[HEALTH] Could not parse runtime_tracking.json:', rtErr.message);
-      }
+    try {
+      await fsPromises.access(runtimeFile);
+      const rt = await readJSONAsync(runtimeFile);
+      const hours = rt.runtime_hours || 0;
+      runtime = {
+        hours: Math.round(hours * 10) / 10,
+        days: Math.floor(hours / 24),
+        progressPercent: rt.progress_percent || 0,
+        goalHours: rt.goal_hours || 336,
+        status: rt.status || 'tracking',
+        start_time: rt.start_time || null,
+      };
+    } catch (rtErr) {
+      // ignore
     }
 
     // Signal and trade analytics from trades file
@@ -109,7 +227,7 @@ router.get('/', (req, res) => {
     let expectancy = 0;
 
     try {
-      const allEntries = readTradesFile();
+      const allEntries = await readTradesFileAsync();
       const signals = allEntries.filter(e => e._type === 'signal');
       const trades = allEntries.filter(e =>
         e._type === 'trade' && !e.order_id?.toLowerCase().includes('test')
@@ -212,7 +330,7 @@ router.get('/', (req, res) => {
       console.warn('[HEALTH] Could not compute analytics:', analyticsErr.message);
     }
 
-    // ── Signal metrics from signal_evaluations.jsonl (the real data source) ──
+    // Missed trades / evaluations
     let missedTrades = 0;
     let missedWinRate = 0;
     let missedPnL = 0;
@@ -228,18 +346,26 @@ router.get('/', (req, res) => {
     const PEAK_HOURS = new Set([22, 23, 0, 1, 2, 3, 4, 5]);
 
     try {
-      const evalFile = path.join(__dirname, '../../../../signal_evaluations.jsonl');
-      if (fs.existsSync(evalFile)) {
-        const evalLines = fs.readFileSync(evalFile, 'utf-8')
-          .split('\n')
-          .filter(l => l.trim());
+      let evalExists = false;
+      try {
+        await fsPromises.access(evalFile);
+        evalExists = true;
+      } catch {}
 
-        const allEvals = evalLines
-          .map(l => { try { return JSON.parse(l); } catch { return null; } })
-          .filter(Boolean);
+      if (evalExists) {
+        const evalContent = await fsPromises.readFile(evalFile, 'utf-8');
+        const evalLines = evalContent.split('\n').filter(l => l.trim());
+        const allEvals = [];
+        
+        for (let i = 0; i < evalLines.length; i++) {
+          if (i > 0 && i % 200 === 0) {
+            await yieldToEventLoop();
+          }
+          try {
+            allEvals.push(JSON.parse(evalLines[i]));
+          } catch {}
+        }
 
-        // Count ONLY current-session Kalshi trades (have an order_id = new lifecycle format).
-        // Records without order_id are the 592 pre-fix orphaned sports entries — ignore them.
         kalshi_trades_recorded = allEvals.filter(
           e => e.type === 'KALSHI_TRADE' && e.order_id
         ).length;
@@ -247,34 +373,32 @@ router.get('/', (req, res) => {
         signals_evaluated = nonKalshiEvals.length;
 
         let confSum = 0;
-        for (const e of nonKalshiEvals) {
-          // Confidence: sentiment_score and confidence may be 0-10 or 0-1
+        for (let i = 0; i < nonKalshiEvals.length; i++) {
+          if (i > 0 && i % 200 === 0) {
+            await yieldToEventLoop();
+          }
+          const e = nonKalshiEvals[i];
           const rawConf = e.signal_source === 'EnsembleML' 
             ? ((e.sentiment_score > 1 ? e.sentiment_score / 10 : e.sentiment_score) || (e.confidence > 1 ? e.confidence / 10 : e.confidence) || 0)
             : ((e.sentiment_score || e.confidence || 0) / 10);
           confSum += rawConf;
 
-          // Sentiment distribution
           const sent = (e.sentiment || 'neutral').toLowerCase();
           if (sent in signals_by_sentiment) signals_by_sentiment[sent]++;
           else signals_by_sentiment.neutral++;
 
-          // Market (coin) distribution
           const coin = (e.coin || '').toUpperCase();
           if (coin.includes('BITCOIN') || coin === 'BTC') signals_by_market.BTC++;
           else if (coin.includes('ETHEREUM') || coin === 'ETH') signals_by_market.ETH++;
           else signals_by_market.OTHER++;
 
-          // Confidence distribution (score * 10 → integer bucket)
           const bucket = Math.round(rawConf * 10);
           if (bucket >= 9) confidence_distribution['9']++;
           else if (bucket >= 8) confidence_distribution['8']++;
           else if (bucket >= 7) confidence_distribution['7']++;
 
-          // Polymarket match
           if (e.matched_event) polymarket_matches++;
 
-          // Peak hour classification (timestamp is unix epoch float)
           try {
             const ts = e.timestamp;
             const hour = ts > 1e10
@@ -282,14 +406,11 @@ router.get('/', (req, res) => {
               : new Date(ts).getUTCHours();
             if (PEAK_HOURS.has(hour)) peak_hour_signals++;
             else off_peak_hour_signals++;
-          } catch (_) { /* ignore */ }
+          } catch (_) {}
         }
 
-        avg_confidence = signals_evaluated > 0
-          ? parseFloat((confSum / signals_evaluated).toFixed(4))
-          : 0;
+        avg_confidence = signals_evaluated > 0 ? parseFloat((confSum / signals_evaluated).toFixed(4)) : 0;
 
-        // Daily count (today's non-Kalshi signal evaluations only)
         dailySignals = nonKalshiEvals.filter(e => {
           try {
             const ts = e.timestamp;
@@ -298,7 +419,6 @@ router.get('/', (req, res) => {
           } catch { return false; }
         }).length;
 
-        // Missed trades (confidence > 0.55 means signal had potential)
         const missed = nonKalshiEvals.filter(e => {
           const rawConf = e.sentiment_score || (e.confidence > 1 ? e.confidence / 10 : e.confidence) || 0;
           return e.trade_type === 'MISSED' && rawConf > 0.55;
@@ -311,32 +431,22 @@ router.get('/', (req, res) => {
         missedWinRate = missedTrades > 0 ? parseFloat((missedWins / missedTrades).toFixed(4)) : 0;
         missedPnL = parseFloat(((missedWins * 2) - ((missedTrades - missedWins) * 1)).toFixed(2));
 
-        // Use signal_evaluations count as the authoritative totalSignals
         if (signals_evaluated > totalSignals) {
           totalSignals = signals_evaluated;
-          dailySignals = nonKalshiEvals.filter(e => {
-            try {
-              const ts = e.timestamp;
-              const d = ts > 1e10 ? new Date(ts * 1000) : new Date(ts);
-              return d.toISOString().startsWith(today);
-            } catch { return false; }
-          }).length;
         }
       }
     } catch (missedErr) {
       console.warn('[HEALTH] Could not compute signal metrics:', missedErr.message);
     }
 
-    // ── ML pipeline progress (written by ml_pipeline.py) ──────────────────
+    // ML pipeline progress
     let ml_progress = { cycles_collected: 0, cycles_needed: 50, progress_percent: 0, models: {} };
     try {
-      const mlFile = path.join(__dirname, '../../../../ml_progress.json');
-      if (fs.existsSync(mlFile)) {
-        ml_progress = readJSON(mlFile);
-      }
-    } catch (_) { /* non-fatal */ }
+      const mlData = await readJSONAsync(mlFile);
+      ml_progress = mlData;
+    } catch (_) {}
 
-    // ── Edge scorer stats (written by edge_scorer.py) ─────────────────────
+    // Edge scorer stats
     let edge_scorer_stats = {
       total_evaluated: 0,
       total_passed: 0,
@@ -345,22 +455,18 @@ router.get('/', (req, res) => {
       kl_threshold: 0.05,
     };
     try {
-      const edgeFile = path.join(__dirname, '../../../../edge_status.json');
-      if (fs.existsSync(edgeFile)) {
-        edge_scorer_stats = readJSON(edgeFile);
-      }
-    } catch (_) { /* non-fatal */ }
+      const edgeData = await readJSONAsync(edgeFile);
+      edge_scorer_stats = edgeData;
+    } catch (_) {}
 
-    // ── Market regime (written by regime_detector.py) ─────────────────────
+    // Market regime
     let regime = { regime: 'NORMAL', label: 'Normal', atr_pct: 0, kelly_multiplier: 1.0 };
     try {
-      const regimeFile = path.join(__dirname, '../../../../regime_status.json');
-      if (fs.existsSync(regimeFile)) {
-        regime = readJSON(regimeFile);
-      }
-    } catch (_) { /* non-fatal */ }
+      const regimeData = await readJSONAsync(regimeFile);
+      regime = regimeData;
+    } catch (_) {}
 
-    // ── Position summary (written by trader.py after every open/close) ────
+    // Position summary
     let positions_summary = {
       active_count: 0, closed_count: 0,
       unrealized_pnl: 0, realized_pnl: 0,
@@ -375,30 +481,25 @@ router.get('/', (req, res) => {
     let poly_closed_pnl     = 0;
     let poly_win_count      = 0;
     let poly_loss_count     = 0;
+
     try {
-      const posFile = path.join(__dirname, '../../../data/positions_state.json');
-      if (fs.existsSync(posFile)) {
-        const posData = readJSON(posFile);
-        positions_summary = posData.summary || positions_summary;
-        const closedList = posData.closed || [];
+      const posData = await readJSONAsync(posFile);
+      positions_summary = posData.summary || positions_summary;
+      const closedList = posData.closed || [];
 
-        // Polymarket closed stats — single source of truth
-        const polyClosed = closedList.filter(p => p.market === 'POLYMARKET');
-        poly_closed_count = polyClosed.length;
-        poly_closed_pnl   = polyClosed.reduce((s, p) => s + (p.realized_pnl || 0), 0);
-        poly_win_count    = polyClosed.filter(p => (p.realized_pnl || 0) > 0).length;
-        poly_loss_count   = polyClosed.filter(p => (p.realized_pnl || 0) < 0).length;
+      const polyClosed = closedList.filter(p => p.market === 'POLYMARKET');
+      poly_closed_count = polyClosed.length;
+      poly_closed_pnl   = polyClosed.reduce((s, p) => s + (p.realized_pnl || 0), 0);
+      poly_win_count    = polyClosed.filter(p => (p.realized_pnl || 0) > 0).length;
+      poly_loss_count   = polyClosed.filter(p => (p.realized_pnl || 0) < 0).length;
 
-        // Kalshi closed stats (should be 0 after cleanup)
-        const kalshiClosed = closedList.filter(p => p.market === 'KALSHI');
-        kalshi_closed_count = kalshiClosed.length;
-        kalshi_closed_pnl   = kalshiClosed.reduce((s, p) => s + (p.realized_pnl || 0), 0);
-        kalshi_win_count    = kalshiClosed.filter(p => (p.realized_pnl || 0) > 0).length;
-        kalshi_loss_count   = kalshiClosed.filter(p => (p.realized_pnl || 0) < 0).length;
-      }
-    } catch (_) { /* non-fatal */ }
+      const kalshiClosed = closedList.filter(p => p.market === 'KALSHI');
+      kalshi_closed_count = kalshiClosed.length;
+      kalshi_closed_pnl   = kalshiClosed.reduce((s, p) => s + (p.realized_pnl || 0), 0);
+      kalshi_win_count    = kalshiClosed.filter(p => (p.realized_pnl || 0) > 0).length;
+      kalshi_loss_count   = kalshiClosed.filter(p => (p.realized_pnl || 0) < 0).length;
+    } catch (_) {}
 
-    // Derive balance from positions_state.json (single source of truth)
     if (positions_summary.realized_pnl !== undefined) {
       const _startBal = parseFloat(state.starting_balance || 50.0);
       balance = Math.round((_startBal + (positions_summary.realized_pnl || 0)) * 100) / 100;
@@ -408,23 +509,18 @@ router.get('/', (req, res) => {
     let pythPrices = {};
     let chainlinkPrices = {};
     try {
-      const clFile = path.join(__dirname, '../../../../chainlink_prices.json');
-      if (fs.existsSync(clFile)) {
-        chainlinkPrices = JSON.parse(fs.readFileSync(clFile, 'utf-8'));
-      }
-    } catch (err) {
-      console.warn('[HEALTH] Failed to parse chainlink_prices.json:', err.message);
-    }
+      chainlinkPrices = await readJSONAsync(clFile);
+    } catch (_) {}
     try {
-      const pythFile = path.join(__dirname, '../../../../pyth_prices.json');
-      if (fs.existsSync(pythFile)) {
-        pythPrices = JSON.parse(fs.readFileSync(pythFile, 'utf-8'));
-      }
-    } catch (err) {
-      console.warn('[HEALTH] Failed to parse pyth_prices.json:', err.message);
-    }
+      pythPrices = await readJSONAsync(pythFile);
+    } catch (_) {}
 
-    res.json({
+    let macro_context = null;
+    try {
+      macro_context = await readJSONAsync(mfFile);
+    } catch (_) {}
+
+    cachedHealthResponse = {
       status,
       pythPrices,
       chainlinkPrices,
@@ -452,14 +548,13 @@ router.get('/', (req, res) => {
       missedPnL,
       minutesAgo,
       last_update_minutes_ago: minutesAgo,
-      tradesExecuted,
+      tradesExecuted: tradesExecuted,
       trades_executed: tradesExecuted,
       phase: state.phase || 'phase_1',
       last_update: state.last_updated,
       cycles_completed: tradesExecuted,
       paused: state.paused || false,
       runtime,
-      // ── Signal metrics from signal_evaluations.jsonl ─────────────────
       signals_evaluated,
       daily_signals_evaluated: dailySignals,
       avg_confidence,
@@ -473,66 +568,41 @@ router.get('/', (req, res) => {
       hypothetical_trades: missedTrades,
       hypothetical_pnl: missedPnL,
       hypothetical_win_rate: missedWinRate,
-      // ── Real trade breakdown ──────────────────────────────────────────
       real_trades: realTrades,
       real_pnl: pnl,
       real_win_rate: winRate,
-      // Polymarket: from positions_state.json (authoritative)
       poly_real_trades: poly_closed_count,
       poly_real_pnl: parseFloat(poly_closed_pnl.toFixed(2)),
-      poly_real_win_rate: (poly_win_count + poly_loss_count) > 0
-        ? parseFloat((poly_win_count / (poly_win_count + poly_loss_count)).toFixed(4))
-        : 0,
-      // Kalshi: use positions_state.json closed count (should be 0 after cleanup)
+      poly_real_win_rate: (poly_win_count + poly_loss_count) > 0 ? parseFloat((poly_win_count / (poly_win_count + poly_loss_count)).toFixed(4)) : 0,
       kalshi_real_trades: kalshi_closed_count,
       kalshi_real_pnl: parseFloat(kalshi_closed_pnl.toFixed(4)),
-      kalshi_real_win_rate: (kalshi_win_count + kalshi_loss_count) > 0
-        ? parseFloat((kalshi_win_count / (kalshi_win_count + kalshi_loss_count)).toFixed(4))
-        : 0,
-      // ── Missed signals (insufficient liquidity) ───────────────────────
+      kalshi_real_win_rate: (kalshi_win_count + kalshi_loss_count) > 0 ? parseFloat((kalshi_win_count / (kalshi_win_count + kalshi_loss_count)).toFixed(4)) : 0,
       polymarket_hypothetical_trades: missedTrades,
       polymarket_hypothetical_pnl: missedPnL,
-      // Signal quality rate (high-confidence signals / total missed signals)
-      // NOT a win rate — renamed to avoid confusion
       signal_quality_rate: missedWinRate,
-      // kalshi_trades_recorded = open/pending Kalshi positions this session
       kalshi_hypothetical_trades: kalshi_trades_recorded,
       kalshi_hypothetical_pnl: 0,
-      // ── ML pipeline ───────────────────────────────────────────────────
       ml_progress,
-      // ── Edge scorer ───────────────────────────────────────────────────
       edge_scorer_stats,
-      // ── Market regime ─────────────────────────────────────────────────
       regime,
-      // ── Position summary ──────────────────────────────────────────────
       positions_summary,
-      // ── Macro context (FRED + funding rates + compounding progress) ───
-      macro_context: (() => {
-        try {
-          const mf = path.join(__dirname, '../../../../macro_context.json');
-          return fs.existsSync(mf) ? readJSON(mf) : null;
-        } catch { return null; }
-      })(),
+      macro_context,
       error: null,
-    });
-
+    };
   } catch (error) {
-    console.error('[HEALTH] Error reading state:', error.message);
-    res.status(500).json({
-      status: 'error',
-      running: false,
-      balance: 50.00,
-      account_balance: 50.00,
-      pnl: 0,
-      realTrades: 0,
-      totalSignals: 0,
-      dailySignals: 0,
-      byCoin: [],
-      byStrength: [],
-      runtime: { hours: 0, days: 0, progressPercent: 0, goalHours: 336, status: 'tracking' },
-      error: error.message,
-    });
+    console.error('[HEALTH] Cache update error:', error.message);
+  } finally {
+    _updatingCache = false;
   }
+}
+
+// Prime the cache and set background poll interval
+updateHealthCache().catch(() => {});
+setInterval(updateHealthCache, 10000);
+
+router.get('/', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.json(cachedHealthResponse);
 });
 
 // ── SSE stream — pushes live events to frontend ───────────────────────────
@@ -550,7 +620,8 @@ router.get('/stream', (req, res) => {
   req.socket?.on('error', () => _sseClients.delete(res));
 
   // Send heartbeat immediately
-  res.write(`data: ${JSON.stringify({ type: 'heartbeat', ts: Date.now() })}\n\n`);
+  res.write(`data: ${JSON.stringify({ type: 'heartbeat', ts: Date.now() })}
+\n`);
 });
 
 function broadcastSSE(eventObj) {
@@ -575,24 +646,18 @@ async function _fetchClobPrice(marketId, pos) {
     });
     if (r.ok) {
       const d = await r.json();
-      
       const bidPrices = (d.bids || []).map(b => parseFloat(b.price)).filter(p => !isNaN(p));
       const askPrices = (d.asks || []).map(a => parseFloat(a.price)).filter(p => !isNaN(p));
       const bid = bidPrices.length ? Math.max(...bidPrices) : 0;
       const ask = askPrices.length ? Math.min(...askPrices) : 0;
-      
       const price = (bid > 0 && ask > 0) ? (bid + ask) / 2 : 0;
       if (price > 0.01 && price < 0.99) {
         const roundedPrice = Math.round(price * 10000) / 10000;
         _priceCache.set(marketId, { price: roundedPrice, ts: Date.now() });
         return roundedPrice;
       }
-    } else {
-      console.warn(`[CLOB FETCH] Not OK status ${r.status} for market ${marketId}`);
     }
-  } catch (err) {
-    console.warn(`[CLOB FETCH WARNING] for market ${marketId}: ${err.message}. Invoking fallback.`);
-  }
+  } catch (err) {}
 
   // Fallback Integration: Derive current option contract price from spot price files
   if (pos) {
@@ -609,23 +674,22 @@ async function _fetchClobPrice(marketId, pos) {
 
       if (asset) {
         let currentSpot = null;
-        // Try Pyth cache first
         const pythFile = path.join(__dirname, '../../../../pyth_prices.json');
-        if (fs.existsSync(pythFile)) {
-          const pythData = JSON.parse(fs.readFileSync(pythFile, 'utf-8'));
+        try {
+          const pythData = await readJSONAsync(pythFile);
           if (pythData[asset] && typeof pythData[asset].price === 'number') {
             currentSpot = pythData[asset].price;
           }
-        }
-        // Try Chainlink second
+        } catch (_) {}
+
         if (currentSpot == null) {
           const clFile = path.join(__dirname, '../../../../chainlink_prices.json');
-          if (fs.existsSync(clFile)) {
-            const clData = JSON.parse(fs.readFileSync(clFile, 'utf-8'));
+          try {
+            const clData = await readJSONAsync(clFile);
             if (clData[asset] && typeof clData[asset].price === 'number') {
               currentSpot = clData[asset].price;
             }
-          }
+          } catch (_) {}
         }
 
         if (currentSpot != null) {
@@ -641,7 +705,6 @@ async function _fetchClobPrice(marketId, pos) {
             priceDiffPct = (currentSpot - entrySpot) / entrySpot;
           }
           
-          // Heuristic scaling: 1% spot change shifts option price by 20%
           const scalingFactor = 20.0;
           const delta = priceDiffPct * scalingFactor;
           
@@ -653,30 +716,27 @@ async function _fetchClobPrice(marketId, pos) {
           }
           
           derivedPrice = Math.max(0.01, Math.min(0.99, derivedPrice));
-          const roundedDerived = Math.round(derivedPrice * 10000) / 10000;
-          
-          console.log(`[CLOB FALLBACK] Derived price for ${asset} (${pos.direction}): spot ${entrySpot} -> ${currentSpot} (${(priceDiffPct*100).toFixed(3)}%), contract ${entryPrice} -> ${roundedDerived}`);
-          return roundedDerived;
+          return Math.round(derivedPrice * 10000) / 10000;
         }
       }
-    } catch (fallbackErr) {
-      console.error('[CLOB FALLBACK ERROR] Failed to derive fallback price:', fallbackErr.message);
-    }
+    } catch (_) {}
   }
 
-  // Final fallback: return last known current_price or entry_price
   if (pos) {
     return pos.current_price || pos.entry_price || null;
   }
   return null;
 }
 
-// Guard flag: prevents concurrent poll executions when CLOB calls take >1s
 let _pollActive = false;
 
-// Poll positions_state.json and broadcast position_update with self-scheduling setTimeout to avoid pileup
 async function pollPositions() {
-  // Skip this tick if a previous poll is still running (CLOB latency guard)
+  // Save CPU: skip polling entirely if no SSE clients are connected
+  if (_sseClients.size === 0) {
+    setTimeout(pollPositions, 3000);
+    return;
+  }
+
   if (_pollActive) {
     setTimeout(pollPositions, 1000);
     return;
@@ -684,9 +744,14 @@ async function pollPositions() {
   _pollActive = true;
   try {
     const posFile = path.join(__dirname, '../../../data/positions_state.json');
-    if (fs.existsSync(posFile)) {
-      const positions = JSON.parse(fs.readFileSync(posFile, 'utf-8').replace(/^\uFEFF/, ''));
-      
+    let posExists = false;
+    try {
+      await fsPromises.access(posFile);
+      posExists = true;
+    } catch {}
+
+    if (posExists) {
+      const positions = await readJSONAsync(posFile);
       const active = positions.active || [];
       const closed = positions.closed || [];
       const summary = positions.summary || {};
@@ -704,7 +769,6 @@ async function pollPositions() {
           const cost = parseFloat(pos.size || 0);
           const unrealizedPnl = Math.round((shares * livePrice - cost) * 100) / 100;
           liveUnrealized += unrealizedPnl;
-          // price_source distinguishes live CLOB vs fallback for the Vite UI
           const price_source = _priceCache.has(marketId) ? 'clob' : 'spot_fallback';
           return { ...pos, current_price: livePrice, unrealized_pnl: unrealizedPnl, price_source };
         }
@@ -720,7 +784,7 @@ async function pollPositions() {
             unrealized_pnl: Math.round(liveUnrealized * 100) / 100
           },
           active: enrichedActive,
-          closed
+          closed: closed.slice(0, 200) // Cap closed list to 200 items in payload
         },
         ts: Date.now()
       });
@@ -735,13 +799,13 @@ async function pollPositions() {
 pollPositions();
 
 // Poll account_state.json and broadcast balance_update every 5s
-setInterval(() => {
+setInterval(async () => {
+  if (_sseClients.size === 0) return;
   try {
     const stateFile = path.join(__dirname, '../../../data/account_state.json');
-    if (!fs.existsSync(stateFile)) return;
-    const state = JSON.parse(fs.readFileSync(stateFile, 'utf-8').replace(/^﻿/, ''));
+    const state = await readJSONAsync(stateFile);
     broadcastSSE({ type: 'balance_update', payload: state, ts: Date.now() });
-  } catch { /* ignore */ }
+  } catch {}
 }, 5000);
 
 // Poll candle boundary timers every 10s
@@ -768,5 +832,4 @@ setInterval(() => {
 }, 10000);
 
 export { broadcastSSE };
-
 export default router;

@@ -382,6 +382,8 @@ class ArbitrageScanner:
             if 0.05 < cost_2 < (1.0 - dynamic_hurdle):
                 await self.execute_arbitrage(poly_m, kalshi_m, "NO", poly_no, yes_ask)
                 continue
+            
+            await asyncio.sleep(0.01)
 
 async def clob_warmup_loop(session: aiohttp.ClientSession):
     """Periodic daemon task that pings CLOB API endpoints to warm TCP pool."""

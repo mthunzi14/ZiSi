@@ -588,12 +588,6 @@ def validate_trade(
         return False
 
     remaining_balance = account_balance - position_size
-    if remaining_balance < 50:
-        log.warning(
-            "[REJECT] remaining balance $%.2f would fall below $50 minimum",
-            remaining_balance,
-        )
-        return False
 
     # Post-fee EV gate: reject trades where fee cost exceeds estimated edge.
     # pre_fee_ev = win_rate * (1/entry_price) + (1 - win_rate) * 0

@@ -156,7 +156,7 @@ async def heartbeat_daemon() -> None:
             # Get closed trades count
             trades = _get_trades_count()
             # Call state manager update
-            update_heartbeat(trades_executed=trades, paused=paused, reason="daemon-tick")
+            await update_heartbeat(trades_executed=trades, paused=paused, reason="daemon-tick")
             log.debug("[HEARTBEAT] Heartbeat written successfully (trades=%d, paused=%s)", trades, paused)
             
             # Check process runtime for scheduled restart (4 hours = 14400 seconds)
@@ -548,7 +548,9 @@ async def _validate_trade_slot(
     _entry_source = signal.get("entry_source", "SIG")
 
     raw_bet_usd = engine.compute_size(score, entry_price, current_balance,
-                                      confidence=(signal.get("fv_confidence") or None))
+                                      confidence=(signal.get("fv_confidence") or None),
+                                      entry_source=_entry_source,
+                                      timeframe_override=timeframe)
     corr_mult = signal.get("corroboration_multiplier", 1.0)
     bet_usd = raw_bet_usd * risk_multiplier * corr_mult
 
@@ -603,23 +605,24 @@ async def _validate_trade_slot(
     # Bonereaper bets 13-50% of account per trade. ZiSi raised to match proportionally.
     # REVERSAL_STREAK / 1h = highest conviction → 30% Kelly. Standard → 12%.
     if timeframe == "1h" or _entry_source == "REVERSAL_STREAK":
-        global_max_bet = min(current_balance * 0.30, 50.0)
+        global_max_bet = min(current_balance * 0.30, current_balance * 1.0)
         _cap_label = "HIGH-CONV"
     elif _entry_source == "FAIR_VAL" and entry_price < 0.40:
-        global_max_bet = min(current_balance * 0.30, 50.0)
+        global_max_bet = min(current_balance * 0.30, current_balance * 1.0)
         _cap_label = "FV-DEEP"
     else:
-        global_max_bet = min(current_balance * 0.12, 20.0)
+        global_max_bet = min(current_balance * 0.12, current_balance * 0.40)
         _cap_label = "STANDARD"
     if bet_usd > global_max_bet:
         log.info("[RISK] %s bet cap $%.2f -> $%.2f", _cap_label, bet_usd, global_max_bet)
         bet_usd = global_max_bet
 
-    # ── P3: SIGNAL-specific Bet Cap ($10.0) ──
+    # ── P3: SIGNAL-specific Bet Cap ──
     if _entry_source in ("SIG", "SIGNAL"):
-        if bet_usd > 10.0:
-            log.info("[RISK] SIGNAL trade size capped at $10.0: $%.2f -> $10.00", bet_usd)
-            bet_usd = 10.0
+        _sig_cap = current_balance * 0.20
+        if bet_usd > _sig_cap:
+            log.info("[RISK] SIGNAL trade size capped at $%.2f: $%.2f -> $%.2f", _sig_cap, bet_usd, _sig_cap)
+            bet_usd = _sig_cap
 
     # ── Tier 0: FV 1h hard cap ──
     # Until FV probability is calibrated (Platt scaling), cap 1h FV at 10%/balance or $8.
@@ -666,6 +669,7 @@ async def _validate_trade_slot(
         "risk_multiplier": risk_multiplier,
         "bet_usd":      bet_usd,
         "entry_source": _entry_source,
+        "vol_surge_detected": signal.get("vol_surge_detected", False),
     }
     # Record FV approval in sliding window so rate limiter tracks in-flight entries
     if _entry_source == "FAIR_VAL":
@@ -706,6 +710,7 @@ async def _execute_order_flow(
     risk_multiplier = details["risk_multiplier"]
     bet_usd      = details["bet_usd"]
     entry_source = details.get("entry_source", "SIG")
+    vol_surge_detected = details.get("vol_surge_detected", False)
 
     slot_committed = False
     try:
@@ -727,10 +732,10 @@ async def _execute_order_flow(
                 dual_main_tag = "DUAL_MAIN"
             
             # Place dual trade legs in parallel using thread pool to avoid blocking the event loop
-            main_task = asyncio.to_thread(_place_trade, asset, timeframe, direction, market, main_usd, entry_price, score, dual_main_tag)
+            main_task = asyncio.to_thread(_place_trade, asset, timeframe, direction, market, main_usd, entry_price, score, dual_main_tag, vol_surge_detected)
             hedge_dir = "DOWN" if direction == "UP" else "UP"
             hedge_price = dn_price if direction == "UP" else up_price
-            hedge_task = asyncio.to_thread(_place_trade, asset, timeframe, hedge_dir, market, hedge_usd, hedge_price, score, "DUAL_HEDGE")
+            hedge_task = asyncio.to_thread(_place_trade, asset, timeframe, hedge_dir, market, hedge_usd, hedge_price, score, "DUAL_HEDGE", vol_surge_detected)
             main_order, hedge_order = await asyncio.gather(main_task, hedge_task)
 
             if main_order or hedge_order:
@@ -757,7 +762,7 @@ async def _execute_order_flow(
             else:
                 single_tag = "SINGLE"
             # Run synchronous place_trade in a separate thread to avoid blocking WebSocket ingestion
-            order = await asyncio.to_thread(_place_trade, asset, timeframe, direction, market, bet_usd, entry_price, score, single_tag)
+            order = await asyncio.to_thread(_place_trade, asset, timeframe, direction, market, bet_usd, entry_price, score, single_tag, vol_surge_detected)
             if order:
                 traded = True
                 await commit_trade_slot(asset, timeframe, score, interval_minutes, is_dual=False, direction=direction)
@@ -789,7 +794,7 @@ async def asset_loop(
 
     while True:
         try:
-            update_heartbeat(reason=f"loop-{asset}-{timeframe}")
+            await update_heartbeat(reason=f"loop-{asset}-{timeframe}")
             context.funnel_stats["windows_evaluated"] += 1
 
             if not time_gate_open():
@@ -798,7 +803,7 @@ async def asset_loop(
 
             if Path("bot_paused.flag").exists():
                 log.info("[MAIN] Bot is paused via flag - skipping %s/%s cycle", asset, timeframe)
-                update_heartbeat(paused=True, reason=f"paused-{asset}-{timeframe}")
+                await update_heartbeat(paused=True, reason=f"paused-{asset}-{timeframe}")
                 await _sleep_to_next_candle(interval_minutes, asset, timeframe, session, context)
                 continue
 
@@ -978,15 +983,26 @@ async def _place_corr_trades(
             await commit_trade_slot(corr_asset, timeframe, 0.75, interval_minutes, is_dual=False, direction=direction)
 
 
-def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, score, trade_type="SINGLE") -> Optional[dict]:
+def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, score, trade_type="SINGLE", is_resting_order: bool = False) -> Optional[dict]:
     try:
         market_id = (market["up_market"] if direction == "UP" else market["dn_market"]).get("id", "")
+
+        # If it is a resting order, let's get the exact mid-market contract price:
+        if is_resting_order:
+            try:
+                from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
+                mid, _ = polymarket_l2_gateway.get_price(market_id)
+                if mid and 0.01 <= mid <= 0.99:
+                    entry_price = round(mid, 4)
+                    log.info("[VOL-SURGE-RESTING] Using mid-market contract price %.4f for resting order", entry_price)
+            except Exception as e:
+                log.warning("[VOL-SURGE-RESTING] Failed to get mid-market contract price: %s", e)
 
         # Strict 5.0¢ Max Slippage Guard (Live-matching defense)
         try:
             from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
             live_price, _ = polymarket_l2_gateway.get_price(market_id)
-            if live_price and abs(live_price - entry_price) > 0.05:
+            if not is_resting_order and live_price and abs(live_price - entry_price) > 0.05:
                 log.warning(
                     "[TRADE] SLIPPAGE_ABORT: %s/%s Live price %.4f deviated from signal price %.4f by > 5.0¢. Aborting trade execution.",
                     asset, timeframe, live_price, entry_price
@@ -1006,6 +1022,7 @@ def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, s
             entry_price=entry_price,
             event_title=f"[UPDOWN][{asset}][{timeframe}][{trade_type}] {market['event_title']}",
             expiry_ts=market["expiry_ts"],
+            is_resting_order=is_resting_order,
         )
 
         if order:
@@ -1038,7 +1055,7 @@ async def _zombie_cleanup_loop() -> None:
         await asyncio.sleep(300)  # every 5 minutes
         try:
             from core.engine.state_manager import cleanup_expired_positions
-            deleted = cleanup_expired_positions()
+            deleted = await cleanup_expired_positions()
             if deleted:
                 log.info("[ZOMBIE-LOOP] Cleaned %d zombie positions", deleted)
         except Exception as e:
@@ -1047,16 +1064,16 @@ async def _zombie_cleanup_loop() -> None:
 
 async def main() -> None:
     # Initialize persistent account state explicitly during bot startup (Issue E fix)
-    initialize_state()
+    await initialize_state()
     # Clean up any zombie positions from prior session at startup
     try:
         from core.engine.state_manager import cleanup_expired_positions
-        _cleaned = cleanup_expired_positions()
+        _cleaned = await cleanup_expired_positions()
         if _cleaned:
             log.info("[STARTUP] Deleted %d zombie positions from prior session", _cleaned)
     except Exception as _ze:
         log.warning("[STARTUP] Zombie cleanup failed: %s", _ze)
-    update_heartbeat(reason="bot-booting")
+    await update_heartbeat(reason="bot-booting")
 
     cfg = load_config()
     setup_file_logging(cfg.get("LOG_LEVEL", "INFO"))

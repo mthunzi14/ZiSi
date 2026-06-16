@@ -139,11 +139,72 @@ class PositionSizer:
             log.info("[KELLY] Cycle capital limit reached ($%.2f/$%.2f)", self._capital_used, self.max_cycle_capital)
             return 0.0
 
-        trigger = signal.get("trigger", "") or signal.get("entry_source", "") or ""
-        trigger_upper = str(trigger).upper()
-        entry_price = signal.get("entry_price", 0.45)
+        # Determine UTC time and weekend status for session gates
+        now_dt = datetime.now(timezone.utc)
+        utc_hour = now_dt.hour
+        is_weekend = now_dt.weekday() >= 5  # 5 = Saturday, 6 = Sunday
+
         _assets = signal.get("affected_cryptos", [])
         _asset = _assets[0].upper() if _assets else ""
+
+        trigger = signal.get("trigger", "") or signal.get("entry_source", "") or ""
+        trigger_upper = str(trigger).upper()
+        timeframe = signal.get("timeframe", "")
+        entry_price = signal.get("entry_price", 0.45)
+
+        strategy_type = None
+        if trigger_upper == "SWEEP":
+            strategy_type = "SWEEP"
+        elif trigger_upper in ["LAT_ARB", "LAT_RAW"]:
+            strategy_type = "LAT ARB"
+        elif trigger_upper in ["REV_SNIPE", "REVERSAL_SNIPE"]:
+            strategy_type = "REVERSAL SNIPE"
+        elif trigger_upper == "NCS":
+            strategy_type = "NCS"
+        elif trigger_upper == "FV":
+            strategy_type = "FV"
+        elif trigger_upper == "SIG":
+            strategy_type = "SIG"
+
+        from core.engine.session_governor import get_active_regime_gates
+        gates = get_active_regime_gates(utc_hour, is_weekend, strategy_type)
+
+        # Respect gates: Check if asset is allowed
+        if _asset and _asset not in gates["symbols_allowed"]:
+            log.info("[KELLY-GATES] Asset %s not allowed in session symbols: %s. Zeroing size.", _asset, gates["symbols_allowed"])
+            return 0.0
+
+        # Respect gates: Check if minimum score is met
+        score = signal.get("score", 0.0)
+        if score < gates["min_score_gate"]:
+            log.info("[KELLY-GATES] Signal score %.2f below session min_score_gate %.2f. Zeroing size.", score, gates["min_score_gate"])
+            return 0.0
+
+        # Aggressive Sizing Floor Override:
+        # If entry price is between $0.10 and $0.75 on short-term horizons (5m, 15m) for any of our 8 core engines,
+        # bypass Kelly and standard guards, enforcing a hard, fixed position allocation minimum of 30% of account balance.
+        _min_pos_dynamic = self.account_balance * 0.01
+        _max_pos_dynamic = self.account_balance * 0.10
+        if (trigger_upper in ['SIG', 'REV_SNIPE', 'REVERSAL_SNIPE', 'SWEEP', 'LAT_ARB', 'LAT_RAW', 'NCS', 'FV'] 
+                and timeframe in ["5m", "15m"] 
+                and 0.10 <= entry_price <= 0.75):
+
+            size = self.account_balance * 0.30
+            remaining = self.max_cycle_capital - self._capital_used
+            size = min(size, remaining)
+            size = min(size, self.account_balance)
+            
+            if size < _min_pos_dynamic:
+                return 0.0
+                
+            self._capital_used += size
+            self._trades += 1
+            log.info(
+                "[KELLY-OVERRIDE] Aggressive Sizing Floor Override triggered (price=%.2fc, tf=%s, trigger=%s). "
+                "Bypassed Kelly/fraction caps. Enforced hard size of $%.2f (remaining cycle cap: $%.2f)",
+                entry_price * 100, timeframe, trigger_upper, size, remaining
+            )
+            return round(size, 2)
 
         # Map to Strategy Pillar
         if trigger_upper in ["REV_SNIPE", "REV_STREAK", "SWEEP", "NCS"]:
@@ -156,10 +217,10 @@ class PositionSizer:
             pillar = "CORE_SNIPER"
 
         if pillar == "ASYMMETRIC_BARBELL" and entry_price <= 0.20:
-            raw_usd = self.account_balance * 0.01
+            raw_usd = self.account_balance * 0.01 * gates["size_multiplier"]
             log.info(
-                "[KELLY-PILLAR-2] Flat 1.0%% allocation for underdog (price=%.2fc): $%.2f",
-                entry_price * 100, raw_usd
+                "[KELLY-PILLAR-2] Flat 1.0%% allocation for underdog (price=%.2fc) with size_mult=%.2f: $%.2f",
+                entry_price * 100, gates["size_multiplier"], raw_usd
             )
         else:
             # Step 1: Determine base win probability from signal type
@@ -214,8 +275,8 @@ class PositionSizer:
             # Step 7: Apply all multipliers
             combined_mult = regime_kelly * antifragile_mult * heat_mult * whale_mult
 
-            # Step 8: Calculate raw USD size
-            raw_usd = kelly_fraction * self.account_balance * combined_mult
+            # Step 8: Calculate raw USD size (applying session size multiplier)
+            raw_usd = kelly_fraction * self.account_balance * combined_mult * gates["size_multiplier"]
 
             # Step 9: Apply expiry multiplier (existing)
             exp_mult = _expiry_multiplier(market)
@@ -236,8 +297,8 @@ class PositionSizer:
         # (UpDownEngine.compute_size) can apply ONE consistent floor/ceiling
         # across its adaptive and fallback paths. Defaults preserve the original
         # behaviour for any other caller (e.g. cycle_manager and unit tests).
-        _floor = min_position_usd if min_position_usd is not None else _MIN_POSITION_USD
-        _ceiling = max_position_usd if max_position_usd is not None else _MAX_POSITION_USD
+        _floor = min_position_usd if min_position_usd is not None else _min_pos_dynamic
+        _ceiling = max_position_usd if max_position_usd is not None else _max_pos_dynamic
         _frac = max_bankroll_fraction if max_bankroll_fraction is not None else _MAX_BANKROLL_FRACTION
 
         # Never exceed max bankroll fraction
@@ -250,7 +311,7 @@ class PositionSizer:
         # Respect remaining cycle capital
         remaining = self.max_cycle_capital - self._capital_used
         size = min(size, remaining)
-        if size < _MIN_POSITION_USD:
+        if size < _min_pos_dynamic:
             return 0.0
 
         self._capital_used += size

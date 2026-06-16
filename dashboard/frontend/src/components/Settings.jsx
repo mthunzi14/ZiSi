@@ -198,7 +198,7 @@ export default function Settings() {
               fontSize: '14px',
               border: 'none',
               cursor: 'pointer',
-              boxShadow: '0 0 15px rgba(0, 203, 214, 0.3)',
+              boxShadow: '0 0 15px rgba(113, 113, 122, 0.3)',
               transition: 'all 200ms ease'
             }}
           >
@@ -283,8 +283,8 @@ export default function Settings() {
             style={{
               padding: '14px',
               borderRadius: '12px',
-              background: 'rgba(0, 203, 214, 0.1)',
-              border: '1px solid rgba(0, 203, 214, 0.2)',
+              background: 'rgba(113, 113, 122, 0.1)',
+              border: '1px solid rgba(113, 113, 122, 0.2)',
               color: 'var(--color-accent)',
               fontSize: '13px',
               fontWeight: '600',
@@ -333,7 +333,7 @@ export default function Settings() {
                 fontSize: '15px',
                 border: 'none',
                 cursor: loading ? 'not-allowed' : 'pointer',
-                boxShadow: '0 0 15px rgba(0, 203, 214, 0.3)',
+                boxShadow: '0 0 15px rgba(113, 113, 122, 0.3)',
                 transition: 'all 200ms cubic-bezier(0.16, 1, 0.3, 1)',
                 transform: loading ? 'scale(0.98)' : 'scale(1)'
               }}

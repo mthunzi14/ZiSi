@@ -35,7 +35,7 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
             "signal_type": "TYPE_A_HIGH",
             "confidence": 9,
             "whale_aligned": True,
-            "confluence_score": 2,
+            "confluence_score": 4,
             "market": {
                 "up_price": 0.45,
                 "dn_price": 0.55,
