@@ -264,20 +264,20 @@ async def _validate_trade_slot(
         except Exception as _corr_err:
             log.error("[FV-CORR-CAP] Error checking correlated exposure: %s", _corr_err)
 
-    # SIG 40¢ floor: below 40¢ the crowd is >60% against the signal — momentum lag can't overcome
+    # SIG 35¢ floor: below 35¢ the crowd is >65% against the signal — momentum lag can't overcome
     # that consensus. Raised from 20¢ after two clean-slate losses at 24.5¢ and 40¢ NO entries.
     # CORR trades (already vetted by lead asset) and FV/NCS are exempt.
-    if _entry_source not in ("FAIR_VAL", "CLOSE-SNIPE", "CORR") and entry_price < 0.40:
-        log.info("[SIG-FLOOR] %s/%s: SIG %.4f < 0.40 — crowd >60%% against signal — skip",
+    if _entry_source not in ("FAIR_VAL", "CLOSE-SNIPE", "CORR") and entry_price < 0.35:
+        log.info("[SIG-FLOOR] %s/%s: SIG %.4f < 0.35 — crowd >65%% against signal — skip",
                  asset, timeframe, entry_price)
-        context.log_skip("sig_floor_40c", asset, timeframe)
+        context.log_skip("sig_floor_35c", asset, timeframe)
         return False, {}
 
     # P5: SIG price ceiling — block buying the expensive side of an overextended market.
-    # SIG/YES (UP) at >60¢ on 5m or >65¢ on 15m means market already priced it heavily;
+    # SIG/YES (UP) at >65¢ on 5m or >70¢ on 15m means market already priced it heavily;
     # edge evaporates and losses at 65¢ have confirmed this repeatedly.
     if _entry_source not in ("FAIR_VAL", "LATENCY_ARB", "CLOSE-SNIPE", "CORR"):
-        _sig_ceil = 0.60 if timeframe == "5m" else 0.65
+        _sig_ceil = 0.65 if timeframe == "5m" else 0.70
         if entry_price > _sig_ceil:
             log.info("[SIG-CEIL] %s/%s: SIG %.4f > %.4f ceiling — overextended — skip",
                      asset, timeframe, entry_price, _sig_ceil)
@@ -401,7 +401,7 @@ async def _validate_trade_slot(
                 asset, timeframe, direction, _boosted,
             )
 
-    if is_dual and (up_price + dn_price) >= 0.92:
+    if is_dual and (up_price + dn_price) >= 0.95:
         is_dual = False
 
     open_positions = state_manager.get_open_positions()
@@ -452,9 +452,9 @@ async def _validate_trade_slot(
             if "FAIR_VAL" in p.get("event_title", "")
             and (p.get("direction", "").upper() in ("UP", "YES")) == (direction == "UP")
         )
-        if _fv_same_dir >= 2:
+        if _fv_same_dir >= 3:
             log.info(
-                "[FV-CORR-CAP] %s/%s: %d FV %s positions open — corr cap (max 2) — skip",
+                "[FV-CORR-CAP] %s/%s: %d FV %s positions open — corr cap (max 3) — skip",
                 asset, timeframe, _fv_same_dir, direction,
             )
             context.log_skip("fv_corr_cap", asset, timeframe)
@@ -490,7 +490,7 @@ async def _validate_trade_slot(
         if timeframe in ("15m", "1h"):
             _fv_atm_min = 0.55
         elif entry_price < 0.57:
-            _fv_atm_min = 0.70  # near-ATM 5m: need real conviction, not score-boosted proxy
+            _fv_atm_min = 0.58  # near-ATM 5m: need real conviction, not score-boosted proxy
         else:
             _fv_atm_min = 0.60
         if _fv_conf < _fv_atm_min:
@@ -1140,8 +1140,8 @@ async def main() -> None:
 
             # Start latency edge arbitrage scanner (Sprint 3)
             try:
-                # from core.engine.cycle_manager import start_latency_edge_scanner
-                # tasks.append(start_latency_edge_scanner(session, context.engines))
+                from core.engine.cycle_manager import start_latency_edge_scanner
+                tasks.append(start_latency_edge_scanner(session, context.engines))
                 log.info("[MAIN] Latency edge scanner background task registered.")
             except Exception as e:
                 log.error("[MAIN] Failed to import start_latency_edge_scanner: %s", e)

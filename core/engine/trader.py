@@ -238,8 +238,10 @@ def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, ti
             target = 0.72 if _is_5m else 0.88
             if entry_price >= target:
                 target = min(0.99, round(entry_price + 0.04, 4))
-            log.info("[SL-CALIB] Short-TF trade '%s' (entry=%.4f) -> target %.4f, stop -1.0", title, entry_price, target)
-            return target, -1.0
+            from config import SHORT_TF_STOP_LOSS_PCT
+            stop = round(entry_price * SHORT_TF_STOP_LOSS_PCT, 4)
+            log.info("[SL-CALIB] Short-TF trade '%s' (entry=%.4f) -> target %.4f, stop %.4f", title, entry_price, target, stop)
+            return target, stop
 
         from core.risk.risk_manager import calculate_exit_targets
         res = calculate_exit_targets(entry_price, amount_spent, direction)
@@ -633,18 +635,20 @@ def place_order(
                 
             if spot_ws_timestamp > 0 and polymarket_packet_timestamp > 0:
                 delta_ms = abs(spot_ws_timestamp - polymarket_packet_timestamp) * 1000.0
-                if delta_ms > 800.0:
-                    log.warning(f"[LAT-ARB-ABORT] WebSocket and Polymarket packet timestamp delta {delta_ms:.1f}ms exceeds 800ms limit.")
+                from config import TIER2_LATENCY_ARB_MAX_DELTA_MS
+                max_delta = cfg.get("TIER2_LATENCY_ARB_MAX_DELTA_MS", TIER2_LATENCY_ARB_MAX_DELTA_MS)
+                if delta_ms > max_delta:
+                    log.warning(f"[LAT-ARB-ABORT] WebSocket and Polymarket packet timestamp delta {delta_ms:.1f}ms exceeds {max_delta}ms limit.")
                     return None
 
         elif t_type == "SWEEP":
-            # SWEEP: time-to-resolution <= 120s, price entry >= 94c, sizing flat $10
+            # SWEEP: time-to-resolution <= 180s, price entry >= 90c, sizing flat $10
             time_to_res = expiry_ts - time.time()
-            if time_to_res > 120 or time_to_res < 0:
-                log.warning(f"[SWEEP-ABORT] Time to resolution {time_to_res:.1f}s is > 120s limit.")
+            if time_to_res > 180 or time_to_res < 0:
+                log.warning(f"[SWEEP-ABORT] Time to resolution {time_to_res:.1f}s is > 180s limit.")
                 return None
-            if entry_price < 0.94:
-                log.warning(f"[SWEEP-ABORT] Price entry {entry_price:.3f} is < 94¢ threshold.")
+            if entry_price < 0.90:
+                log.warning(f"[SWEEP-ABORT] Price entry {entry_price:.3f} is < 90¢ threshold.")
                 return None
             amount_dollars = round(get_current_balance() * 0.20, 2)
 
@@ -669,8 +673,9 @@ def place_order(
                 depth_at_target = sum(sz for p, sz in valid_asks if p <= entry_price + 0.0001)
                 target_shares = amount_dollars / entry_price if entry_price > 0 else 1
                 
-                if depth_at_target < 3.0 * target_shares:
-                    log.warning(f"[NCS-ABORT] Insufficient depth at target level: {depth_at_target:.1f} < 3x intended order size {3.0 * target_shares:.1f}.")
+                from config import TIER2_NCS_SLIPPAGE_CAP
+                if depth_at_target < 1.5 * target_shares:
+                    log.warning(f"[NCS-ABORT] Insufficient depth at target level: {depth_at_target:.1f} < 1.5x intended order size {1.5 * target_shares:.1f}.")
                     return None
                 
                 # Check slippage
@@ -689,8 +694,9 @@ def place_order(
                     return None
                 
                 avg_price = total_cost / shares_filled if shares_filled > 0 else 0.0
-                if avg_price > 0.96:
-                    log.warning(f"[NCS-ABORT] Slippage average price {avg_price:.3f} exceeds 96¢ limit.")
+                ncs_slip_cap = cfg.get("TIER2_NCS_SLIPPAGE_CAP", TIER2_NCS_SLIPPAGE_CAP)
+                if avg_price > ncs_slip_cap:
+                    log.warning(f"[NCS-ABORT] Slippage average price {avg_price:.3f} exceeds {ncs_slip_cap}¢ limit.")
                     return None
 
         elif t_type == "REV_STREAK":
@@ -715,22 +721,20 @@ def place_order(
 
             try:
                 from core.engine.updown_trader import _fetch_binance_klines
-                klines = _fetch_binance_klines(asset, interval="1m", limit=30)
-                if len(klines) >= 30:
-                    closes = [float(k[4]) for k in klines]
-                    macro_mean = sum(closes) / len(closes)
-                    last_4 = klines[-4:]
-                    all_green = all(float(k[4]) > float(k[1]) for k in last_4)
-                    all_red = all(float(k[4]) < float(k[1]) for k in last_4)
-                    current_price = closes[-1]
+                klines = _fetch_binance_klines(asset, interval="1m", limit=15)
+                if len(klines) >= 3:
+                    last_3 = klines[-3:]
+                    all_green = all(float(k[4]) > float(k[1]) for k in last_3)
+                    all_red = all(float(k[4]) < float(k[1]) for k in last_3)
                     
                     is_streak_valid = False
-                    macro_trend_up = macro_mean > closes[0]
-                    if (macro_trend_up and all_red) or (not macro_trend_up and all_green):
+                    if direction == "UP" and all_red:
+                        is_streak_valid = True
+                    elif direction == "DOWN" and all_green:
                         is_streak_valid = True
                     
                     if not is_streak_valid:
-                        log.warning(f"[REV-STREAK-ABORT] Last 4 1m candles are not moving against macro trend.")
+                        log.warning(f"[REV-STREAK-ABORT] Buying {direction} but last 3 1m candles are not opposing (green/red indicators mismatch).")
                         return None
             except Exception as e:
                 log.warning(f"[REV-STREAK] Failed to verify 1m candles, aborting: {e}")
@@ -750,8 +754,10 @@ def place_order(
                     
                     if std > 0:
                         z = (current_spot - mean) / std
-                        if abs(z) < 2.5:
-                            log.warning(f"[FV-ABORT] Spot price z-score {z:.2f} is < 2.5 SD threshold.")
+                        from config import TIER2_FV_Z_THRESHOLD
+                        fv_z_thresh = cfg.get("TIER2_FV_Z_THRESHOLD", TIER2_FV_Z_THRESHOLD)
+                        if abs(z) < fv_z_thresh:
+                            log.warning(f"[FV-ABORT] Spot price z-score {z:.2f} is < {fv_z_thresh} SD threshold.")
                             return None
             except Exception as e:
                 log.warning(f"[FV] Failed to verify fair value, aborting: {e}")
@@ -1342,13 +1348,10 @@ def _resolve_updown_by_binance_candle(pos: dict) -> Optional[float]:
 
 def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
     """
-    Paper-trading only: auto-close positions older than max_hold_minutes.
-    Simulates a 60/40 win/loss split: +10% gain or -5% loss on position value.
-    Returns a list of exit result dicts for each trade closed.
+    Check and close open positions (both paper and live modes) older than max_hold_minutes
+    or that hit target/stop-loss/salvage/time-decay parameters.
     """
     cfg = _get_config()
-    if cfg["BOT_MODE"] != "paper_trading":
-        return []
 
     now = datetime.now(timezone.utc)
     closed = []

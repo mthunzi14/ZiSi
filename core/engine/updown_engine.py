@@ -503,20 +503,19 @@ class UpDownEngine:
         is_dual_eligible = self.should_dual_enter(up_price, dn_price)
         regime = get_regime_mode(self.timeframe)
 
-        # 1-Hour Streak Reversal Check
-        if self.timeframe == "1h" and len(klines) >= 5:
+        # Streak Reversal Check (unlocked for 5m, 15m, 1h)
+        if self.timeframe in ("5m", "15m", "1h") and len(klines) >= 5:
             closed_klines = klines[-5:-1]
             all_green = all(float(k[4]) > float(k[1]) for k in closed_klines)
             all_red = all(float(k[4]) < float(k[1]) for k in closed_klines)
             if all_green or all_red:
-                # Gate: 65c+ contra-price required for meaningful Kelly sizing.
-                # At 54c the crowd edge is thin — 8% Kelly on $50 = $4, barely worth 1h exposure.
+                # Gate: 65c+ contra-price for 1h, 40c+ for 5m/15m required for meaningful sizing.
                 _rev_contra_price = dn_price if all_green else up_price
-                _rev_min_price = 0.65
+                _rev_min_price = 0.40 if self.timeframe in ("5m", "15m") else 0.65
                 if _rev_contra_price < _rev_min_price:
                     log.info(
-                        "[REV-STREAK-GATE] %s/1h: contra price %.4f < %.4f min — skip",
-                        self.asset, _rev_contra_price, _rev_min_price,
+                        "[REV-STREAK-GATE] %s/%s: contra price %.4f < %.4f min — skip",
+                        self.asset, self.timeframe, _rev_contra_price, _rev_min_price,
                     )
             if (all_green or all_red) and _rev_contra_price >= _rev_min_price:
                 raw_dir = "DOWN" if all_green else "UP"
@@ -526,8 +525,8 @@ class UpDownEngine:
                 
                 score = 0.75
                 log.warning(
-                    "[REVERSAL-STREAK-1H] %s/1h: 4 consecutive %s closed candles. Sniping counter-trend %s (regime=%s, raw=%s)",
-                    self.asset, "green" if all_green else "red", direction, regime, raw_dir
+                    "[REVERSAL-STREAK-%s] %s/%s: 4 consecutive %s closed candles. Sniping counter-trend %s (regime=%s, raw=%s)",
+                    self.timeframe.upper(), self.asset, self.timeframe, "green" if all_green else "red", direction, regime, raw_dir
                 )
                 
                 edge_ctx = {}
@@ -556,7 +555,7 @@ class UpDownEngine:
                     
                     regime = edge_ctx.get("regime_name", regime)
                 except Exception as e:
-                    log.warning("[EDGE] Failed to query EdgeOrchestrator in 1h streak reversal: %s", e)
+                    log.warning("[EDGE] Failed to query EdgeOrchestrator in %s streak reversal: %s", self.timeframe, e)
                     self.last_edge_context = None
 
                 _streak_whale = edge_ctx.get("whale_pressure", 0.0) if edge_ctx else 0.0
@@ -567,8 +566,8 @@ class UpDownEngine:
                     )
                     if _whale_contradicts:
                         log.warning(
-                            "[STREAK-WHALE-VETO] %s/1h: whale pressure %.2f contradicts %s — skipping streak reversal",
-                            self.asset, _streak_whale, direction
+                            "[STREAK-WHALE-VETO] %s/%s: whale pressure %.2f contradicts %s — skipping streak reversal",
+                            self.asset, self.timeframe, _streak_whale, direction
                         )
                         return None
 

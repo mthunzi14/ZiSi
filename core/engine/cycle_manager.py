@@ -175,9 +175,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
         timeframe = engine.timeframe
         interval_minutes = 60 if timeframe == "1h" else int(timeframe.rstrip("m"))
 
-        # DOGE excluded — Pyth signal too noisy for reliable latency edge
-        if asset == "DOGE":
-            return
+        # DOGE is now enabled for latency edge scanning.
 
         # 5m T-15s and SOL T-15s previously disabled (25%/20% WR without CVD/OBI).
         # Re-enabled: CVD+OBI gate below enforces stricter thresholds for these,
@@ -259,26 +257,29 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
             open_positions = state_mgr.get_open_positions()
 
             if t_minus == 2:
-                _lat_threshold = max(0.006, sigma_frac * 0.40)   # 40% of 1-candle sigma — near-certainty
+                _lat_threshold = max(0.004, sigma_frac * 0.30)   # 30% of 1-candle sigma — near-certainty
             elif t_minus == 5:
-                _lat_threshold = max(0.002, sigma_frac * 0.15)   # 15% of sigma — direction just needs to be clear
+                _lat_threshold = max(0.001, sigma_frac * 0.10)   # 10% of sigma — direction just needs to be clear
             elif timeframe == "5m":
-                _lat_threshold = max(0.003, sigma_frac * 0.25)   # 25% of sigma — T-15s 5m
+                _lat_threshold = max(0.002, sigma_frac * 0.15)   # 15% of sigma — T-15s 5m
             else:
-                _lat_threshold = max(0.002, sigma_frac * 0.20)   # 20% of sigma — T-15s 15m/1h
+                _lat_threshold = max(0.001, sigma_frac * 0.12)   # 12% of sigma — T-15s 15m/1h
             if abs(pct_move) < _lat_threshold:
                 return
 
-            # Regime gate: if last 2 closed candles flipped direction → choppy market, skip (XRP/SOL only)
+            # Regime gate: if last 3 closed candles alternated direction twice -> choppy market, skip (XRP/SOL only)
             # BTC/ETH and T-2s exempt — at T-2s the candle is already decided
-            if t_minus not in (5, 2) and asset not in ("BTC", "ETH") and len(klines) >= 3:
+            if t_minus not in (5, 2) and asset not in ("BTC", "ETH") and len(klines) >= 4:
                 c_last = klines[-2]
                 c_prev = klines[-3]
+                c_prev2 = klines[-4]
                 last_bull = float(c_last[4]) > float(c_last[1])
                 prev_bull = float(c_prev[4]) > float(c_prev[1])
-                if last_bull != prev_bull:
-                    log.info("[LATENCY-ARB] %s/%s REGIME_GATE: last 2 candles flipped (%s→%s) — choppy, skipping",
+                prev2_bull = float(c_prev2[4]) > float(c_prev2[1])
+                if (last_bull != prev_bull) and (prev_bull != prev2_bull):
+                    log.info("[LATENCY-ARB] %s/%s REGIME_GATE: last 3 candles alternated (%s→%s→%s) — choppy, skipping",
                              asset, timeframe,
+                             "UP" if prev2_bull else "DN",
                              "UP" if prev_bull else "DN",
                              "UP" if last_bull else "DN")
                     return
@@ -293,7 +294,7 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 c3 = float(klines[-4][4])  # 3rd last closed
                 trend_is_up = (c1 > c2) and (c2 > c3)
                 trend_is_dn = (c1 < c2) and (c2 < c3)
-                _contra_threshold = 0.008  # 0.8%+ move needed to contradict clear 3-candle trend
+                _contra_threshold = 0.004  # 0.4%+ move needed to contradict clear 3-candle trend
                 if trend_is_up and direction == "DOWN" and abs(pct_move) < _contra_threshold:
                     log.info("[TREND-BIAS] %s/%s: 3-candle UP trend (%.0f→%.0f→%.0f) contradicts DOWN %.4f%% — need 0.8%% — skip",
                              asset, timeframe, c3, c2, c1, abs(pct_move) * 100)
@@ -344,8 +345,8 @@ async def start_latency_edge_scanner(session: aiohttp.ClientSession, engines: di
                 )
                 # Thresholds: strict for 5m/SOL T-15s (previously disabled assets),
                 # standard for 15m/1h BTC/ETH
-                _cvd_mult   = 0.40 if _strict_cvd_obi else 0.25
-                _obi_thresh = 0.20 if _strict_cvd_obi else 0.10
+                _cvd_mult   = 0.25 if _strict_cvd_obi else 0.15
+                _obi_thresh = 0.12 if _strict_cvd_obi else 0.05
 
                 fast_cvd, slow_cvd = await get_cvd_metrics(asset)
                 binance_obi = await get_binance_obi(asset)
@@ -999,11 +1000,11 @@ async def start_resolution_sweeper(session, engines):
                     sweep_dir = None
                     sweep_price = None
                     sweep_mid = None
-                    if up_price >= 0.99:
+                    if up_price >= 0.96:
                         sweep_dir = "YES"
                         sweep_price = up_price
                         sweep_mid = market["up_market"]["id"]
-                    elif dn_price >= 0.99:
+                    elif dn_price >= 0.96:
                         sweep_dir = "NO"
                         sweep_price = dn_price
                         sweep_mid = market["dn_market"]["id"]
@@ -1118,36 +1119,36 @@ async def start_close_sniper(session, engines):
 
                     _mode2_threshold = float(os.getenv("NCS_MODE2_THRESHOLD", "0.90"))
 
-                    # Mode 1: terminal snipe — 95¢ and above, 8-45s TTL
-                    if up_price >= 0.95:
+                    # Mode 1: terminal snipe — 94¢ and above, 8-45s TTL
+                    if up_price >= 0.94:
                         snipe_dir = "YES"
                         snipe_price = up_price
                         market_id = market["up_market"]["id"]
                         snipe_mode = "CLOSE-SNIPE"
-                    elif dn_price >= 0.95:
+                    elif dn_price >= 0.94:
                         snipe_dir = "NO"
                         snipe_price = dn_price
                         market_id = market["dn_market"]["id"]
                         snipe_mode = "CLOSE-SNIPE"
-                    # Mode 2: early certainty — 88-94¢, tighter 8-25s TTL window
-                    elif _mode2_threshold <= up_price < 0.95 and 8 <= ttl <= 25:
+                    # Mode 2: early certainty — 85-93¢, tighter 8-25s TTL window
+                    elif _mode2_threshold <= up_price < 0.94 and 8 <= ttl <= 25:
                         snipe_dir = "YES"
                         snipe_price = up_price
                         market_id = market["up_market"]["id"]
                         snipe_mode = "CLOSE-SNIPE-EARLY"
-                    elif _mode2_threshold <= dn_price < 0.95 and 8 <= ttl <= 25:
+                    elif _mode2_threshold <= dn_price < 0.94 and 8 <= ttl <= 25:
                         snipe_dir = "NO"
                         snipe_price = dn_price
                         market_id = market["dn_market"]["id"]
                         snipe_mode = "CLOSE-SNIPE-EARLY"
 
                     # NCS Stability gate: block rapid-escalation entries.
-                    # If max(up, dn) was below 0.70 at any point in the last 90s, the price
+                    # If max(up, dn) was below 0.60 at any point in the last 90s, the price
                     # moved from uncertain to near-certain too fast — classic last-second reversal
                     # setup. Only applies to Mode 1 (Mode 2 EARLY is already short-window).
                     if snipe_mode == "CLOSE-SNIPE" and snipe_dir:
                         _hist_90s = [p for ts, p in _price_hist.get(f"{asset}/{timeframe}", []) if now_ts - ts <= 90]
-                        if _hist_90s and min(_hist_90s) < 0.70:
+                        if _hist_90s and min(_hist_90s) < 0.60:
                             log.info(
                                 "[NCS-STABILITY] %s/%s: %.0fc now but was %.0fc in last 90s — rapid escalation — skip",
                                 asset, timeframe, snipe_price * 100, min(_hist_90s) * 100,

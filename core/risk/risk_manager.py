@@ -51,7 +51,7 @@ _DRAWDOWN_STAIRCASE = [
 ]
 
 # Session High Watermark trailing stop: halt when account drops X% below its session peak
-_SESSION_HWM_STOP_PCT: float = 0.08   # 8% below session high → stop for the session
+_SESSION_HWM_STOP_PCT: float = 0.25   # 25% below session high → stop for the session
 
 # Order book imbalance gate: require at least 10% directional imbalance to enter
 _OB_IMBALANCE_MIN: float = 0.10  # (bid_vol - ask_vol) / (bid_vol + ask_vol) ≥ 10%
