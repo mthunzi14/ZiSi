@@ -667,6 +667,20 @@ function getBalancePayload() {
       minutesAgo = Math.floor((new Date() - lastUpdate) / 60000);
     }
 
+    let runtime = { hours: 0, days: 0, progressPercent: 0, goalHours: 336, status: 'tracking', start_time: null };
+    try {
+      const runtimeFile = path.join(BOT_ROOT, 'runtime_tracking.json');
+      if (fs.existsSync(runtimeFile)) {
+        const rt = JSON.parse(fs.readFileSync(runtimeFile, 'utf-8').replace(/^﻿/, ''));
+        const hours = rt.runtime_hours || 0;
+        runtime = {
+          hours: Math.round(hours * 10) / 10,
+          days: Math.floor(hours / 24),
+          progressPercent: rt.progress_percent || 0,
+          goalHours: rt.goal_hours || 336,
+          status: rt.status || 'tracking',
+          start_time: rt.start_time || null,
+        };
       }
     } catch (_) {}
 
