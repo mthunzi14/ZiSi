@@ -33,7 +33,7 @@ TIME_GATE_UTC: tuple = (0, 24)
 
 # Inversion detection
 INVERSION_WINDOW: int = 40
-INVERSION_TRIGGER_WR: float = 0.45
+INVERSION_TRIGGER_WR: float = 0.20
 INVERSION_RECOVERY_WR: float = 0.52
 
 # Dual-entry cap

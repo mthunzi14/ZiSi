@@ -81,7 +81,7 @@ export default function App() {
         elements.forEach(el => {
           if (el.textContent !== formattedPnl) {
             el.textContent = formattedPnl;
-            el.style.color = pnl > 0 ? 'var(--color-profit)' : pnl < 0 ? 'var(--color-loss)' : '#71717a';
+            el.style.color = pnl > 0 ? 'var(--color-profit)' : pnl < 0 ? 'var(--color-loss)' : '#6d81a1';
           }
         });
         delete cache.unrealPnl[asset];
@@ -176,14 +176,14 @@ export default function App() {
             const payload = event.payload || {};
             pendingPositionsRef.current = {
               active: payload.active || [],
-              closed: (payload.closed || []).slice(0, 500),
+              closed: payload.closed || [],
               summary: payload.summary || {}
             };
           } else if (event.type === 'positions_snapshot') {
             const payload = event.payload || {};
             pendingPositionsRef.current = {
               active: payload.active || [],
-              closed: (payload.closed || []).slice(0, 500),
+              closed: payload.closed || [],
               summary: payload.summary || {}
             };
           } else if (event.type === 'balance_update') {
@@ -311,13 +311,13 @@ export default function App() {
                 width: '26px',
                 height: '26px',
                 borderRadius: '50%',
-                background: 'rgba(113, 113, 122, 0.18)',
+                background: 'rgba(109, 129, 161, 0.18)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 opacity: 0.55,
-                boxShadow: '0 0 6px rgba(113, 113, 122, 0.3)',
-                border: '1px solid rgba(113, 113, 122, 0.35)',
+                boxShadow: '0 0 6px rgba(109, 129, 161, 0.3)',
+                border: '1px solid rgba(109, 129, 161, 0.35)',
                 transition: 'all 200ms ease'
               }}
             >
@@ -341,7 +341,7 @@ export default function App() {
           <button 
             onClick={() => setActiveTab('overview')}
             className={`nav-item ${activeTab === 'overview' ? 'nav-item-active nav-active-glow' : ''}`}
-            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'overview' ? 'rgba(113,113,122,0.08)' : undefined, borderRadius: '10px' }}
+            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'overview' ? 'rgba(109, 129, 161,0.08)' : undefined, borderRadius: '10px' }}
             title="Overview"
           >
             <svg style={{ width: '16px', height: '16px', opacity: !isVisuallyExpanded ? 0.7 : 1 }} fill="none" stroke="currentColor" strokeWidth={activeTab === 'overview' ? 2.5 : 1.8} viewBox="0 0 24 24">
@@ -353,7 +353,7 @@ export default function App() {
           <button 
             onClick={() => setActiveTab('analytics')}
             className={`nav-item ${activeTab === 'analytics' ? 'nav-item-active nav-active-glow' : ''}`}
-            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'analytics' ? 'rgba(113,113,122,0.08)' : undefined, borderRadius: '10px' }}
+            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'analytics' ? 'rgba(109, 129, 161,0.08)' : undefined, borderRadius: '10px' }}
             title="Analytics"
           >
             <svg style={{ width: '16px', height: '16px', opacity: !isVisuallyExpanded ? 0.7 : 1 }} fill="none" stroke="currentColor" strokeWidth={activeTab === 'analytics' ? 2.5 : 1.8} viewBox="0 0 24 24">
@@ -365,7 +365,7 @@ export default function App() {
           <button 
             onClick={() => setActiveTab('settings')}
             className={`nav-item ${activeTab === 'settings' ? 'nav-item-active nav-active-glow' : ''}`}
-            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'settings' ? 'rgba(113,113,122,0.08)' : undefined, borderRadius: '10px' }}
+            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'settings' ? 'rgba(109, 129, 161,0.08)' : undefined, borderRadius: '10px' }}
             title="Settings"
           >
             <svg style={{ width: '16px', height: '16px', opacity: !isVisuallyExpanded ? 0.7 : 1 }} fill="none" stroke="currentColor" strokeWidth={activeTab === 'settings' ? 2.5 : 1.8} viewBox="0 0 24 24">

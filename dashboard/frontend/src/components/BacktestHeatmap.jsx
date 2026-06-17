@@ -107,7 +107,7 @@ export default function BacktestHeatmap() {
           }}>
             Backtest Parameter Heatmap
             {data?.isGenerating && (
-              <span className="alert-pulse" style={{ fontSize: '9px', background: 'rgba(113, 113, 122, 0.15)', color: 'var(--color-accent)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(113, 113, 122, 0.3)' }}>
+              <span className="alert-pulse" style={{ fontSize: '9px', background: 'rgba(109, 129, 161, 0.15)', color: 'var(--color-accent)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(109, 129, 161, 0.3)' }}>
                 REFRESHING...
               </span>
             )}
@@ -135,7 +135,7 @@ export default function BacktestHeatmap() {
                 padding: '4px 10px',
                 borderRadius: '6px',
                 border: 'none',
-                background: colorMode === mode ? 'rgba(113,113,122,0.18)' : 'transparent',
+                background: colorMode === mode ? 'rgba(109, 129, 161,0.18)' : 'transparent',
                 color: colorMode === mode ? 'var(--color-accent)' : 'var(--color-text-muted)',
                 fontSize: '10px',
                 fontFamily: 'var(--font-mono, monospace)',

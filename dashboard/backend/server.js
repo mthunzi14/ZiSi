@@ -596,8 +596,7 @@ async function getEnrichedPositionsPayload() {
   try {
     const positions = cachedPositions;
     const active = positions.active || [];
-    // Cap closed list to 500 items in the backend payload
-    const closed = (positions.closed || []).slice(0, 500);
+    const closed = positions.closed || [];
     const summary = positions.summary || {};
     
     let liveUnrealized = 0;

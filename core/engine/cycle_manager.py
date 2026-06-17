@@ -892,16 +892,16 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             if not snipe_direction:
                 return
 
-            # Require aligned order-flow imbalance
-            from core.engine.updown_engine import get_current_ofi
-            ofi = await get_current_ofi(asset)
-            if ofi is not None:
-                if snipe_direction == "UP" and ofi <= 0:
-                    log.info("[REVERSAL-SNIPE] Aborted %s/%s: UP signal but OFI is not aligned (ofi=%.4f)", asset, timeframe, ofi)
-                    return
-                elif snipe_direction == "DOWN" and ofi >= 0:
-                    log.info("[REVERSAL-SNIPE] Aborted %s/%s: DOWN signal but OFI is not aligned (ofi=%.4f)", asset, timeframe, ofi)
-                    return
+            # Require aligned order-flow imbalance (Bypassed for contrarian REVERSAL-SNIPE to allow flow)
+            # from core.engine.updown_engine import get_current_ofi
+            # ofi = await get_current_ofi(asset)
+            # if ofi is not None:
+            #     if snipe_direction == "UP" and ofi <= 0:
+            #         log.info("[REVERSAL-SNIPE] Aborted %s/%s: UP signal but OFI is not aligned (ofi=%.4f)", asset, timeframe, ofi)
+            #         return
+            #     elif snipe_direction == "DOWN" and ofi >= 0:
+            #         log.info("[REVERSAL-SNIPE] Aborted %s/%s: DOWN signal but OFI is not aligned (ofi=%.4f)", asset, timeframe, ofi)
+            #         return
 
             # Skip if already in this market for REVERSAL-SNIPE
             import core.engine.state_manager as state_mgr

@@ -88,7 +88,7 @@ class ProgressiveStakingEngine:
     def get_current_size(self) -> float:
         from core.engine.state_manager import get_current_balance
         balance = get_current_balance()
-        ratios = [0.15, 0.25, 0.40, 0.65, 0.90]
+        ratios = [0.10, 0.15, 0.22, 0.35, 0.50]
         return round(balance * ratios[self.step_index], 2)
 
     def is_frozen(self, ignore_order_id=None) -> bool:
@@ -124,7 +124,7 @@ class ProgressiveStakingEngine:
             return
         
         self.last_loss_timestamp = timestamp
-        self.step_index = max(0, self.step_index - 2)
+        self.step_index = max(0, self.step_index - 1)
         self.save()
         log.info(f"[STAKING] Step index retreated to Step {self.step_index + 1} (${self.get_current_size():.2f})")
 

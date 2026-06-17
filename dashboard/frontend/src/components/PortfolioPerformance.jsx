@@ -10,7 +10,7 @@ const ASSET_COLORS = {
   'BTC/5m':  '#e4e4e7',
   'BTC/15m': '#d4d4d8',
   'ETH/5m':  '#a1a1aa',
-  'SOL/5m':  '#71717a',
+  'SOL/5m':  '#6d81a1',
   'XRP/5m':  '#52525b',
   'DOGE/5m': '#3f3f46',
   'LINK/5m': '#27272a',
@@ -147,7 +147,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
   };
 
   const { pnl: tfPnl, pct: tfPct } = getPnlMetrics();
-  const pnlColor = '#71717a';
+  const pnlColor = '#6d81a1';
 
   // Per-trade stats
   const closed    = positions?.closed || [];
@@ -175,16 +175,16 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
     if (!active || !payload?.length) return null;
     const d      = payload[0].payload;
     const pnlVal = parseFloat(d.pnl || 0);
-    const c      = '#71717a';
+    const c      = '#6d81a1';
     return (
-      <div style={{ background: 'rgba(12,12,14,0.96)', backdropFilter: 'blur(12px)', border: '1px solid #71717a55', borderRadius: 8, padding: '10px 14px' }}>
+      <div style={{ background: 'rgba(12,12,14,0.96)', backdropFilter: 'blur(12px)', border: '1px solid #6d81a155', borderRadius: 8, padding: '10px 14px' }}>
         <div style={{ color: '#52525b', fontSize: 10, marginBottom: 4 }}>{new Date(d.timestamp).toLocaleString()}</div>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 11, margin: '2px 0' }}>
-          <span style={{ color: '#71717a' }}>Balance</span>
+          <span style={{ color: '#6d81a1' }}>Balance</span>
           <span style={{ fontWeight: 700, fontFamily: 'monospace' }}>${parseFloat(d.balance || 0).toFixed(2)}</span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 11, margin: '2px 0' }}>
-          <span style={{ color: '#71717a' }}>Net P&L</span>
+          <span style={{ color: '#6d81a1' }}>Net P&L</span>
           <span style={{ fontWeight: 700, fontFamily: 'monospace', color: c }}>{pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}</span>
         </div>
       </div>
@@ -216,7 +216,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
           <span style={{
             fontFamily: 'monospace', fontSize: 11, fontWeight: 800,
             color: pnlColor,
-            background: tfPnl >= 0 ? 'rgba(255,255,255,0.06)' : 'rgba(113,113,122,0.08)',
+            background: tfPnl >= 0 ? 'rgba(255,255,255,0.06)' : 'rgba(109, 129, 161,0.08)',
             border: `1px solid ${pnlColor}30`,
             borderRadius: 6, padding: '2px 8px',
           }}>
@@ -231,8 +231,8 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
               {TF_PILLS.map(tf => (
                 <button key={tf} onClick={() => setTimeframe(tf)} style={{
                   padding: '2px 8px', borderRadius: 4, border: 'none',
-                  background: timeframe === tf ? 'rgba(113,113,122,0.15)' : 'transparent',
-                  color: timeframe === tf ? '#71717a' : '#52525b',
+                  background: timeframe === tf ? 'rgba(109, 129, 161,0.15)' : 'transparent',
+                  color: timeframe === tf ? '#6d81a1' : '#52525b',
                   fontSize: 9, fontFamily: 'monospace', fontWeight: 700, cursor: 'pointer', transition: 'all 0.15s',
                 }}>{tf}</button>
               ))}
@@ -259,7 +259,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
                 <div style={{ fontFamily: 'var(--font-display)', fontSize: 26, fontWeight: 800, color: pnlColor, lineHeight: 1 }}>
                   <CountUpStats value={Math.abs(tfPnl)} decimals={2} prefix={tfPnl >= 0 ? '+$' : '-$'} />
                 </div>
-                <div style={{ fontSize: 10, color: '#71717a', marginTop: 2 }}>
+                <div style={{ fontSize: 10, color: '#6d81a1', marginTop: 2 }}>
                   <CountUpStats value={Math.abs(tfPct)} decimals={2} prefix={tfPct >= 0 ? '+' : '-'} suffix="%" style={{ color: pnlColor }} />
                   <span style={{ marginLeft: 4 }}>return</span>
                 </div>
@@ -268,10 +268,10 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
               {/* Quick stats */}
               {[
                 { label: 'Trades', val: closed.length },
-                { label: 'WR', val: wr === '—' ? '—' : `${wr}%`, color: '#71717a' },
-                { label: 'PF', val: pf, color: '#71717a' },
-                { label: 'Avg W', val: avgW !== '—' ? `+$${avgW}` : '—', color: '#71717a' },
-                { label: 'Avg L', val: avgL !== '—' ? `-$${avgL}` : '—', color: '#71717a' },
+                { label: 'WR', val: wr === '—' ? '—' : `${wr}%`, color: '#6d81a1' },
+                { label: 'PF', val: pf, color: '#6d81a1' },
+                { label: 'Avg W', val: avgW !== '—' ? `+$${avgW}` : '—', color: '#6d81a1' },
+                { label: 'Avg L', val: avgL !== '—' ? `-$${avgL}` : '—', color: '#6d81a1' },
               ].map(({ label, val, color }) => (
                 <div key={label} style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: 8, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>{label}</div>
@@ -286,8 +286,8 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
                 <AreaChart data={filteredHistory} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}>
                   <defs>
                     <linearGradient id="eqGlow" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor="#71717a" stopOpacity={0.20} />
-                      <stop offset="95%" stopColor="#71717a" stopOpacity={0.0} />
+                      <stop offset="5%"  stopColor="#6d81a1" stopOpacity={0.20} />
+                      <stop offset="95%" stopColor="#6d81a1" stopOpacity={0.0} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" vertical={false} />
@@ -311,7 +311,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
           </>
         ) : (
           <>
-            <div style={{ fontSize: 11, color: '#71717a', marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: '#6d81a1', marginBottom: 8 }}>
               Rolling 40-trade win rate per asset (min 5 trades to appear)
             </div>
             <div style={{ width: '100%', height: 200 }}>
@@ -330,7 +330,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
                       contentStyle={{ background: 'rgba(12,12,14,0.96)', border: '1px solid #27272a', borderRadius: 8, fontSize: 11 }} />
                     <Legend wrapperStyle={{ fontSize: 9, color: '#52525b', paddingTop: 8 }} iconSize={7} />
                     <ReferenceLine y={0.62} stroke="rgba(255,255,255,0.25)" strokeDasharray="4 3" label={{ value: 'Edge 62%', fill: '#a1a1aa', fontSize: 8 }} />
-                    <ReferenceLine y={0.50} stroke="rgba(113,113,122,0.25)" strokeDasharray="4 3" label={{ value: 'Breakeven', fill: '#71717a', fontSize: 8 }} />
+                    <ReferenceLine y={0.50} stroke="rgba(109, 129, 161,0.25)" strokeDasharray="4 3" label={{ value: 'Breakeven', fill: '#6d81a1', fontSize: 8 }} />
                     {ASSETS.map(key => (
                       <Line key={key} type="monotone" dataKey={key} stroke={ASSET_COLORS[key]}
                         strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />

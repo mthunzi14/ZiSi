@@ -289,7 +289,7 @@ function CandleCountdownBar({ assetMacro = {} }) {
   const dColor  = d => d === 'UP' ? '#10b981' : d === 'DOWN' ? '#ef4444' : '#52525b';
   const dGlyph  = d => d === 'UP' ? '↑' : d === 'DOWN' ? '↓' : '→';
 
-  const timerColor = p => p < 15 ? '#ef4444' : p < 30 ? '#f97316' : '#71717a';
+  const timerColor = p => p < 15 ? '#ef4444' : p < 30 ? '#f97316' : '#6d81a1';
 
   return (
     <div style={{
@@ -477,7 +477,7 @@ function SessionAnalytics({ closed }) {
   const maxDDColor= maxDD > 8 ? '#ef4444' : maxDD > 4 ? '#f97316' : '#10b981';
 
   return (
-    <CollapsiblePanel title="Session Analytics" defaultOpen={true} accentColor="#71717a">
+    <CollapsiblePanel title="Session Analytics" defaultOpen={true} accentColor="#6d81a1">
       <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         {/* Drawdown stats */}
         <div style={{ display: 'flex', gap: 16 }}>
@@ -561,7 +561,7 @@ function AssetHeatmap({ closed }) {
                 <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 700, color: netColor(net) }}>
                   {net >= 0 ? '+' : ''}${net.toFixed(2)}
                 </td>
-                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#71717a' }}>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#6d81a1' }}>
                   {avgH < 60 ? `${avgH.toFixed(0)}m` : `${(avgH/60).toFixed(1)}h`}
                 </td>
               </tr>
@@ -636,7 +636,7 @@ function SourceHeatmap({ closed }) {
                 <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 700, color: netColor(net) }}>
                   {net >= 0 ? '+' : ''}${net.toFixed(2)}
                 </td>
-                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#71717a' }}>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#6d81a1' }}>
                   {avgH < 60 ? `${avgH.toFixed(0)}m` : `${(avgH/60).toFixed(1)}h`}
                 </td>
               </tr>
@@ -700,7 +700,7 @@ function TimeframeHeatmap({ closed }) {
                 <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 700, color: netColor(net) }}>
                   {net >= 0 ? '+' : ''}${net.toFixed(2)}
                 </td>
-                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#71717a' }}>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#6d81a1' }}>
                   {avgH < 60 ? `${avgH.toFixed(0)}m` : `${(avgH/60).toFixed(1)}h`}
                 </td>
               </tr>
@@ -720,7 +720,7 @@ const GATE_META = {
   'DIR-COOLDOWN': { color: '#2b7fff', label: 'COOLDOWN' },
   'TREND-CONFIRM':{ color: '#a855f7', label: 'TREND-CF' },
   'TREND-GATE':   { color: '#ef4444', label: 'TREND' },
-  'FV-EDGE-GATE': { color: '#71717a', label: 'FV-EDGE' },
+  'FV-EDGE-GATE': { color: '#6d81a1', label: 'FV-EDGE' },
   'CORROBORATE':  { color: '#6b7280', label: 'CORR' },
   'VOL-SURGE':    { color: '#ec4899', label: 'VOL-SURGE' },
 };
@@ -1517,13 +1517,13 @@ function SrcPill({ src, active, count, pnl, onClick }) {
 export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {} }) {
   const [tab, setTab] = useState('open');
   const [srcFilter, setSrcFilter] = useState('ALL');
-  const [limit, setLimit] = useState(500);
+  const [limit, setLimit] = useState(100);
   const [engineStatus, setEngineStatus] = useState({ status: 'SCANNING', detail: '' });
   const [btnHovered, setBtnHovered] = useState(false);
 
-  // Reset limit to 500 when the filter source or tab changes
+  // Reset limit to 100 when the filter source or tab changes
   useEffect(() => {
-    setLimit(500);
+    setLimit(100);
   }, [srcFilter, tab]);
 
 
@@ -1565,7 +1565,7 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
   const handleLedgerScroll = useCallback((e) => {
     const el = e.currentTarget;
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) {
-      setLimit(prev => Math.min(prev + 20, filteredClosed.length));
+      setLimit(prev => Math.min(prev + 100, filteredClosed.length));
     }
   }, [filteredClosed.length]);
 
@@ -1670,6 +1670,7 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
             {/* Trade rows — GPU-accelerated virtualized scroll window */}
             <ColHeaders cols={CLOSED_COLS} grid={CLOSED_GRID} />
             <div
+              onScroll={handleLedgerScroll}
               style={{
                 overflowY: 'auto',
                 maxHeight: 380,
@@ -1678,7 +1679,7 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
                 transform: 'translate3d(0,0,0)',
                 willChange: 'transform',
                 WebkitOverflowScrolling: 'touch',
-                contain: 'strict',
+                contain: 'content',
               }}
             >
               {visibleClosed.length === 0
