@@ -273,7 +273,7 @@ function startHeartbeatWatchdog() {
       if (botStopped) return;
       if (process.platform === 'win32' && !botProcess) return;
 
-      const stateFile = path.join(BOT_ROOT, 'account_state.json');
+      const stateFile = path.join(BOT_ROOT, 'data', 'account_state.json');
       if (fs.existsSync(stateFile)) {
         const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
         const lastUpdated = new Date(state.last_updated);
@@ -322,7 +322,7 @@ process.on('SIGTERM', () => { stopBot(); process.exit(0); });
 
 // ── Integrated health monitor ─────────────────────────────────────────────────
 function startHealthMonitor() {
-  const stateFile = path.join(BOT_ROOT, 'account_state.json');
+  const stateFile = path.join(BOT_ROOT, 'data', 'account_state.json');
 
   const check = () => {
     try {
