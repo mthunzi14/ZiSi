@@ -19,7 +19,7 @@ DEFAULT_SIGNAL_PARAMS = {
     "rsi_up_soft": 54.0, "mom_up_soft": 0.01, "ofi_confirm_up": 0.45,
     "rsi_dn": 40.0, "mom_dn": -0.02,
     "rsi_dn_soft": 46.0, "mom_dn_soft": -0.01, "ofi_confirm_dn": -0.45,
-    "reversal_lo": 20.0, "reversal_hi": 80.0, "reversal_score": 0.70,
+    "reversal_lo": 25.0, "reversal_hi": 75.0, "reversal_score": 0.70,
     # OFI-divergence block magnitudes (sign applied per-direction)
     "ofi_block_neutral": 0.35,  # used when 45 <= rsi <= 55
     "ofi_block_5m": 0.28,
@@ -39,8 +39,8 @@ REGIME_RSI_PARAMS = {
         "rsi_dn_soft": 46.0,
         "mom_dn_soft": -0.01,
         "ofi_confirm_dn": -0.45,
-        "reversal_lo": 15.0, # tightened reversal threshold in TRENDING to avoid falling knives
-        "reversal_hi": 85.0, # tightened reversal threshold in TRENDING to avoid falling knives
+        "reversal_lo": 20.0, # tightened reversal threshold in TRENDING to avoid falling knives
+        "reversal_hi": 80.0, # tightened reversal threshold in TRENDING to avoid falling knives
         "reversal_score": 0.70,
         "ofi_block_neutral": 0.35,
         "ofi_block_5m": 0.28,
@@ -57,8 +57,8 @@ REGIME_RSI_PARAMS = {
         "rsi_dn_soft": 50.0,   # raised from 46
         "mom_dn_soft": -0.008,
         "ofi_confirm_dn": -0.40,
-        "reversal_lo": 20.0,
-        "reversal_hi": 80.0,
+        "reversal_lo": 25.0,
+        "reversal_hi": 75.0,
         "reversal_score": 0.70,
         "ofi_block_neutral": 0.30,
         "ofi_block_5m": 0.25,
@@ -75,8 +75,8 @@ REGIME_RSI_PARAMS = {
         "rsi_dn_soft": 35.0, # disabled soft triggers in chaos regime
         "mom_dn_soft": -0.02,
         "ofi_confirm_dn": -0.45,
-        "reversal_lo": 18.0,
-        "reversal_hi": 82.0,
+        "reversal_lo": 22.0,
+        "reversal_hi": 78.0,
         "reversal_score": 0.70,
         "ofi_block_neutral": 0.35,
         "ofi_block_5m": 0.28,
@@ -93,8 +93,8 @@ REGIME_RSI_PARAMS = {
         "rsi_dn_soft": 48.0, # loosened soft threshold to generate more breakout entries
         "mom_dn_soft": -0.01,
         "ofi_confirm_dn": -0.35, # loosened soft threshold to generate more breakout entries
-        "reversal_lo": 20.0,
-        "reversal_hi": 80.0,
+        "reversal_lo": 25.0,
+        "reversal_hi": 75.0,
         "reversal_score": 0.70,
         "ofi_block_neutral": 0.35,
         "ofi_block_5m": 0.28,

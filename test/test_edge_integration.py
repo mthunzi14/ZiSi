@@ -24,7 +24,7 @@ class TestEdgeIntegration(unittest.IsolatedAsyncioTestCase):
         # 1. Setup mock data for a signal to trigger
         # 30 candles of OHLCV
         mock_fetch_klines.return_value = [
-            [i, 100, 105, 95, 100 + i * 0.5, 10, 0, 0, 0, 0, 0, 0] for i in range(30)
+            [i, 100, 105, 95, 98.0 if i == 26 else 100.0 + i * 0.5, 10, 0, 0, 0, 0, 0, 0] for i in range(30)
         ]
         mock_get_ofi.return_value = 0.8  # Strong buying pressure
         mock_fetch_market.return_value = {

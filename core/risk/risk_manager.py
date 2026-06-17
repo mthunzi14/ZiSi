@@ -708,13 +708,14 @@ def calculate_exit_targets(
     entry_price: float,
     position_size_dollars: float,
     direction: str = "UP",
+    strategy_type: str = "",
 ) -> dict:
     """
     Calculate take-profit and stop-loss price levels dynamically based on entry cost.
     Delegates to position_sizer.py.
     """
     from core.risk.position_sizer import calculate_exit_targets as sizer_exit_targets
-    res = sizer_exit_targets(entry_price, position_size_dollars, direction)
+    res = sizer_exit_targets(entry_price, position_size_dollars, direction, strategy_type)
     log.info(
         "Exit targets — target: %.4f (+$%.2f) | stop: %.4f (-$%.2f) | R:R=%.2f | direction=%s",
         res["target_price"], res["profit_at_target"], res["stop_loss"], abs(res["loss_at_stop"]), res["risk_reward_ratio"], direction

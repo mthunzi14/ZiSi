@@ -38,8 +38,8 @@ _DEFAULT_PAYOUT_RATIO: float = 1.50
 
 # Position size guards
 _MIN_POSITION_USD: float = 0.50
-_MAX_POSITION_USD: float = 5.00
-_MAX_BANKROLL_FRACTION: float = 0.05  # Never risk >5% per trade
+_MAX_POSITION_USD: float = 250.00
+_MAX_BANKROLL_FRACTION: float = 0.50  # Never risk >50% per trade
 
 # Kelly multipliers by signal type (backward compat)
 _SIGNAL_TYPE_MULT: Dict[str, float] = {
@@ -184,12 +184,12 @@ class PositionSizer:
         # If entry price is between $0.10 and $0.75 on short-term horizons (5m, 15m) for any of our 8 core engines,
         # bypass Kelly and standard guards, enforcing a hard, fixed position allocation minimum of 30% of account balance.
         _min_pos_dynamic = self.account_balance * 0.01
-        _max_pos_dynamic = self.account_balance * 0.10
+        _max_pos_dynamic = max(5.00, self.account_balance * 0.50)
         if (trigger_upper in ['SIG', 'REV_SNIPE', 'REVERSAL_SNIPE', 'SWEEP', 'LAT_ARB', 'LAT_RAW', 'NCS', 'FV'] 
                 and timeframe in ["5m", "15m"] 
                 and 0.10 <= entry_price <= 0.75):
 
-            size = self.account_balance * 0.30
+            size = min(self.account_balance * 0.10, 50.00)
             remaining = self.max_cycle_capital - self._capital_used
             size = min(size, remaining)
             size = min(size, self.account_balance)
@@ -465,6 +465,7 @@ def calculate_exit_targets(
     entry_price: float,
     position_size_dollars: float,
     direction: str = "UP",
+    strategy_type: str = "",
 ) -> dict:
     """
     Calculate take-profit and stop-loss price levels dynamically based on entry cost.
@@ -476,16 +477,21 @@ def calculate_exit_targets(
     target_mult = cfg["POSITION_TARGET_MULTIPLIER"]       # e.g. 1.30
     
     # Price-Dependent Dynamic Stop Loss: tighter stops on expensive contracts
-    if entry_price > 0.65:
-        stop_mult = 0.90  # 10% stop loss
+    if strategy_type == "SIG":
+        stop_price = max(0.01, round(entry_price - 0.30, 4))
+        profit_margin_delta = entry_price * (target_mult - 1.0)
+        target_price = entry_price + profit_margin_delta
     else:
-        stop_mult = 0.85  # standard 15% stop loss (x0.85)
+        if entry_price > 0.65:
+            stop_mult = 0.90  # 10% stop loss
+        else:
+            stop_mult = 0.85  # standard 15% stop loss (x0.85)
 
-    profit_margin_delta = entry_price * (target_mult - 1.0)
-    risk_loss_delta = entry_price * (1.0 - stop_mult)
-    
-    target_price = entry_price + profit_margin_delta
-    stop_price = entry_price - risk_loss_delta
+        profit_margin_delta = entry_price * (target_mult - 1.0)
+        risk_loss_delta = entry_price * (1.0 - stop_mult)
+        
+        target_price = entry_price + profit_margin_delta
+        stop_price = entry_price - risk_loss_delta
 
     target_price = round(target_price, 6)
     stop_price = round(stop_price, 6)

@@ -185,7 +185,7 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
             context, engine, "BTC", "5m", 5, signal_sig, current_balance=200.0
         )
         self.assertTrue(allowed3)
-        self.assertAlmostEqual(details3["bet_usd"], 24.00) # capped to standard max $24
+        self.assertAlmostEqual(details3["bet_usd"], 67.5) # SIG/REV_SNIPE bypass standard 12% cap (gets 67.5)
 
     @patch("core.engine.updown_engine._fetch_klines_async")
     @patch("core.engine.updown_engine._cache")
@@ -194,7 +194,7 @@ class TestEdgesAndFilters(unittest.IsolatedAsyncioTestCase):
         from datetime import datetime
         
         mock_klines.return_value = [
-            [0, 100.0, 105.0, 95.0, 102.0, 1000.0] for _ in range(30)
+            [0, 100.0, 105.0, 95.0, 98.0 if i == 26 else 100.0 + i * 0.5, 1000.0] for i in range(30)
         ]
         
         state_mgr = MagicMock()

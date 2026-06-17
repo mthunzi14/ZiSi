@@ -875,17 +875,17 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             _th4 = 0.000069 if timeframe == "5m" else 0.002
 
             _snipe_size_mult = 1.0
-            if up_price >= 0.70 and dn_price <= 0.30 and pct_move <= _th1:
+            if up_price >= 0.65 and dn_price <= 0.35 and pct_move <= _th1:
                 snipe_direction = "DOWN"
                 snipe_price = dn_price
-            elif dn_price >= 0.70 and up_price <= 0.30 and pct_move >= _th2:
+            elif dn_price >= 0.65 and up_price <= 0.35 and pct_move >= _th2:
                 snipe_direction = "UP"
                 snipe_price = up_price
-            elif up_price >= 0.60 and dn_price <= 0.40 and pct_move <= _th3:
+            elif up_price >= 0.55 and dn_price <= 0.45 and pct_move <= _th3:
                 snipe_direction = "DOWN"
                 snipe_price = dn_price
                 _snipe_size_mult = 0.5
-            elif dn_price >= 0.60 and up_price <= 0.40 and pct_move >= _th4:
+            elif dn_price >= 0.55 and up_price <= 0.45 and pct_move >= _th4:
                 snipe_direction = "UP"
                 snipe_price = up_price
                 _snipe_size_mult = 0.5

@@ -879,10 +879,11 @@ class UpDownEngine:
                     )
                     vol_surge_detected = True
 
-            # Check if there is a strong 4/4 trend agreement for RSI trigger loosening (Sprint 11)
+            # Check if there is a strong trend agreement for RSI trigger loosening (Sprint 11)
             trend_up_agreement = False
             trend_dn_agreement = False
             try:
+                from config import OVERLAY_B_TREND_ALIGNMENT_THRESHOLD
                 from core.engine.confluence_engine import ConfluenceEngine
                 from core.engine.edge_orchestrator import edge_orchestrator
                 if edge_orchestrator and getattr(edge_orchestrator, "_confluence", None):
@@ -890,14 +891,14 @@ class UpDownEngine:
                 else:
                     conf_engine = ConfluenceEngine()
                 conf_up = await conf_engine.get_confluence(session, self.asset, "UP")
-                if conf_up.get("score", 0) == 4:
+                if conf_up.get("score", 0) >= OVERLAY_B_TREND_ALIGNMENT_THRESHOLD:
                     trend_up_agreement = True
-                    log.info("[ENGINE] %s/%s: Strong 4/4 UP trend agreement detected. Activating UP RSI trigger loosening.", self.asset, self.timeframe)
+                    log.info("[ENGINE] %s/%s: Strong %d/4 UP trend agreement detected. Activating UP RSI trigger loosening.", self.asset, self.timeframe, conf_up.get("score", 0))
                 else:
                     conf_dn = await conf_engine.get_confluence(session, self.asset, "DOWN")
-                    if conf_dn.get("score", 0) == 4:
+                    if conf_dn.get("score", 0) >= OVERLAY_B_TREND_ALIGNMENT_THRESHOLD:
                         trend_dn_agreement = True
-                        log.info("[ENGINE] %s/%s: Strong 4/4 DOWN trend agreement detected. Activating DOWN RSI trigger loosening.", self.asset, self.timeframe)
+                        log.info("[ENGINE] %s/%s: Strong %d/4 DOWN trend agreement detected. Activating DOWN RSI trigger loosening.", self.asset, self.timeframe, conf_dn.get("score", 0))
             except Exception as e:
                 log.warning("[ENGINE] Failed to check trend agreement for RSI loosening: %s", e)
 
@@ -1742,7 +1743,7 @@ class UpDownEngine:
                 # sizes these big with a strong read); otherwise keep them small.
                 if price < 0.35 and conf < 0.75:
                     _bk_frac = min(_bk_frac, 0.05)
-                unified_max_cap = max(5.00, min(40.00, 5.00 + (conf - 0.50) * 80.0))
+                unified_max_cap = max(5.00, balance * 0.50)
                 usd_size = sizer.calculate_adaptive(
                     signal=sig_dict,
                     market=mkt_dict,

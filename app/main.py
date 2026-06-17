@@ -200,9 +200,9 @@ async def _evaluate_market_signals(
         # ── DEEP FIX: 30-SECOND CANDLE OPEN BOUNDARY LIMIT ──
         # Prevent any mid-candle/late signal generation and entry.
         # This completely eliminates the momentum-chasing late entry trap.
-        if elapsed > 30.0:
+        if elapsed > 55.0:
             log.info(
-                "[MAIN] %s/%s: Signal evaluation retry window closed (elapsed=%.1fs > 30.0s) — skip",
+                "[MAIN] %s/%s: Signal evaluation retry window closed (elapsed=%.1fs > 55.0s) — skip",
                 asset, timeframe, elapsed
             )
             return None
@@ -604,7 +604,10 @@ async def _validate_trade_slot(
     # ── P2: Global Bet Cap — differentiated by timeframe / entry conviction ──
     # Bonereaper bets 13-50% of account per trade. ZiSi raised to match proportionally.
     # REVERSAL_STREAK / 1h = highest conviction → 30% Kelly. Standard → 12%.
-    if timeframe == "1h" or _entry_source == "REVERSAL_STREAK":
+    if _entry_source in ("SIG", "SIGNAL", "REV_SNIPE", "REVERSAL_SNIPE"):
+        global_max_bet = current_balance * 0.50
+        _cap_label = "PROGRESSIVE-T1"
+    elif timeframe == "1h" or _entry_source == "REVERSAL_STREAK":
         global_max_bet = min(current_balance * 0.30, current_balance * 1.0)
         _cap_label = "HIGH-CONV"
     elif _entry_source == "FAIR_VAL" and entry_price < 0.40:
@@ -619,7 +622,7 @@ async def _validate_trade_slot(
 
     # ── P3: SIGNAL-specific Bet Cap ──
     if _entry_source in ("SIG", "SIGNAL"):
-        _sig_cap = current_balance * 0.20
+        _sig_cap = current_balance * 0.50
         if bet_usd > _sig_cap:
             log.info("[RISK] SIGNAL trade size capped at $%.2f: $%.2f -> $%.2f", _sig_cap, bet_usd, _sig_cap)
             bet_usd = _sig_cap

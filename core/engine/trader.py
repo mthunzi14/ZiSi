@@ -130,6 +130,56 @@ class ProgressiveStakingEngine:
 
 staking_engine = ProgressiveStakingEngine()
 
+class SandboxGraduationTracker:
+    def __init__(self, state_file=None):
+        if state_file is None:
+            self.state_file = Path(__file__).parent.parent.parent / "data" / "sandbox_state.json"
+        else:
+            self.state_file = Path(state_file)
+        self.stats = {}  # strategy_type -> {"wins": int, "losses": int, "total": int, "win_rate": float}
+        self.load()
+
+    def load(self):
+        try:
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            if self.state_file.exists():
+                with open(self.state_file, 'r', encoding='utf-8') as f:
+                    self.stats = json.load(f)
+                log.info(f"[SANDBOX] Loaded sandbox graduation state: {self.stats}")
+        except Exception as e:
+            log.warning(f"[SANDBOX] Failed to load sandbox state: {e}")
+
+    def save(self):
+        try:
+            with FILE_IO_LOCK:
+                with open(self.state_file, 'w', encoding='utf-8') as f:
+                    json.dump(self.stats, f, indent=2)
+        except Exception as e:
+            log.warning(f"[SANDBOX] Failed to save sandbox state: {e}")
+
+    def record_trade(self, strategy_type: str, won: bool):
+        if strategy_type not in self.stats:
+            self.stats[strategy_type] = {"wins": 0, "losses": 0, "total": 0, "win_rate": 0.0}
+        
+        stat = self.stats[strategy_type]
+        stat["total"] += 1
+        if won:
+            stat["wins"] += 1
+        else:
+            stat["losses"] += 1
+        stat["win_rate"] = round(stat["wins"] / stat["total"], 4)
+        
+        self.save()
+        log.info(f"[SANDBOX] Recorded trade for {strategy_type}: won={won} | Total={stat['total']} WR={stat['win_rate']*100:.2f}%")
+
+    def is_graduated(self, strategy_type: str) -> bool:
+        stat = self.stats.get(strategy_type)
+        if not stat:
+            return False
+        return stat["total"] >= 50 and stat["win_rate"] >= 0.60
+
+sandbox_tracker = SandboxGraduationTracker()
+
 
 
 def _get_config() -> dict:
@@ -208,6 +258,15 @@ def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, ti
     try:
         _title_upper = (title or "").upper()
         pillar, t_type = _derive_pillar_and_type(_title_upper)
+
+        if t_type == "SIG":
+            _is_5m = "][5M]" in _title_upper
+            target = 0.72 if _is_5m else 0.88
+            if entry_price >= target:
+                target = min(0.99, round(entry_price + 0.04, 4))
+            stop = max(0.01, round(entry_price - 0.30, 4))
+            log.info("[SL-CALIB] SIG Savage Stop applied '%s' (entry=%.4f) -> target %.4f, stop %.4f", title, entry_price, target, stop)
+            return target, stop
 
         # 1. If ASYMMETRIC_BARBELL and entry_price <= 0.20: hold to expiration (stop_loss = -1.0)
         if pillar == "ASYMMETRIC_BARBELL" and entry_price <= 0.20:
@@ -602,21 +661,13 @@ def place_order(
             log.warning(f"[SANDBOX-GATE] Rejecting Tier 2 trade {t_type}: strictly bound to 5m timeframe (Title: {event_title})")
             return None
 
-        # Sandbox Liquidity Cap: T2 cumulative open exposure must not exceed 30% of wallet balance
-        wallet_balance = get_current_balance()
-        tier2_exposure = 0.0
-        for pos_id, pos_data in _open_positions.items():
-            if pos_data.get("status") not in ("CLOSED", "CANCELLED"):
-                _, pt = _derive_pillar_and_type(pos_data.get("event_title") or "")
-                if pt in ("LAT_ARB", "SWEEP", "NCS", "REV_STREAK", "FV"):
-                    tier2_exposure += pos_data.get("amount_spent", 0.0)
-        
-        if tier2_exposure + amount_dollars > 0.30 * wallet_balance:
-            log.warning(
-                f"[SANDBOX-CAP] Rejecting T2 trade {t_type}: T2 exposure ${tier2_exposure:.2f} + "
-                f"proposed ${amount_dollars:.2f} exceeds 30% of balance ${wallet_balance:.2f} (cap: ${0.30 * wallet_balance:.2f})"
-            )
-            return None
+        # Sandbox Graduation Protocol sizing
+        if sandbox_tracker.is_graduated(t_type):
+            amount_dollars = staking_engine.get_current_size()
+            log.info(f"[SANDBOX-GRADUATION] Strategy {t_type} is GRADUATED. Dynamic size: ${amount_dollars:.2f}")
+        else:
+            amount_dollars = 3.00  # Hardcoded micro-stake sandbox size
+            log.info(f"[SANDBOX-MICROSTAKE] Strategy {t_type} is in Sandbox. Micro-stake size: $3.00")
 
         # Strategy-specific gateway checks
         if t_type == "LAT_ARB":
@@ -1889,15 +1940,18 @@ def execute_exit(order_id: str, current_price: float, exit_reason: str = "UNKNOW
         "status": "FILLED",
     }
 
-    # Update Tier 1 Progressive Staking Engine state
+    # Update Tier 1 and Sandbox Graduation states
     pillar, t_type = _derive_pillar_and_type(pos.get("event_title") or "")
+    is_win = (exit_reason == "TARGET_HIT" or profit > 0)
+    is_loss = (exit_reason in ("SALVAGE_EXIT", "STOP_HIT", "SAVAGE_STOP_30C", "MARKET_EXPIRED") or profit < 0)
     if t_type in ("REV_SNIPE", "SIG"):
-        is_win = (exit_reason == "TARGET_HIT" or profit > 0)
-        is_loss = (exit_reason == "SALVAGE_EXIT" or profit < 0)
         if is_win:
             staking_engine.record_win(order_id=order_id)
         elif is_loss:
             staking_engine.record_loss(timestamp=time.time(), order_id=order_id)
+    elif t_type in ("LAT_ARB", "SWEEP", "NCS", "REV_STREAK", "FV"):
+        if is_win or is_loss:
+            sandbox_tracker.record_trade(t_type, won=is_win)
 
     title_short = (pos.get("event_title") or order_id)[:50]
     update_trade_record(order_id, exit_data)

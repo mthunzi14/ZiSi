@@ -15,18 +15,18 @@ ASSETS: list = ["BTC", "ETH", "SOL", "XRP", "DOGE", "Alternative", "Sports", "Po
 FUTURE_ASSETS: list = []
 
 TIMEFRAMES: dict = {
-    "BTC": ["5m"],
-    "ETH": ["5m"],
-    "SOL": ["5m"],
-    "XRP": ["5m"],
-    "DOGE": ["5m"],
-    "Alternative": ["5m"],
-    "Sports": ["5m"],
-    "Politics": ["5m"],
-    "Gaming": ["5m"],
+    "BTC": ["5m", "15m"],
+    "ETH": ["5m", "15m"],
+    "SOL": ["5m", "15m"],
+    "XRP": ["5m", "15m"],
+    "DOGE": ["5m", "15m"],
+    "Alternative": ["5m", "15m"],
+    "Sports": ["5m", "15m"],
+    "Politics": ["5m", "15m"],
+    "Gaming": ["5m", "15m"],
 }
 
-ALLOWED_TIMEFRAMES: list = ["5m"]
+ALLOWED_TIMEFRAMES: list = ["5m", "15m"]
 
 # Active trading window (UTC hours, inclusive start/exclusive end) - set to 24/7
 TIME_GATE_UTC: tuple = (0, 24)
@@ -70,7 +70,7 @@ OVERLAY_C_MAX_UNDERDOG_PRICE: float = 0.20        # contracts priced <= 20c
 
 OVERLAY_B_ENABLED: bool = True
 OVERLAY_B_FREEZE_MIDPOINTS: bool = False          # DO NOT freeze 40c-60c contracts during breakout (allows PBOT midpoint execution)
-OVERLAY_B_TREND_ALIGNMENT_THRESHOLD: int = 4      # requires 4/4 alignment across timeframes
+OVERLAY_B_TREND_ALIGNMENT_THRESHOLD: int = 3      # requires 3/4 alignment across timeframes
 OVERLAY_B_ADX_THRESHOLD: float = 25.0             # ADX threshold for breakout strength
 
 # Dynamic Pricing and Liquidation Rules (Mentor Emulation)
@@ -235,7 +235,7 @@ def load_config() -> dict:
         "OVERLAY_C_MAX_UNDERDOG_PRICE": float(os.getenv("OVERLAY_C_MAX_UNDERDOG_PRICE", "0.20")),
         "OVERLAY_B_ENABLED": os.getenv("OVERLAY_B_ENABLED", "true").lower() == "true",
         "OVERLAY_B_FREEZE_MIDPOINTS": os.getenv("OVERLAY_B_FREEZE_MIDPOINTS", "false").lower() == "true", # default false
-        "OVERLAY_B_TREND_ALIGNMENT_THRESHOLD": int(os.getenv("OVERLAY_B_TREND_ALIGNMENT_THRESHOLD", "4")),
+        "OVERLAY_B_TREND_ALIGNMENT_THRESHOLD": int(os.getenv("OVERLAY_B_TREND_ALIGNMENT_THRESHOLD", "3")),
         "OVERLAY_B_ADX_THRESHOLD": float(os.getenv("OVERLAY_B_ADX_THRESHOLD", "25.0")),
 
         # Mentor parameters

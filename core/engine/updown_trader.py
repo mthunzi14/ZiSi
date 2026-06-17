@@ -1292,6 +1292,12 @@ def check_updown_early_exits(get_all_trades_fn, execute_exit_fn, place_paper_tra
                         "[UPDOWN] TRAILING FLOOR: %s | HWM=%.3f ≥ 0.75 but price dropped to %.3f < 0.55 — exit",
                         order_id[:20], _hwm, current_price,
                     )
+                elif "SIG" in title.upper() and current_price <= 0.30:
+                    exit_reason = "SAVAGE_STOP_30C"
+                    log.info(
+                        "[SAVAGE STOP] %s | price=%.3f <= 0.30 — IMMEDIATE LIQUIDATION",
+                        order_id[:20], current_price
+                    )
                 elif ("5M" in title or "5m" in title or "5m" in str(trade.get("type", "")).lower() or trade.get("timeframe") == "5m" or trade.get("type") == "5m") and current_price <= 0.30:
                     exit_reason = "SALVAGE_EXIT"
                     log.info(
