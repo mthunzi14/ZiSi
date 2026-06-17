@@ -1140,8 +1140,8 @@ async def main() -> None:
 
             # Start latency edge arbitrage scanner (Sprint 3)
             try:
-                from core.engine.cycle_manager import start_latency_edge_scanner
-                tasks.append(start_latency_edge_scanner(session, context.engines))
+                # from core.engine.cycle_manager import start_latency_edge_scanner
+                # tasks.append(start_latency_edge_scanner(session, context.engines))
                 log.info("[MAIN] Latency edge scanner background task registered.")
             except Exception as e:
                 log.error("[MAIN] Failed to import start_latency_edge_scanner: %s", e)
