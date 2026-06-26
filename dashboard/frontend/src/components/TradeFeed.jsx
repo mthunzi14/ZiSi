@@ -1,5 +1,5 @@
 // TradeFeed.jsx — tabbed trade ledger: Open Positions + Trade History
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import SpotlightMask from './common/SpotlightMask';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -827,7 +827,7 @@ const OPEN_GRID    = '66px 55px 42px 50px 40px 48px 48px 52px 48px 68px 48px 80p
 
 // ── Row components ────────────────────────────────────────────────────────────
 
-function ClosedRow({ p, index }) {
+const ClosedRow = memo(function ClosedRow({ p, index }) {
   const meta   = parseMeta(p);
   const dir    = dirStr(p.direction);
   const pnl    = parseFloat(p.realized_pnl ?? 0);
@@ -871,9 +871,14 @@ function ClosedRow({ p, index }) {
       <span style={{ fontWeight: 800, fontSize: 10, letterSpacing: '0.06em', color: rColor }}>{result}</span>
     </div>
   );
-}
+}, (prev, next) => {
+  return prev.index === next.index &&
+         prev.p.order_id === next.p.order_id &&
+         prev.p.exit_time === next.p.exit_time &&
+         prev.p.realized_pnl === next.p.realized_pnl;
+});
 
-function OpenRow({ p, index }) {
+const OpenRow = memo(function OpenRow({ p, index }) {
   const meta    = parseMeta(p);
   const dir     = dirStr(p.direction);
   const entry   = parseFloat(p.entry_price || 0);
@@ -927,11 +932,16 @@ function OpenRow({ p, index }) {
       )}
     </div>
   );
-}
+}, (prev, next) => {
+  return prev.index === next.index &&
+         prev.p.order_id === next.p.order_id &&
+         prev.p.current_price === next.p.current_price &&
+         prev.p.unrealized_pnl === next.p.unrealized_pnl;
+});
 
 // ── Tab button ─────────────────────────────────────────────────────────────
 
-function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
+function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount, signalsCount }) {
   const containerRef = useRef(null);
   const [pillStyle, setPillStyle] = useState({ transform: 'translateX(0px)', width: '0px' });
 
@@ -947,7 +957,7 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
         width: `${activeBtn.offsetWidth}px`
       });
     }
-  }, [activeTab, activeCount, historyCount]);
+  }, [activeTab, activeCount, historyCount, signalsCount]);
 
   return (
     <div className="t-tabs" ref={containerRef} role="tablist" style={{ position: 'relative' }}>
@@ -1028,6 +1038,40 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
           fontWeight: 700
         }}>
           {historyCount}
+        </span>
+      </button>
+      <button
+        className="t-tab"
+        role="tab"
+        aria-selected={activeTab === 'signals'}
+        onClick={() => setActiveTab('signals')}
+        style={{
+          position: 'relative',
+          background: 'transparent',
+          border: 'none',
+          color: activeTab === 'signals' ? 'var(--color-obsidian)' : 'var(--color-iron)',
+          fontSize: '12px',
+          fontWeight: activeTab === 'signals' ? 700 : 500,
+          cursor: 'pointer',
+          padding: '4px 14px',
+          borderRadius: '48px',
+          zIndex: 1,
+          transition: 'color 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px'
+        }}
+      >
+        Signals
+        <span style={{
+          background: activeTab === 'signals' ? 'var(--color-accent)' : 'var(--color-cream-dark)',
+          color: activeTab === 'signals' ? '#fff' : 'var(--color-text-secondary)',
+          borderRadius: '10px',
+          padding: '1px 6px',
+          fontSize: '9px',
+          fontWeight: 700
+        }}>
+          {signalsCount}
         </span>
       </button>
     </div>
@@ -1449,7 +1493,7 @@ function EngineStatusPill({ status, detail, lastTradeAgo }) {
 
 // ── Source filter pills ───────────────────────────────────────────────────────
 
-const SRC_FILTERS = ['ALL', 'LAT ARB', 'FV', 'NCS', 'REV SNIPE', 'REV STREAK', 'SIG', 'SWEEP'];
+const SRC_FILTERS = ['ALL', 'NCS', 'REV SNIPE', 'FV', 'SIG'];
 const SRC_TO_ENTRY_TYPE = {
   'LAT ARB':    'LAT-ARB',
   'FV':         'FAIR-VAL',
@@ -1511,22 +1555,84 @@ function SrcPill({ src, active, count, pnl, onClick }) {
     </button>
   );
 }
+const SIGNALS_GRID = '0.9fr 0.6fr 0.6fr 0.9fr 0.6fr 0.6fr 0.6fr 0.6fr 0.7fr 0.7fr 1.3fr';
+const SIGNALS_COLS = ['Time', 'Asset', 'TF', 'Regime', 'RSI', 'MOM', 'OFI', 'OBI', 'CVD', 'Dir', 'Status'];
+
+const SignalRow = memo(function SignalRow({ sig, index }) {
+  const timeStr = sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString() : '—';
+  const asset = sig.asset || '—';
+  const tf = sig.timeframe || '—';
+  const regime = sig.regime || '—';
+  const rsi = sig.rsi !== undefined ? sig.rsi.toFixed(1) : '—';
+  const mom = sig.mom !== undefined ? sig.mom.toFixed(4) : '—';
+  const ofi = sig.ofi !== undefined ? sig.ofi.toFixed(2) : '—';
+  const obi = sig.binance_obi !== undefined ? sig.binance_obi.toFixed(2) : '—';
+  const cvd = sig.fast_cvd !== undefined ? sig.fast_cvd.toFixed(0) : '—';
+  const direction = sig.direction || 'NEUTRAL';
+  const score = sig.score !== undefined ? sig.score.toFixed(2) : '—';
+
+  let dirColor = 'var(--color-text-muted)';
+  if (direction === 'UP' || direction === 'YES') dirColor = 'var(--color-profit)';
+  if (direction === 'DOWN' || direction === 'NO') dirColor = 'var(--color-loss)';
+
+  let statusText = 'Neutral';
+  let statusColor = 'var(--color-text-muted)';
+  if (sig.blocked) {
+    statusText = 'Blocked (Divergence)';
+    statusColor = 'var(--color-loss)';
+  } else if (direction !== 'NEUTRAL') {
+    statusText = `Triggered (Score ${score})`;
+    statusColor = 'var(--color-accent)';
+  }
+
+  const rowBg = index % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)';
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: SIGNALS_GRID,
+        padding: '8px 10px',
+        alignItems: 'center',
+        fontSize: '11px',
+        borderBottom: '1px solid rgba(255,255,255,0.03)',
+        background: rowBg,
+      }}
+    >
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{timeStr}</span>
+      <span style={{ fontWeight: 700, color: 'var(--color-cream)' }}>{asset}</span>
+      <span style={{ color: 'var(--color-text-secondary)' }}>{tf}</span>
+      <span style={{ fontSize: '9px', textTransform: 'uppercase', color: 'var(--color-accent)' }}>{regime}</span>
+      <span style={{ fontFamily: 'var(--font-mono)' }}>{rsi}</span>
+      <span style={{ fontFamily: 'var(--font-mono)' }}>{mom}</span>
+      <span style={{ fontFamily: 'var(--font-mono)' }}>{ofi}</span>
+      <span style={{ fontFamily: 'var(--font-mono)' }}>{obi}</span>
+      <span style={{ fontFamily: 'var(--font-mono)' }}>{cvd}</span>
+      <span style={{ fontWeight: 800, color: dirColor }}>{direction}</span>
+      <span style={{ fontWeight: 600, color: statusColor }}>{statusText}</span>
+    </div>
+  );
+}, (prev, next) => {
+  return prev.index === next.index &&
+         prev.sig.timestamp === next.sig.timestamp &&
+         prev.sig.blocked === next.sig.blocked &&
+         prev.sig.direction === next.sig.direction;
+});
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
-export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {} }) {
+export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {}, signals = [] }) {
   const [tab, setTab] = useState('open');
   const [srcFilter, setSrcFilter] = useState('ALL');
   const [limit, setLimit] = useState(100);
   const [engineStatus, setEngineStatus] = useState({ status: 'SCANNING', detail: '' });
   const [btnHovered, setBtnHovered] = useState(false);
+  const lastScrollTimeRef = useRef(0);
 
   // Reset limit to 100 when the filter source or tab changes
   useEffect(() => {
     setLimit(100);
   }, [srcFilter, tab]);
-
-
 
   useEffect(() => {
     const poll = () =>
@@ -1561,9 +1667,12 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
     return filterBySrc(closed, srcFilter);
   }, [closed, srcFilter]);
 
-  // Scroll-triggered lazy load — fires when within 120px of bottom
+  // Scroll-triggered lazy load — fires when within 120px of bottom (throttled to 10Hz)
   const handleLedgerScroll = useCallback((e) => {
     const el = e.currentTarget;
+    const now = Date.now();
+    if (now - lastScrollTimeRef.current < 100) return;
+    lastScrollTimeRef.current = now;
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) {
       setLimit(prev => Math.min(prev + 100, filteredClosed.length));
     }
@@ -1687,6 +1796,19 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
                     {srcFilter === 'ALL' ? 'No closed trades yet' : `No ${srcFilter} trades yet`}
                   </div>
                 : visibleClosed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} index={i} />)
+              }
+            </div>
+          </>
+        )}
+
+        {/* Signals tab */}
+        {tab === 'signals' && (
+          <>
+            <ColHeaders cols={SIGNALS_COLS} grid={SIGNALS_GRID} />
+            <div style={{ overflowY: 'auto', maxHeight: 400 }}>
+              {signals.length === 0
+                ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>No signal evaluations received yet</div>
+                : signals.map((sig, i) => <SignalRow key={i} sig={sig} index={i} />)
               }
             </div>
           </>

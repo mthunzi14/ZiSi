@@ -921,6 +921,17 @@ class UpDownEngine:
             _, t_type = _derive_pillar_and_type(market.get("event_title", ""))
             if is_fv_trade:
                 t_type = "FV"
+            # Retrieve HFT metrics for cascade check (Sprint 12)
+            binance_obi = None
+            fast_cvd = None
+            try:
+                from core.engine.spot_websocket_ingest import get_binance_obi, get_cvd_metrics
+                binance_obi = await get_binance_obi(self.asset)
+                fast, _ = await get_cvd_metrics(self.asset)
+                fast_cvd = fast
+            except Exception as hft_err:
+                log.debug("[ENGINE] Failed to load spot HFT metrics for %s: %s", self.asset, hft_err)
+
             _dec = decide_signal(
                 rsi,
                 mom,
@@ -933,6 +944,8 @@ class UpDownEngine:
                 atr_percentile=_atr_pct,
                 bbw_percentile=_bbw_pct,
                 strategy=t_type,
+                binance_obi=binance_obi,
+                fast_cvd=fast_cvd,
             )
             if _dec["blocked"]:
                 log.info("[ENGINE] %s/%s: Spot OFI divergence — blocking entry.", self.asset, self.timeframe)

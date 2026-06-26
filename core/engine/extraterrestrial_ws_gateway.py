@@ -12,9 +12,10 @@ log = logging.getLogger("zisi.extraterrestrial.ws")
 class ExtraterrestrialWSGateway:
     """
     Polymarket CLOB WebSocket Gateway (Real L2 Orderbook Subscriptions).
-    Refactored to separate ingestion (Thread A) from processing (Thread B) via Queue
-    to prevent skipped frames. Builds synthetic midpoint candles and implements
-    len-1 best bid index lookup, 10s ping, and 15s reconnection watchdog.
+    Refactored to support a Tri-Socket Redundant Connection architecture to mitigate network jitter.
+    Separates ingestion (Thread A - running 3 staggered connections) from processing (Thread B)
+    via Queue to prevent skipped frames. Builds synthetic midpoint candles, implements OBI,
+    10s keepalive, and connection watchdogs.
     """
     def __init__(self, feed_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"):
         self.feed_url = feed_url
@@ -28,14 +29,15 @@ class ExtraterrestrialWSGateway:
         self.candle_cache: Dict[str, Dict[int, list]] = {}
         
         self.is_active = False
-        self._session = None
-        self._ws = None
         
         # Thread-safe queue for incoming raw messages
         self.msg_queue = queue.Queue()
         
-        # Timing trackers
-        self.last_msg_ts = time.time()
+        # Active WebSockets: worker_id -> ws_client_session
+        self.active_wss = {}
+        
+        # Timing trackers: worker_id -> last_received_timestamp
+        self.last_msg_ts = {}
         self.listener_thread = None
         self.processor_task = None
         self._on_tick = None
@@ -46,15 +48,14 @@ class ExtraterrestrialWSGateway:
             return
         self.is_active = True
         self._on_tick = on_tick_callback
-        self.last_msg_ts = time.time()
         
-        # Thread A: Dedicated background ingestion thread (runs its own loop)
+        # Thread A: Dedicated background ingestion thread (runs its own loop for all 3 workers)
         self.listener_thread = threading.Thread(target=self._run_listener_loop, daemon=True)
         self.listener_thread.start()
         
         # Thread B: Main-thread asyncio task that processes queue items sequentially
         self.processor_task = asyncio.create_task(self._processor_loop())
-        log.info(f"[GOD-WS] Booted Extraterrestrial L2 Gateway (Dual-Threaded Queue Buffer)")
+        log.info(f"[GOD-WS] Booted Extraterrestrial L2 Gateway (Tri-Socket Redundancy Active)")
 
     def _run_listener_loop(self):
         """Thread A Entry: Runs its own asyncio loop to manage the WebSocket connection."""
@@ -92,21 +93,24 @@ class ExtraterrestrialWSGateway:
         """Subscribe to token feed. Thread-safe."""
         if token_id not in self.subscriptions:
             self.subscriptions.add(token_id)
-            if self._ws and not self._ws.closed and hasattr(self, "loop"):
+            if hasattr(self, "loop") and self.loop.is_running():
                 # Run subscription message on Thread A loop
-                asyncio.run_coroutine_threadsafe(self._send_sub(token_id), self.loop)
+                asyncio.run_coroutine_threadsafe(self._broadcast_subscription(token_id), self.loop)
             log.info(f"[GOD-WS] Subscribed to L2 Feed: {token_id}")
 
-    async def _send_sub(self, token_id: str):
-        try:
-            msg = {
-                "type": "market",
-                "assets_ids": [token_id],
-                "custom_feature_enabled": True
-            }
-            await self._ws.send_json(msg)
-        except Exception as e:
-            log.error(f"[GOD-WS] Failed to send subscription: {e}")
+    async def _broadcast_subscription(self, token_id: str):
+        msg = {
+            "type": "market",
+            "assets_ids": [token_id],
+            "custom_feature_enabled": True
+        }
+        for worker_id, ws in list(self.active_wss.items()):
+            if ws and not ws.closed:
+                try:
+                    await ws.send_json(msg)
+                    log.info(f"[GOD-WS] Worker {worker_id} sent subscription for {token_id}")
+                except Exception as e:
+                    log.error(f"[GOD-WS] Worker {worker_id} subscription failed: {e}")
 
     def get_price(self, token_id: str) -> tuple[Optional[float], Optional[float]]:
         """Returns (mid_price, spread) from in-memory cache."""
@@ -135,8 +139,7 @@ class ExtraterrestrialWSGateway:
         candles = token_candles.get(sec, [])
         return candles[-limit:]
 
-    async def _ping_sender(self, ws):
-        """Rule 4: Send string literal 'PING' every 10 seconds to keepalive."""
+    async def _ping_sender_worker(self, ws, worker_id: int):
         try:
             while self.is_active and not ws.closed:
                 await asyncio.sleep(10)
@@ -144,33 +147,42 @@ class ExtraterrestrialWSGateway:
                     await ws.send_str("PING")
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            log.warning(f"[GOD-WS] Ping error: {e}")
+        except Exception:
+            pass
 
-    async def _connection_watchdog(self, ws):
-        """Rule 4: Hard 15-second timeout circuit breaker to handle silent connection drops."""
+    async def _watchdog_worker(self, ws, worker_id: int):
         try:
             while self.is_active and not ws.closed:
                 await asyncio.sleep(1.0)
-                if time.time() - self.last_msg_ts > 15.0:
-                    log.warning("[GOD-WS] Watchdog: 15s timeout reached with no messages — triggering reconnect.")
+                if time.time() - self.last_msg_ts.get(worker_id, 0.0) > 30.0:
+                    log.warning(f"[GOD-WS] Worker {worker_id} Watchdog: 30s timeout reached — reconnecting.")
                     await ws.close()
                     break
         except asyncio.CancelledError:
             pass
 
     async def _ws_loop(self):
-        """Thread A: WebSocket listener loop."""
+        """Thread A: WebSocket listener master loop. Spawns 3 staggered worker tasks."""
+        workers = []
+        for i in range(3):
+            workers.append(asyncio.create_task(self._ws_worker(worker_id=i)))
+            await asyncio.sleep(0.3) # 300ms staggered startup
+        
+        await asyncio.gather(*workers, return_exceptions=True)
+
+    async def _ws_worker(self, worker_id: int):
+        """Websocket connection worker representing one redundancy leg."""
         backoff = 3.0
         while self.is_active:
+            session = None
             try:
-                self.last_msg_ts = time.time()
-                self._session = aiohttp.ClientSession(headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                self.last_msg_ts[worker_id] = time.time()
+                session = aiohttp.ClientSession(headers={
+                    "User-Agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) RedundantWS-{worker_id}",
                 })
-                async with self._session.ws_connect(self.feed_url) as ws:
-                    self._ws = ws
-                    log.info("[GOD-WS] Connected to Polymarket CLOB WebSocket")
+                async with session.ws_connect(self.feed_url) as ws:
+                    self.active_wss[worker_id] = ws
+                    log.info(f"[GOD-WS] Worker {worker_id} connected to Polymarket CLOB WebSocket")
                     backoff = 3.0
                     
                     if self.subscriptions:
@@ -181,17 +193,16 @@ class ExtraterrestrialWSGateway:
                         }
                         await ws.send_json(msg)
 
-                    ping_task = asyncio.create_task(self._ping_sender(ws))
-                    watchdog_task = asyncio.create_task(self._connection_watchdog(ws))
+                    ping_task = asyncio.create_task(self._ping_sender_worker(ws, worker_id))
+                    watchdog_task = asyncio.create_task(self._watchdog_worker(ws, worker_id))
                     
                     try:
                         async for msg in ws:
-                            self.last_msg_ts = time.time()
                             if msg.type == aiohttp.WSMsgType.TEXT:
                                 if msg.data == "PONG":
                                     continue
+                                self.last_msg_ts[worker_id] = time.time()
                                 try:
-                                    # Parse and put immediately into the queue with zero processing
                                     payload = json.loads(msg.data)
                                     self.msg_queue.put(payload)
                                 except json.JSONDecodeError:
@@ -202,19 +213,23 @@ class ExtraterrestrialWSGateway:
                         ping_task.cancel()
                         watchdog_task.cancel()
             except Exception as e:
-                log.error(f"[GOD-WS] WebSocket connection exception: {e}")
-
-            if self._session:
-                await self._session.close()
-                self._session = None
-            self._ws = None
+                log.warning(f"[GOD-WS] Worker {worker_id} connection exception: {e}")
+            finally:
+                if session:
+                    await session.close()
+                self.active_wss.pop(worker_id, None)
 
             if self.is_active:
-                log.warning(f"[GOD-WS] Disconnected. Reconnecting in {backoff} seconds...")
+                log.warning(f"[GOD-WS] Worker {worker_id} disconnected. Reconnecting in {backoff} seconds...")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60.0)
 
     def _update_cache_bid_ask(self, asset_id: str, bid: float, ask: float):
+        # First-unique deduplication gate: discard identical updates to conserve CPU & I/O
+        cached = self.l2_cache.get(asset_id)
+        if cached and cached.get("bid") == bid and cached.get("ask") == ask:
+            return
+
         entry = self.l2_cache.setdefault(asset_id, {
             "bid": 0.0, "ask": 0.0, "ts": 0.0, "bids": [], "asks": [], "obi": 0.0
         })

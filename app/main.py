@@ -824,6 +824,72 @@ async def asset_loop(
                 await _sleep_to_next_candle(interval_minutes, asset, timeframe, session, context)
                 continue
 
+            # ── DIRECTION-INVERSION 24/7 ──
+            # Swap trade direction if microstructure flow opposes the signal.
+            # ONLY applies to momentum/reversal strategies (SIG, REV_SNIPE) where order flow opposes the signal.
+            # FV and LAT_ARB are excluded (pure arbitrage).
+            try:
+                entry_source = signal.get("entry_source", "SIG")
+                if entry_source in ("SIG", "REVERSAL_SNIPE", "REV_SNIPE"):
+                    # Retrieve HFT spot metrics to check alignment
+                    binance_obi = None
+                    fast_cvd = None
+                    try:
+                        from core.engine.spot_websocket_ingest import get_binance_obi, get_cvd_metrics
+                        binance_obi = await get_binance_obi(asset)
+                        fast, _ = await get_cvd_metrics(asset)
+                        fast_cvd = fast
+                    except Exception:
+                        pass
+
+                    old_direction = signal["direction"]
+                    should_flip = False
+                    reason = ""
+                    
+                    if old_direction == "UP":
+                        if (binance_obi is not None and binance_obi < -0.10) or (fast_cvd is not None and fast_cvd < -0.02):
+                            should_flip = True
+                            reason = f"opposing OBI={binance_obi} or CVD={fast_cvd}"
+                    elif old_direction == "DOWN":
+                        if (binance_obi is not None and binance_obi > 0.10) or (fast_cvd is not None and fast_cvd > 0.02):
+                            should_flip = True
+                            reason = f"opposing OBI={binance_obi} or CVD={fast_cvd}"
+
+                    if should_flip:
+                        new_direction = "DOWN" if old_direction == "UP" else "UP"
+                        signal["direction"] = new_direction
+                        
+                        # Update target prices inside the signal market metadata to match the new direction
+                        market = signal["market"]
+                        signal["entry_price"] = market["up_price"] if new_direction == "UP" else market["dn_price"]
+                        
+                        log.info(
+                            "[DIRECTION-INVERSION] %s/%s: Flipped signal direction from %s to %s (24/7) due to %s.",
+                            asset, timeframe, old_direction, new_direction, reason
+                        )
+            except Exception as inversion_err:
+                log.error("[MAIN] Inversion error: %s", inversion_err)
+
+            # ── 15M CONFLUENCE INVERSION ──
+            try:
+                entry_source = signal.get("entry_source", "SIG")
+                conf_score = signal.get("confluence_score", 2)
+                if timeframe == "15m" and entry_source in ("SIG", "REVERSAL_SNIPE", "REV_SNIPE") and conf_score in (0, 1):
+                    old_direction = signal["direction"]
+                    new_direction = "DOWN" if old_direction == "UP" else "UP"
+                    signal["direction"] = new_direction
+                    
+                    # Update target prices inside the signal market metadata to match the new direction
+                    market = signal["market"]
+                    signal["entry_price"] = market["up_price"] if new_direction == "UP" else market["dn_price"]
+                    
+                    log.info(
+                        "[CONFLUENCE-INVERSION] %s/%s: Flipped signal direction from %s to %s due to low confluence score (%d/4).",
+                        asset, timeframe, old_direction, new_direction, conf_score
+                    )
+            except Exception as conf_inv_err:
+                log.error("[MAIN] Confluence inversion error: %s", conf_inv_err)
+
             context.funnel_stats["signals_generated"] += 1
 
             # 2. Validate Risk & Entry Gates
@@ -963,7 +1029,65 @@ async def _place_corr_trades(
             continue
         if not market:
             continue
-        entry_price = market["up_price"] if direction == "UP" else market["dn_price"]
+        # Evaluate target asset local indicators (Spot OFI, OBI/CVD, Confluence score)
+        opposing_ofi = False
+        opposing_flow = False
+        opposing_confluence = False
+        ofi_val = 0.0
+        obi_val = 0.0
+        cvd_val = 0.0
+        conf_score = 2
+
+        # 1. Spot OFI
+        try:
+            from core.engine.spot_websocket_ingest import get_current_ofi
+            ofi_val = await get_current_ofi(corr_asset)
+            if direction == "UP" and ofi_val < -0.05:
+                opposing_ofi = True
+            elif direction == "DOWN" and ofi_val > 0.05:
+                opposing_ofi = True
+        except Exception as ofi_err:
+            log.warning("[CORR] %s/%s OFI query failed: %s", corr_asset, timeframe, ofi_err)
+
+        # 2. OBI and CVD
+        try:
+            from core.engine.spot_websocket_ingest import get_binance_obi, get_cvd_metrics
+            obi_val = await get_binance_obi(corr_asset)
+            cvd_val, _ = await get_cvd_metrics(corr_asset)
+            if direction == "UP":
+                if (obi_val is not None and obi_val < -0.10) or (cvd_val is not None and cvd_val < -0.02):
+                    opposing_flow = True
+            elif direction == "DOWN":
+                if (obi_val is not None and obi_val > 0.10) or (cvd_val is not None and cvd_val > 0.02):
+                    opposing_flow = True
+        except Exception as flow_err:
+            log.warning("[CORR] %s/%s order flow query failed: %s", corr_asset, timeframe, flow_err)
+
+        # 3. Confluence
+        try:
+            from core.engine.confluence_engine import ConfluenceEngine
+            conf_engine = ConfluenceEngine()
+            conf_res = await conf_engine.get_confluence(session, corr_asset, direction)
+            conf_score = conf_res.get("score", 2)
+            if conf_score in (0, 1):
+                opposing_confluence = True
+        except Exception as conf_err:
+            log.warning("[CORR] %s/%s confluence query failed: %s", corr_asset, timeframe, conf_err)
+
+        # Determine shadow direction
+        corr_direction = direction
+        if opposing_ofi or opposing_flow or opposing_confluence:
+            corr_direction = "DOWN" if direction == "UP" else "UP"
+            reasons = []
+            if opposing_ofi: reasons.append(f"opposing OFI={ofi_val:.4f}")
+            if opposing_flow: reasons.append(f"opposing OBI={obi_val:.4f}/CVD={cvd_val:.2f}")
+            if opposing_confluence: reasons.append(f"opposing confluence={conf_score}/4")
+            log.info(
+                "[CORR-INVERSION] %s/%s: Inverting shadow direction from %s to %s due to %s.",
+                corr_asset, timeframe, direction, corr_direction, ", ".join(reasons)
+            )
+
+        entry_price = market["up_price"] if corr_direction == "UP" else market["dn_price"]
         # Only shadow if market is reasonably liquid, not at extremes, and crowd isn't >60% against.
         # ETH/SOL CORR at 38.5c lost -$5.25/-$1.12: crowd was 61.5% against direction — no gate caught it.
         if entry_price < 0.40 or entry_price > 0.95:
@@ -976,14 +1100,14 @@ async def _place_corr_trades(
         }
         _corr_trade_type = _lead_type_map.get(lead_source, lead_source)
         # Run in thread pool to prevent blocking main event loop during shadow correlation placement
-        order = await asyncio.to_thread(_place_trade, corr_asset, timeframe, direction, market, bet_usd, entry_price, lead_score, _corr_trade_type)
+        order = await asyncio.to_thread(_place_trade, corr_asset, timeframe, corr_direction, market, bet_usd, entry_price, lead_score, _corr_trade_type)
         if order:
             log.info(
                 "[CORR] %s/%s %s | $%.2f @ %.4f | shadow of %s/%s [%s] → logged as %s",
-                corr_asset, timeframe, direction, bet_usd, entry_price,
+                corr_asset, timeframe, corr_direction, bet_usd, entry_price,
                 lead_asset, timeframe, lead_source, _corr_trade_type,
             )
-            await commit_trade_slot(corr_asset, timeframe, 0.75, interval_minutes, is_dual=False, direction=direction)
+            await commit_trade_slot(corr_asset, timeframe, 0.75, interval_minutes, is_dual=False, direction=corr_direction)
 
 
 def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, score, trade_type="SINGLE", is_resting_order: bool = False) -> Optional[dict]:
@@ -1001,16 +1125,24 @@ def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, s
             except Exception as e:
                 log.warning("[VOL-SURGE-RESTING] Failed to get mid-market contract price: %s", e)
 
-        # Strict 5.0¢ Max Slippage Guard (Live-matching defense)
+        # Directional Slippage Guard (Live-matching defense)
         try:
             from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
             live_price, _ = polymarket_l2_gateway.get_price(market_id)
-            if not is_resting_order and live_price and abs(live_price - entry_price) > 0.05:
-                log.warning(
-                    "[TRADE] SLIPPAGE_ABORT: %s/%s Live price %.4f deviated from signal price %.4f by > 5.0¢. Aborting trade execution.",
-                    asset, timeframe, live_price, entry_price
-                )
-                return None
+            tolerance = float(os.getenv("MAX_SLIPPAGE_TOLERANCE", "0.08"))
+            if not is_resting_order and live_price:
+                price_slippage = live_price - entry_price
+                if price_slippage > tolerance:
+                    log.warning(
+                        "[TRADE] SLIPPAGE_ABORT: %s/%s Live price %.4f exceeds signal price %.4f by > %.1f¢. Aborting trade execution.",
+                        asset, timeframe, live_price, entry_price, tolerance * 100
+                    )
+                    return None
+                elif price_slippage < 0:
+                    log.info(
+                        "[TRADE] PRICE_DISCOUNT: %s/%s Live price %.4f is cheaper than signal price %.4f by %.1f¢. Capturing extra EV.",
+                        asset, timeframe, live_price, entry_price, abs(price_slippage) * 100
+                    )
         except Exception as slip_err:
             log.debug("[TRADE] Slippage guard skipped (could not read L2 book): %s", slip_err)
 
@@ -1063,6 +1195,91 @@ async def _zombie_cleanup_loop() -> None:
                 log.info("[ZOMBIE-LOOP] Cleaned %d zombie positions", deleted)
         except Exception as e:
             log.warning("[ZOMBIE-LOOP] Error: %s", e)
+
+
+async def price_refresher_loop() -> None:
+    """
+    Background daemon that periodically updates current prices for all open positions.
+    Updates the cached market price to ensure live unrealized P&L is displayed on the dashboard.
+    Runs every 5 seconds.
+    """
+    log.info("[PRICE-REFRESHER] Background price refresher loop started.")
+    while True:
+        try:
+            from core.engine.trader import refresh_open_position_prices
+            await asyncio.to_thread(refresh_open_position_prices)
+        except Exception as e:
+            log.warning("[PRICE-REFRESHER] Error in price refresher loop: %s", e)
+        await asyncio.sleep(5)
+
+
+async def _safe_task_wrapper(task_coro, name: str):
+    """Wrap a background task to catch unhandled exceptions, log them, and restart after delay."""
+    while True:
+        try:
+            log.info("[SAFE-TASK] Starting task: %s", name)
+            await task_coro
+            log.info("[SAFE-TASK] Task completed normally: %s", name)
+            break
+        except asyncio.CancelledError:
+            log.info("[SAFE-TASK] Task cancelled: %s", name)
+            raise
+        except Exception as e:
+            log.error("[SAFE-TASK] Critical error in task %s: %s. Restarting in 5s...", name, e, exc_info=True)
+            await asyncio.sleep(5)
+
+
+async def fv_fast_check_loop(session, context) -> None:
+    """Evaluate and execute Fair Value signals every 500ms (mid-candle execution)."""
+    log.info("[FV-FAST-CHECK] Starting Fair Value fast-check daemon (500ms resolution)...")
+    while True:
+        try:
+            if not _fv_rate_ok():
+                await asyncio.sleep(0.5)
+                continue
+
+            for key, engine in context.engines.items():
+                if engine.timeframe != "5m":
+                    continue
+                try:
+                    market = await engine._fetch_market(session, is_latency_scan=True)
+                    if not market:
+                        continue
+                    event_id = market["event_id"]
+                    expiry_ts = market.get("expiry_ts", 0)
+                    if not expiry_ts or expiry_ts - time.time() < 120:
+                        continue
+
+                    # Skip if we already have an open position on this market
+                    import core.engine.state_manager as state_mgr
+                    open_pos = state_mgr.get_open_positions()
+                    if any(p.get("event_id") == event_id for p in open_pos):
+                        continue
+
+                    # Check slot/correlation bounds
+                    valid, reason = await _validate_trade_slot(engine.asset, "5m", "FV")
+                    if not valid:
+                        continue
+
+                    # Evaluate FV signal
+                    res = await engine._eval_fair_value(session, market)
+                    if res and res.get("direction"):
+                        _fv_rate_record()
+                        _place_trade(
+                            asset=engine.asset,
+                            timeframe="5m",
+                            direction=res["direction"],
+                            market=market,
+                            usd_amount=10.0,
+                            entry_price=market["up_price"] if res["direction"] == "UP" else market["dn_price"],
+                            score=res.get("confidence", 0.5),
+                            trade_type="SINGLE"
+                        )
+                except Exception as asset_err:
+                    log.debug("[FV-FAST-CHECK] Error scanning %s: %s", engine.asset, asset_err)
+        except Exception as loop_err:
+            log.error("[FV-FAST-CHECK] Loop level exception: %s", loop_err)
+        await asyncio.sleep(0.5)
 
 
 async def main() -> None:
@@ -1128,55 +1345,65 @@ async def main() -> None:
             "Accept": "application/json",
         }
         async with aiohttp.ClientSession(connector=connector, timeout=timeout, headers=headers) as session:
-            # Dynamically generate and stagger asset loops based on configured assets and timeframes (Fix A & C)
+            # Dynamically generate and stagger asset loops based on configured assets and timeframes
             tasks = []
             stagger = 0
             for asset in ASSETS:
                 for tf in TIMEFRAMES.get(asset, ["5m"]):
-                    tasks.append(asset_loop(asset, tf, session, context, offset_seconds=stagger))
+                    tasks.append(_safe_task_wrapper(asset_loop(asset, tf, session, context, offset_seconds=stagger), f"Asset Loop {asset}/{tf}"))
                     stagger += 15  # Stagger startup by 15s to distribute WebSocket and RPC load evenly
 
-            tasks.append(reconciliation_loop(state_manager, _try_telegram))
-            tasks.append(arbitrage_scanner_loop(_try_telegram))
-            tasks.append(heartbeat_daemon())
+            tasks.append(_safe_task_wrapper(reconciliation_loop(state_manager, _try_telegram), "Reconciliation Loop"))
+            tasks.append(_safe_task_wrapper(arbitrage_scanner_loop(_try_telegram), "Arbitrage Scanner"))
+            tasks.append(_safe_task_wrapper(heartbeat_daemon(), "Heartbeat Daemon"))
+            tasks.append(_safe_task_wrapper(fv_fast_check_loop(session, context), "Fair Value Fast Check Loop"))
+            tasks.append(_safe_task_wrapper(price_refresher_loop(), "Price Refresher Loop"))
             asyncio.create_task(_zombie_cleanup_loop())
 
             # Start latency edge arbitrage scanner (Sprint 3)
             try:
                 from core.engine.cycle_manager import start_latency_edge_scanner
-                tasks.append(start_latency_edge_scanner(session, context.engines))
+                tasks.append(_safe_task_wrapper(start_latency_edge_scanner(session, context.engines), "Latency Edge Scanner"))
                 log.info("[MAIN] Latency edge scanner background task registered.")
             except Exception as e:
                 log.error("[MAIN] Failed to import start_latency_edge_scanner: %s", e)
 
             try:
                 from core.engine.cycle_manager import start_reversal_sniper
-                tasks.append(start_reversal_sniper(session, context.engines))
+                tasks.append(_safe_task_wrapper(start_reversal_sniper(session, context.engines), "Reversal Sniper"))
                 log.info("[MAIN] Reversal sniper background task registered.")
             except Exception as e:
                 log.error("[MAIN] Failed to import start_reversal_sniper: %s", e)
 
-            try:
-                from core.engine.cycle_manager import start_resolution_sweeper
-                tasks.append(start_resolution_sweeper(session, context.engines))
-                log.info("[MAIN] Resolution sweeper background task registered.")
-            except Exception as e:
-                log.error("[MAIN] Failed to import start_resolution_sweeper: %s", e)
+            # Resolution Sweeper Engine
+            if cfg.get("ENABLE_SWEEPER", False):
+                try:
+                    from core.engine.cycle_manager import start_resolution_sweeper
+                    tasks.append(_safe_task_wrapper(start_resolution_sweeper(session, context.engines), "Resolution Sweeper"))
+                    log.info("[MAIN] Resolution sweeper background task registered.")
+                except Exception as e:
+                    log.error("[MAIN] Failed to import start_resolution_sweeper: %s", e)
+            else:
+                log.info("[MAIN] Resolution sweeper is disabled in config.")
 
             # Tier 3G: Fear & Greed sentiment daemon (macro size filter)
             try:
                 from core.analytics.sentiment_daemon import sentiment_filter
-                tasks.append(sentiment_filter.start_poll_loop())
+                tasks.append(_safe_task_wrapper(sentiment_filter.start_poll_loop(), "Sentiment Poll"))
                 log.info("[MAIN] Sentiment (F&G) daemon registered.")
             except Exception as e:
                 log.error("[MAIN] Failed to start sentiment daemon: %s", e)
 
-            try:
-                from core.engine.cycle_manager import start_close_sniper
-                tasks.append(start_close_sniper(session, context.engines))
-                log.info("[MAIN] Close sniper background task registered.")
-            except Exception as e:
-                log.error("[MAIN] Failed to import start_close_sniper: %s", e)
+            # Near-Close Sniper Engine (NCS)
+            if cfg.get("ENABLE_NCS", False):
+                try:
+                    from core.engine.cycle_manager import start_close_sniper
+                    tasks.append(_safe_task_wrapper(start_close_sniper(session, context.engines), "Close Sniper (NCS)"))
+                    log.info("[MAIN] Close sniper background task registered.")
+                except Exception as e:
+                    log.error("[MAIN] Failed to import start_close_sniper: %s", e)
+            else:
+                log.info("[MAIN] Close sniper (NCS) is disabled in config.")
 
             log.info("[MAIN] Launching %d asyncio tasks (Dynamic asset loops + reconciliation + arbitrage scanner)", len(tasks))
             await asyncio.gather(*tasks)

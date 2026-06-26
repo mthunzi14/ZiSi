@@ -108,6 +108,27 @@ app.use('/api/events',        eventsRouter);
 app.use('/api/performance',   performanceRouter);
 app.use('/api/backtest',      backtestRouter);
 
+app.get('/api/signals/recent', (req, res) => {
+  try {
+    if (fs.existsSync(signalEvaluationsPath)) {
+      const content = fs.readFileSync(signalEvaluationsPath, 'utf-8');
+      const lines = content.trim().split('\n').filter(Boolean);
+      const recent = lines.slice(-50).map(line => {
+        try {
+          return JSON.parse(line);
+        } catch (e) {
+          return null;
+        }
+      }).filter(Boolean);
+      res.json(recent);
+    } else {
+      res.json([]);
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Secure control middleware
 const systemAuthMiddleware = (req, res, next) => {
   const apiKey = process.env.DASHBOARD_API_KEY || process.env.ZISI_API_KEY || process.env.API_KEY || '4444';
@@ -358,10 +379,12 @@ const positionsStatePath = path.join(BOT_ROOT, 'data', 'positions_state.json');
 const chainlinkPricesPath = path.join(BOT_ROOT, 'data', 'chainlink_prices.json');
 const pythPricesPath = path.join(BOT_ROOT, 'data', 'pyth_prices.json');
 const clobPricesPath = path.join(BOT_ROOT, 'data', 'clob_prices.json');
+const signalEvaluationsPath = path.join(BOT_ROOT, 'data', 'signal_evaluations.jsonl');
 
 let lastPositionsWrite = 0;
 let lastBalanceWrite = 0;
 let lastClobPricesWrite = 0;
+let lastSignalWrite = 0;
 
 // ── Performance Optimization: RAM Cache Layer to avoid 100% event loop deadlock ──
 let cachedIsRunning = false;
@@ -428,6 +451,22 @@ async function loadClobPricesAsync() {
       cachedClobPrices = JSON.parse(raw.replace(/^\uFEFF/, ''));
     }
   } catch (err) {}
+}
+
+async function pushLatestSignalEvaluation() {
+  try {
+    if (fs.existsSync(signalEvaluationsPath)) {
+      const content = await fs.promises.readFile(signalEvaluationsPath, 'utf-8');
+      const lines = content.trim().split('\n').filter(Boolean);
+      if (lines.length > 0) {
+        const lastLine = lines[lines.length - 1];
+        const payload = JSON.parse(lastLine);
+        broadcastWS({ type: 'signal_evaluation', payload, ts: Date.now() });
+      }
+    }
+  } catch (err) {
+    console.error('[SERVER] Failed to read or parse signal_evaluations.jsonl:', err.message);
+  }
 }
 
 function updatePm2StatusCache() {
@@ -785,6 +824,13 @@ if (fs.existsSync(dataDir)) {
           setImmediate(async () => {
             await loadClobPricesAsync();
             pushPositionsUpdate();
+          });
+        }
+      } else if (filename === 'signal_evaluations.jsonl') {
+        if (now - lastSignalWrite > 50) {
+          lastSignalWrite = now;
+          setImmediate(async () => {
+            await pushLatestSignalEvaluation();
           });
         }
       } else if (filename === 'chainlink_prices.json') {

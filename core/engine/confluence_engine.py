@@ -315,12 +315,8 @@ class ConfluenceEngine:
                 "momentum": round(momentum, 4),
             }
 
-        # Evaluate signal direction strictly on the local timeframe
-        local_result = tf_results.get(timeframe)
-        if local_result and local_result["signal"] == direction_upper:
-            score = 4
-        else:
-            score = 2
+        # Compute true count of agreeing timeframes out of 4 (1m, 5m, 15m, 1h)
+        score = sum(1 for tf, d in tf_results.items() if d["signal"] == direction_upper)
 
         win_prob_boost = _BOOST_MAP.get(score, 0.0)
 

@@ -181,13 +181,13 @@ class SandboxGraduationTracker:
 sandbox_tracker = SandboxGraduationTracker()
 
 
-
 def _get_config() -> dict:
     return load_config()
 
 
 def _derive_entry_type(title: str) -> str:
     t = (title or "").upper()
+    # Unique entry_types (subtypes) preserved to enable individual performance analysis
     if "CLOSE-SNIPE-EARLY" in t or "CLOSE_SNIPE_EARLY" in t:
         return "CLOSE-SNIPE-EARLY"
     if "CLOSE_SNIPE" in t or "CLOSE-SNIPE" in t:
@@ -205,32 +205,27 @@ def _derive_entry_type(title: str) -> str:
     return "SIGNAL"
 
 
-
 def _derive_trade_type(entry_type: str) -> str:
     e = (entry_type or "").upper()
-    if "CLOSE-SNIPE" in e or "CLOSE_SNIPE" in e:
+    # trade_type (graduation strategy category) unified under NCS
+    if "NCS" in e or "CLOSE" in e or "SWEEP" in e:
         return "NCS"
     if "FAIR" in e:
         return "FAIR-VAL"
     if "LAT" in e or "ARB" in e:
         return "LAT-ARB"
-    if "SWEEP" in e:
-        return "SWEEP"
     if "REVERSAL_SNIPE" in e or "REVERSAL-SNIPE" in e:
         return "REVERSAL-SNIPE"
     if "REVERSAL_STREAK" in e or "REVERSAL-STREAK" in e:
         return "REVERSAL-STREAK"
     return "SIGNAL"
 
+
 def _derive_pillar_and_type(title: str) -> tuple[str, str]:
     t = (title or "").upper()
     # First determine the type
-    if "CLOSE-SNIPE-EARLY" in t or "CLOSE_SNIPE_EARLY" in t:
+    if "CLOSE-SNIPE-EARLY" in t or "CLOSE_SNIPE_EARLY" in t or "CLOSE_SNIPE" in t or "CLOSE-SNIPE" in t or "T2_SWEEPER" in t or "SWEEP" in t:
         t_type = "NCS"
-    elif "CLOSE_SNIPE" in t or "CLOSE-SNIPE" in t:
-        t_type = "NCS"
-    elif "T2_SWEEPER" in t or "SWEEP" in t:
-        t_type = "SWEEP"
     elif "LATENCY_ARB" in t or "LAT_ARB" in t or "ARB" in t:
         t_type = "LAT_ARB"
     elif "FAIR_VAL" in t or "FAIR-VAL" in t:
@@ -245,7 +240,7 @@ def _derive_pillar_and_type(title: str) -> tuple[str, str]:
     # Then map the type to the pillar
     if t_type in ("SIG", "FV", "REV_SNIPE"):
         pillar = "CORE_SNIPER"
-    elif t_type in ("SWEEP", "NCS", "REV_STREAK"):
+    elif t_type in ("NCS", "REV_STREAK"):
         pillar = "ASYMMETRIC_BARBELL"
     elif t_type in ("LAT_ARB",):
         pillar = "LATENCY_ARBITRAGE"
@@ -653,7 +648,13 @@ def place_order(
     if t_type in ("REV_SNIPE", "SIG"):
         # Bound Tier 1 to ProgressiveStakingEngine
         amount_dollars = staking_engine.get_current_size()
-        log.info(f"[STAKING-GATE] Route T1 trade {t_type} -> overridden size: ${amount_dollars:.2f}")
+        if t_type == "REV_SNIPE":
+            import os
+            rev_mult = float(os.getenv("REV_SNIPE_SIZE_MULTIPLIER", "1.25"))
+            amount_dollars = round(amount_dollars * rev_mult, 2)
+            log.info(f"[STAKING-GATE] Route T1 trade {t_type} -> scaled by {rev_mult}x -> size: ${amount_dollars:.2f}")
+        else:
+            log.info(f"[STAKING-GATE] Route T1 trade {t_type} -> overridden size: ${amount_dollars:.2f}")
     elif t_type in ("LAT_ARB", "SWEEP", "NCS", "REV_STREAK", "FV"):
         # Enforce strictly 5-minute timeframe for Tier 2 strategies
         # Allow only if "5m" or "[5m]" or "5M" is in title
@@ -692,63 +693,63 @@ def place_order(
                     log.warning(f"[LAT-ARB-ABORT] WebSocket and Polymarket packet timestamp delta {delta_ms:.1f}ms exceeds {max_delta}ms limit.")
                     return None
 
-        elif t_type == "SWEEP":
-            # SWEEP: time-to-resolution <= 180s, price entry >= 90c, sizing flat $10
-            time_to_res = expiry_ts - time.time()
-            if time_to_res > 180 or time_to_res < 0:
-                log.warning(f"[SWEEP-ABORT] Time to resolution {time_to_res:.1f}s is > 180s limit.")
-                return None
-            if entry_price < 0.90:
-                log.warning(f"[SWEEP-ABORT] Price entry {entry_price:.3f} is < 90¢ threshold.")
-                return None
-            amount_dollars = round(get_current_balance() * 0.20, 2)
-
         elif t_type == "NCS":
-            # NCS: reject if average entry slippage price > 96c or available depth at target price level < 3x intended order size
-            from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
-            poly_entry = polymarket_l2_gateway.l2_cache.get(market_id)
-            if poly_entry:
-                asks = poly_entry.get("asks", [])
-                valid_asks = []
-                for ask in asks:
-                    try:
-                        p = float(ask.get("price") or 0.0)
-                        sz = float(ask.get("size") or ask.get("qty") or ask.get("amount") or 0.0)
-                        if p > 0 and sz > 0:
-                            valid_asks.append((p, sz))
-                    except Exception:
-                        pass
-                valid_asks.sort(key=lambda x: x[0])
-                
-                # Available depth at target level (asks <= entry_price)
-                depth_at_target = sum(sz for p, sz in valid_asks if p <= entry_price + 0.0001)
-                target_shares = amount_dollars / entry_price if entry_price > 0 else 1
-                
-                from config import TIER2_NCS_SLIPPAGE_CAP
-                if depth_at_target < 1.5 * target_shares:
-                    log.warning(f"[NCS-ABORT] Insufficient depth at target level: {depth_at_target:.1f} < 1.5x intended order size {1.5 * target_shares:.1f}.")
+            # Combined NCS Strategy routing checks
+            if "SWEEP" in title_upper or "RESOLUTION" in title_upper:
+                # Standard resolution sweep logic: time-to-resolution <= 180s, price entry >= 90c
+                time_to_res = expiry_ts - time.time()
+                if time_to_res > 180 or time_to_res < 0:
+                    log.warning(f"[NCS-SWEEP-ABORT] Time to resolution {time_to_res:.1f}s is > 180s limit.")
                     return None
-                
-                # Check slippage
-                shares_filled = 0.0
-                total_cost = 0.0
-                for p, sz in valid_asks:
-                    needed = target_shares - shares_filled
-                    if needed <= 0:
-                        break
-                    take = min(needed, sz)
-                    shares_filled += take
-                    total_cost += take * p
-                
-                if shares_filled < target_shares:
-                    log.warning(f"[NCS-ABORT] Insufficient order book asks to fill {target_shares:.1f} shares.")
+                if entry_price < 0.90:
+                    log.warning(f"[NCS-SWEEP-ABORT] Price entry {entry_price:.3f} is < 90¢ threshold.")
                     return None
-                
-                avg_price = total_cost / shares_filled if shares_filled > 0 else 0.0
-                ncs_slip_cap = cfg.get("TIER2_NCS_SLIPPAGE_CAP", TIER2_NCS_SLIPPAGE_CAP)
-                if avg_price > ncs_slip_cap:
-                    log.warning(f"[NCS-ABORT] Slippage average price {avg_price:.3f} exceeds {ncs_slip_cap}¢ limit.")
-                    return None
+            else:
+                # Close-Snipe style logic: reject if available depth at target price level < 1.5x intended order size
+                from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
+                poly_entry = polymarket_l2_gateway.l2_cache.get(market_id)
+                if poly_entry:
+                    asks = poly_entry.get("asks", [])
+                    valid_asks = []
+                    for ask in asks:
+                        try:
+                            p = float(ask.get("price") or 0.0)
+                            sz = float(ask.get("size") or ask.get("qty") or ask.get("amount") or 0.0)
+                            if p > 0 and sz > 0:
+                                valid_asks.append((p, sz))
+                        except Exception:
+                            pass
+                    valid_asks.sort(key=lambda x: x[0])
+                    
+                    # Available depth at target level (asks <= entry_price)
+                    depth_at_target = sum(sz for p, sz in valid_asks if p <= entry_price + 0.0001)
+                    target_shares = amount_dollars / entry_price if entry_price > 0 else 1
+                    
+                    if depth_at_target < 1.5 * target_shares:
+                        log.warning(f"[NCS-ABORT] Insufficient depth at target level: {depth_at_target:.1f} < 1.5x intended order size {1.5 * target_shares:.1f}.")
+                        return None
+                    
+                    # Check slippage
+                    shares_filled = 0.0
+                    total_cost = 0.0
+                    for p, sz in valid_asks:
+                        needed = target_shares - shares_filled
+                        if needed <= 0:
+                            break
+                        take = min(needed, sz)
+                        shares_filled += take
+                        total_cost += take * p
+                    
+                    if shares_filled < target_shares:
+                        log.warning(f"[NCS-ABORT] Insufficient order book asks to fill {target_shares:.1f} shares.")
+                        return None
+                    
+                    avg_price = total_cost / shares_filled if shares_filled > 0 else 0.0
+                    from config import TIER2_NCS_SLIPPAGE_CAP
+                    ncs_slip_cap = cfg.get("TIER2_NCS_SLIPPAGE_CAP", TIER2_NCS_SLIPPAGE_CAP)
+                    if avg_price > ncs_slip_cap:
+                        log.warning(f"[NCS-ABORT] Slippage average price {avg_price:.3f} exceeds {ncs_slip_cap}¢ limit.")
+                        return None
 
         elif t_type == "REV_STREAK":
             # REV_STREAK: check 4 consecutive 1m candles moving violently against macro average
@@ -2371,17 +2372,23 @@ def refresh_open_position_prices() -> int:
             continue
 
         try:
-            price_data = _gcp(market_id)
-            if price_data and isinstance(price_data.get("price"), (int, float)):
-                new_price = float(price_data["price"])
-                if 0.01 <= new_price <= 0.99:   # reject resolved/invalid prices
-                    old_price = pos.get("current_price", pos.get("entry_price", 0.5))
-                    pos["current_price"] = round(new_price, 4)
-                    updated += 1
-                    log.debug(
-                        "[PRICE-REFRESH] %s: %.4f → %.4f (Δ%+.4f)",
-                        order_id, old_price, new_price, new_price - old_price,
-                    )
+            # Query local Tri-Socket WebSocket L2 cache first to get instant updates without REST overhead
+            from core.engine.extraterrestrial_ws_gateway import polymarket_l2_gateway
+            live_price, _ = polymarket_l2_gateway.get_price(market_id)
+            if live_price and isinstance(live_price, (int, float)):
+                new_price = live_price
+            else:
+                price_data = _gcp(market_id)
+                new_price = float(price_data["price"]) if price_data and price_data.get("price") is not None else None
+
+            if new_price and 0.01 <= new_price <= 0.99:   # reject resolved/invalid prices
+                old_price = pos.get("current_price", pos.get("entry_price", 0.5))
+                pos["current_price"] = round(new_price, 4)
+                updated += 1
+                log.debug(
+                    "[PRICE-REFRESH] %s: %.4f → %.4f (Δ%+.4f)",
+                    order_id, old_price, new_price, new_price - old_price,
+                )
         except Exception as exc:
             log.debug("[PRICE-REFRESH] Failed for %s: %s", order_id, exc)
 

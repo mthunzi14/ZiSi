@@ -174,7 +174,10 @@ class RegimeDetector:
     def _recalculate(self) -> None:
         """Run the full multi-signal classification pipeline."""
         prices = [p for _, p in self._price_history]
-        if len(prices) < 2:
+        if len(prices) < 20:
+            self._current_regime = "UNKNOWN"
+            self._regime_confidence = 0.0
+            self._write_status()
             return
 
         # 1. Compute ATR (mean absolute % change)
@@ -234,6 +237,9 @@ class RegimeDetector:
             # Very high volatility — could be chaos or trending
             scores["VOLATILE_CHAOS"] += 2.0
             scores["TRENDING"] += 1.0
+            # Extra directional chaos boost under extreme spikes (Sprint 12 - 85th percentile threshold)
+            if atr_p >= 85.0:
+                scores["VOLATILE_CHAOS"] += 1.5
         elif atr_p <= _ATR_LOW_PCT:
             scores["COMPRESSION"] += 2.5
             scores["MEAN_REVERTING"] += 0.5

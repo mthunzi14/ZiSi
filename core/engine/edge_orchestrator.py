@@ -54,6 +54,21 @@ class EdgeOrchestrator:
             from core.engine.regime_detector import RegimeDetector
             self._regime_detector = RegimeDetector(timeframe="5m", atr_window=14)
             log.info("[EDGE] ✅ Module A (Regime Detector) initialized")
+            
+            # Pre-warm with Binance Spot closes to bypass startup UNKNOWN regime state
+            try:
+                import urllib.request
+                import json as _json
+                url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=50"
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    klines = _json.loads(response.read().decode())
+                    closes = [float(k[4]) for k in klines]
+                    if closes:
+                        self._regime_detector.update_prices(closes, symbol="BTC")
+                        log.info(f"[EDGE] Regime Detector pre-warmed with {len(closes)} historical BTC closes (Regime={self._regime_detector.regime})")
+            except Exception as prewarm_err:
+                log.warning("[EDGE] Regime Detector pre-warming REST call failed: %s", prewarm_err)
         except Exception as e:
             log.warning("[EDGE] ❌ Module A (Regime Detector) failed: %s", e)
 

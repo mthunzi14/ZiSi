@@ -260,6 +260,8 @@ def load_config() -> dict:
         "TIER2_NCS_SLIPPAGE_CAP": TIER2_NCS_SLIPPAGE_CAP,
         "TIER2_FV_Z_THRESHOLD": TIER2_FV_Z_THRESHOLD,
         "TIER2_FV_TARGET_Z": TIER2_FV_TARGET_Z,
+        "ENABLE_NCS": os.getenv("ENABLE_NCS", "true").lower() == "true",
+        "ENABLE_SWEEPER": os.getenv("ENABLE_SWEEPER", "true").lower() == "true",
     }
 
     # Check required keys

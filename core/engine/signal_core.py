@@ -10,6 +10,7 @@ This captures ONLY the raw cascade: direction + base score + an OFI-divergence
 edge-orchestrator layers remain in generate_signal (they depend on live market
 prices / external systems and are applied after this function returns).
 """
+import os
 from typing import Optional
 
 # Defaults == the constants currently hardcoded in generate_signal.
@@ -19,7 +20,9 @@ DEFAULT_SIGNAL_PARAMS = {
     "rsi_up_soft": 54.0, "mom_up_soft": 0.01, "ofi_confirm_up": 0.45,
     "rsi_dn": 40.0, "mom_dn": -0.02,
     "rsi_dn_soft": 46.0, "mom_dn_soft": -0.01, "ofi_confirm_dn": -0.45,
-    "reversal_lo": 25.0, "reversal_hi": 75.0, "reversal_score": 0.70,
+    "reversal_lo": float(os.getenv("REVERSAL_LO", "30.0")), 
+    "reversal_hi": float(os.getenv("REVERSAL_HI", "70.0")), 
+    "reversal_score": 0.70,
     # OFI-divergence block magnitudes (sign applied per-direction)
     "ofi_block_neutral": 0.35,  # used when 45 <= rsi <= 55
     "ofi_block_5m": 0.28,
@@ -122,6 +125,8 @@ def decide_signal(
     atr_percentile: Optional[float] = None,
     bbw_percentile: Optional[float] = None,
     strategy: Optional[str] = None,
+    binance_obi: Optional[float] = None,
+    fast_cvd: Optional[float] = None,
 ) -> dict:
     """Return {"direction": "UP"|"DOWN"|None, "score": float, "is_reversal": bool, "blocked": bool}."""
     if params is None:
@@ -168,6 +173,25 @@ def decide_signal(
         res.update(direction="DOWN", score=p["reversal_score"], is_reversal=True)
         return res
 
+    # 2. HFT Cascade: OBI & CVD confirmation (Sprint 12)
+    if binance_obi is not None and fast_cvd is not None:
+        # Check OBI direction first
+        if binance_obi >= 0.35 and fast_cvd > 0.0:
+            # Check RSI and MOM do not contradict
+            if rsi >= 48.0 and mom >= -0.002:
+                res.update(direction="UP", score=0.85)
+                return res
+        elif binance_obi <= -0.35 and fast_cvd < 0.0:
+            if rsi <= 52.0 and mom <= 0.002:
+                res.update(direction="DOWN", score=0.85)
+                return res
+
+    # Low Volatility Veto: block 5m and 15m entries if ATR percentile is too low (< 20.0)
+    if timeframe in ("5m", "15m") and atr_percentile is not None:
+        if atr_percentile < 20.0:
+            res["blocked"] = True
+            return res
+
     # Volatility Veto (Sprint 5): block 5m mean-reversion entries under extreme volatility.
     # PURE: percentiles are passed in by the caller (the live engine reads regime_status.json
     # and supplies them). When absent (tests / backtester) the veto is skipped, so this
@@ -196,6 +220,15 @@ def decide_signal(
             dn_trigger = True
 
     if up_trigger:
+        # Microstructure confirm gates: reject momentum trades if HFT flows contradict direction
+        if strategy == "SIG":
+            if binance_obi is not None and binance_obi < -0.15:
+                res["blocked"] = True
+                return res
+            if fast_cvd is not None and fast_cvd < -0.05:
+                res["blocked"] = True
+                return res
+
         # Overextension block REMOVED — was blocking RSI 60-80 UP signals in MEAN_REVERTING
         # if (regime or "").upper() == "MEAN_REVERTING" and rsi > 60.0:
         #     res["blocked"] = True
@@ -217,6 +250,15 @@ def decide_signal(
         return res
 
     if dn_trigger:
+        # Microstructure confirm gates: reject momentum trades if HFT flows contradict direction
+        if strategy == "SIG":
+            if binance_obi is not None and binance_obi > 0.15:
+                res["blocked"] = True
+                return res
+            if fast_cvd is not None and fast_cvd > 0.05:
+                res["blocked"] = True
+                return res
+
         # Overextension block REMOVED — was blocking RSI 20-40 DOWN signals in MEAN_REVERTING
         # if (regime or "").upper() == "MEAN_REVERTING" and rsi < 40.0:
         #     res["blocked"] = True

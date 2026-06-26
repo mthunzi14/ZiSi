@@ -116,8 +116,10 @@ def decide_value_entry(fp_up: float, up_price: float, dn_price: float,
 
     # ── Regime-Aware Proximity Guard ──
     # In a MEAN_REVERSION regime, require 15c edge in the 47c-53c range.
-    required_margin_up = p["edge_margin"]
-    required_margin_dn = p["edge_margin"]
+    # Relaxed window-open margin for first 60 seconds (t_min < 1.0) (Sprint 12)
+    base_margin = 0.06 if t_min < 1.0 else p["edge_margin"]
+    required_margin_up = base_margin
+    required_margin_dn = base_margin
     if regime == "MEAN_REVERSION":
         if 0.47 <= up_price <= 0.53:
             required_margin_up = p["edge_margin"] + 0.05

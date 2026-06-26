@@ -32,12 +32,13 @@ export default function App() {
   const [assetMacro,   setAssetMacro]   = useState({});
   const [statsExpanded, setStatsExpanded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [signals, setSignals] = useState([]);
   const esRef = useRef(null);
   const domUpdatesCacheRef = useRef({ prices: {}, unrealPnl: {} });
   const pendingStateRef = useRef(null);
   const pendingPositionsRef = useRef(null);
 
-  // Periodically flush throttled updates to React state (1.5s interval) to prevent thrashing
+  // Periodically flush throttled updates to React state (100ms interval for real-time MT5 experience)
   useEffect(() => {
     const interval = setInterval(() => {
       if (pendingStateRef.current) {
@@ -48,7 +49,7 @@ export default function App() {
         setPositions(pendingPositionsRef.current);
         pendingPositionsRef.current = null;
       }
-    }, 1500);
+    }, 100);
     return () => clearInterval(interval);
   }, []);
 
@@ -198,6 +199,10 @@ export default function App() {
             }
           } else if (event.type === 'candle_boundary') {
             setCandles(event.payload || []);
+          } else if (event.type === 'signal_evaluation') {
+            if (event.payload) {
+              setSignals(prev => [event.payload, ...prev].slice(0, 50));
+            }
           } else if (event.type === 'diagnostics_update') {
             setDiagnostics(event.payload || {});
           }
@@ -247,6 +252,14 @@ export default function App() {
     load();
     const id = setInterval(load, 30000);
     return () => clearInterval(id);
+  }, []);
+
+  // Fetch recent signal evaluations on mount
+  useEffect(() => {
+    fetch('/api/signals/recent')
+      .then(r => r.json())
+      .then(d => setSignals(d))
+      .catch(() => {});
   }, []);
 
   // WebSockets handles all live updates (SSE EventSource removed)
@@ -519,7 +532,7 @@ export default function App() {
               </div>
 
               {/* Row 3: Trade Ledger */}
-              <TradeFeed positions={positions} gateLog={gateLog} assetMacro={assetMacro} />
+              <TradeFeed positions={positions} gateLog={gateLog} assetMacro={assetMacro} signals={signals} />
             </div>
           </section>
 
