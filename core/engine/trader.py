@@ -432,6 +432,7 @@ def _reconcile_pending_orders() -> None:
                 "stop_loss":       sl,
                 "open_time":       meta["placed_at"],
                 "reconciled":      True,
+                "hold_to_expiry":  meta.get("hold_to_expiry", False),
             }
 
         elif status == "CANCELLED":
@@ -477,6 +478,7 @@ def _register_pending_order(
     amount: float,
     entry_price: float,
     event_title: str = "",
+    hold_to_expiry: bool = False,
 ) -> None:
     """Mark an order for reconciliation (call when fill status is ambiguous)."""
     with _reconcile_lock:
@@ -488,6 +490,7 @@ def _register_pending_order(
             "entry_price": entry_price,
             "event_title": event_title,
             "placed_at":   datetime.now(timezone.utc),
+            "hold_to_expiry": hold_to_expiry,
         }
     log.info("[RECONCILE] Registered order %s for reconciliation", order_id)
 
@@ -971,7 +974,7 @@ def place_order(
         )
         if is_resting_order:
             return None
-        _register_pending_order(order_id, market_id, event_id, direction, amount_dollars, entry_price)
+        _register_pending_order(order_id, market_id, event_id, direction, amount_dollars, entry_price, hold_to_expiry=hold_to_expiry)
         return None
 
     data = resp.json()
@@ -1023,7 +1026,7 @@ def place_order(
             if is_resting_order:
                 return None
             _register_pending_order(
-                resolved_id, market_id, event_id, direction, amount_dollars, entry_price, event_title
+                resolved_id, market_id, event_id, direction, amount_dollars, entry_price, event_title, hold_to_expiry=hold_to_expiry
             )
 
     tp, sl = _calculate_exit_targets_fallback(entry_price, amount_dollars, event_title, direction)
@@ -1040,6 +1043,7 @@ def place_order(
         "trade_type":   _derive_trade_type(_derive_entry_type(event_title or "")),
         "pillar":       pillar,
         "type":         t_type,
+        "hold_to_expiry": hold_to_expiry,
         **({"expiry_ts": expiry_ts} if expiry_ts else {}),
     }
     persist_positions()
@@ -1536,6 +1540,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
                 log.debug("[LIVE-EXIT] Resolution check failed for %s: %s", order_id, _re)
 
         # Last resort: use stored current_price (honest — no fabrication)
+        is_live_price = True
         if exit_price is None:
             # Safety Gate (Sprint 11): Defer exit if expired and live pricing/resolution fetch failed (likely network-down/offline wake-up)
             if age_minutes >= effective_max_minutes:
@@ -1543,6 +1548,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
                 if age_minutes >= _stale_threshold:
                     _stored = float(pos.get("current_price", entry_price))
                     exit_price = round(_stored, 4)
+                    is_live_price = False
                     log.warning(
                         "[DORMANCY-SAFETY] Expired trade %s (%s) has been stale for %.1f min. Live fetch failed. Force-settling at stored price %.4f to prevent gridlock.",
                         order_id, _ev_title, age_minutes, exit_price
@@ -1557,12 +1563,13 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
             else:
                 _stored = float(pos.get("current_price", entry_price))
                 exit_price = round(_stored, 4)
+                is_live_price = False
                 log.info("[LIVE-EXIT] Using stored price %.4f for %s (live fetch unavailable)", exit_price, order_id)
 
         # Evaluate exit triggers
-        is_target_hit = exit_price >= target_price
-        is_stop_hit = exit_price <= stop_loss if (not _is_short_tf or (stop_loss is not None and stop_loss > 0)) else False
-        is_time_decay_hit = is_updown and not _is_short_tf and not is_expired and age_minutes >= 0.7 * effective_max_minutes
+        is_target_hit = (exit_price >= target_price) if is_live_price else False
+        is_stop_hit = (exit_price <= stop_loss if (not _is_short_tf or (stop_loss is not None and stop_loss > 0)) else False) if is_live_price else False
+        is_time_decay_hit = is_updown and not _is_short_tf and not is_expired and age_minutes >= 0.7 * effective_max_minutes if is_live_price else False
 
         is_salvage_exit = False
         from config import SHORT_TF_SALVAGE_ENABLED, SHORT_TF_STOP_LOSS_ENABLED, SHORT_TF_STOP_LOSS_PCT
@@ -1579,7 +1586,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
             effective_decay_threshold = 0.70
         
         # Salvage exit: trigger on absolute floor (30c) OR dynamic decay threshold (e.g. 70% of entry price)
-        if _is_short_tf and SHORT_TF_SALVAGE_ENABLED and exit_price is not None:
+        if _is_short_tf and SHORT_TF_SALVAGE_ENABLED and exit_price is not None and is_live_price:
             is_absolute_salvage = exit_price <= effective_salvage_floor
             is_decay_salvage = exit_price <= entry_price * effective_decay_threshold
             
@@ -1591,7 +1598,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
                 is_salvage_exit = True
 
         _is_5m = "5M" in _ev_title or pos.get("timeframe") == "5m" or pos.get("type") == "5m" or "5M" in str(pos.get("type", "")).upper()
-        if _is_5m and exit_price is not None and exit_price <= 0.30:
+        if _is_5m and exit_price is not None and exit_price <= 0.30 and is_live_price:
             log.info(
                 "[SALVAGE-EXIT-5M] %s: exit price %.4f <= 0.30 on 5m contract — forcing early salvage exit",
                 order_id, exit_price
@@ -1601,7 +1608,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         # PRE-EMPTIVE TIMEOUT: In the execution block, if we are within 3 seconds of market expiration (T-3),
         # immediately execute an aggressive market-sweep order to completely flatten risk.
         is_preemptive_timeout = False
-        if is_updown and _expiry_ts and not is_expired:
+        if is_updown and _expiry_ts and not is_expired and is_live_price and not pos.get("hold_to_expiry", False):
             time_left = float(_expiry_ts) - now.timestamp()
             if 0 < time_left <= 3.0:
                 log.info(
@@ -1615,7 +1622,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         # almost certainly wrong direction. Exit now to save remaining stake.
         _drawdown_floor = entry_price * SHORT_TF_STOP_LOSS_PCT
         _allow_stop = not _is_short_tf or SHORT_TF_STOP_LOSS_ENABLED
-        if _allow_stop and not is_expired and exit_price is not None and 0.005 < exit_price <= _drawdown_floor:
+        if _allow_stop and not is_expired and exit_price is not None and 0.005 < exit_price <= _drawdown_floor and is_live_price:
             log.info(
                 "[STOP-LOSS] %s: %.0fc <= %.0f%% of entry %.0fc — early exit saving %.0f%% of stake",
                 order_id, exit_price * 100, SHORT_TF_STOP_LOSS_PCT * 100, entry_price * 100,
@@ -2114,6 +2121,9 @@ def persist_positions() -> None:
                     "exit_price":       round(pos.get("exit_price", 0.0), 4),
                     "entry_spot":       pos.get("entry_spot"),
                     "size":             round(size, 2),
+                    "shares":           round(shares, 2),
+                    "amount_spent":     round(pos.get("amount_spent", size), 2),
+                    "shares_acquired":  round(shares, 2),
                     "realized_pnl":     round(float(pos.get("profit", 0.0) or 0), 2),
                     "realized_pnl_pct": round(float(pos.get("profit_percent", 0.0) or 0), 2),
                     "exit_reason":      pos.get("exit_reason", status),

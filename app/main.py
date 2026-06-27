@@ -1029,6 +1029,15 @@ async def _place_corr_trades(
             continue
         if not market:
             continue
+
+        # TTL gate check for correlated alts: skip shadow entries with < 90s left to expiry.
+        import time as _time_ttl
+        expiry_ts = market.get("expiry_ts", 0)
+        _ttl_s = expiry_ts - _time_ttl.time()
+        if _ttl_s < 90:
+            log.info("[TTL-GATE] %s/%s shadow: %.0fs to expiry — too late to enter (need 90s+), skip",
+                     corr_asset, timeframe, _ttl_s)
+            continue
         # Evaluate target asset local indicators (Spot OFI, OBI/CVD, Confluence score)
         opposing_ofi = False
         opposing_flow = False
@@ -1149,6 +1158,8 @@ def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, s
         shares = max(1, round(usd_amount / entry_price)) if entry_price > 0 else 1
         actual_cost = shares * entry_price
 
+        is_rev_snipe = "REV_SNIPE" in str(trade_type).upper() or "REVERSAL_SNIPE" in str(trade_type).upper()
+
         order = place_order(
             event_id=market["event_id"],
             market_id=market_id,
@@ -1158,6 +1169,7 @@ def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, s
             event_title=f"[UPDOWN][{asset}][{timeframe}][{trade_type}] {market['event_title']}",
             expiry_ts=market["expiry_ts"],
             is_resting_order=is_resting_order,
+            hold_to_expiry=is_rev_snipe,
         )
 
         if order:

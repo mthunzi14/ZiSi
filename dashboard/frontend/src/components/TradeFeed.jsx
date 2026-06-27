@@ -832,7 +832,14 @@ const ClosedRow = memo(function ClosedRow({ p, index }) {
   const dir    = dirStr(p.direction);
   const pnl    = parseFloat(p.realized_pnl ?? 0);
   const pct    = parseFloat(p.realized_pnl_pct ?? 0);
-  const size   = parseFloat(p.size ?? 0);
+  
+  const amountSpent = parseFloat(p.amount_spent ?? p.entry_value ?? 0);
+  const entryPrice  = parseFloat(p.entry_price ?? 0);
+  const shares      = parseFloat(p.shares ?? p.shares_acquired ?? p.shares_sold ?? 0);
+  let size = amountSpent > 0 ? amountSpent : (shares > 0 && entryPrice > 0 ? shares * entryPrice : parseFloat(p.size ?? 0));
+  if (size > 0 && shares > 0 && Math.abs(size - shares) < 0.01 && entryPrice > 0 && entryPrice < 1.0) {
+    size = shares * entryPrice;
+  }
   const result = pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'EVEN';
   const rColor = 'var(--color-text-muted)';
   const rb     = reasonBadge(p.exit_reason);

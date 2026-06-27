@@ -932,6 +932,7 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
                 entry_price=snipe_price,
                 event_title=f"[UPDOWN][{asset}][{timeframe}][REVERSAL_SNIPE] {market['event_title']}",
                 expiry_ts=market["expiry_ts"],
+                hold_to_expiry=True,
             )
             if order:
                 await commit_trade_slot(asset, timeframe, 0.50, interval_minutes, is_dual=False, direction=snipe_direction)

@@ -67,8 +67,26 @@ function readPositionsFile() {
       throw new Error('Positions file JSON is invalid or incomplete');
     }
 
-    const active = deduplicateById(data.active || []).map(enrichTradeType);
-    const closed = deduplicateById(data.closed || []).map(enrichTradeType);
+    const active = deduplicateById(data.active || []).map(enrichTradeType).map(p => {
+      const entryPrice = parseFloat(p.entry_price || 0);
+      const shares = parseFloat(p.shares || p.shares_acquired || 0);
+      let size = parseFloat(p.size || p.amount_spent || 0);
+      if (size > 0 && shares > 0 && Math.abs(size - shares) < 0.01 && entryPrice > 0 && entryPrice < 1.0) {
+        size = shares * entryPrice;
+      }
+      p.size = size;
+      return p;
+    });
+    const closed = deduplicateById(data.closed || []).map(enrichTradeType).map(p => {
+      const entryPrice = parseFloat(p.entry_price || 0);
+      const shares = parseFloat(p.shares || p.shares_sold || p.shares_acquired || 0);
+      let size = parseFloat(p.size || p.amount_spent || 0);
+      if (size > 0 && shares > 0 && Math.abs(size - shares) < 0.01 && entryPrice > 0 && entryPrice < 1.0) {
+        size = shares * entryPrice;
+      }
+      p.size = size;
+      return p;
+    });
 
     const baseSummary = { ...DEFAULT_SUMMARY, ...(data.summary || {}) };
     const summary = {
