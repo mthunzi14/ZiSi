@@ -1,5 +1,5 @@
 // PortfolioPerformance.jsx — Bloomberg P&L Chart + Asset Win Rates
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import CountUpStats from './common/CountUpStats';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -7,15 +7,17 @@ import {
 } from 'recharts';
 
 const ASSET_COLORS = {
-  'BTC/5m':  '#f7931a',
-  'BTC/15m': '#ffb042',
-  'ETH/5m':  '#627eea',
-  'SOL/5m':  '#14f195',
-  'XRP/5m':  '#00aae4',
-  'DOGE/5m': '#e1b303',
+  'BTC/5m':  '#e4e4e7',
+  'BTC/15m': '#d4d4d8',
+  'ETH/5m':  '#a1a1aa',
+  'SOL/5m':  '#6d81a1',
+  'XRP/5m':  '#52525b',
+  'DOGE/5m': '#3f3f46',
+  'LINK/5m': '#27272a',
+  'BNB/5m':  '#18181b',
 };
 
-const ASSETS = ['BTC/5m', 'BTC/15m', 'ETH/5m', 'SOL/5m', 'XRP/5m', 'DOGE/5m'];
+const ASSETS = ['BTC/5m', 'BTC/15m', 'ETH/5m', 'SOL/5m', 'XRP/5m', 'DOGE/5m', 'LINK/5m', 'BNB/5m'];
 
 function buildWrSeries(trades) {
   const outcomes = {};
@@ -68,6 +70,8 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
   const [history,   setHistory]     = useState([]);
   const [expanded,  setExpanded]    = useState(true);
 
+  const closedCount = (positions?.closed || []).length;
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -77,9 +81,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
       } catch { /* offline */ }
     };
     load();
-    const id = setInterval(load, 10000);
-    return () => clearInterval(id);
-  }, []);
+  }, [closedCount]);
 
   const getFilteredData = () => {
     const bal   = parseFloat(state.balance || state.starting_balance || 0);
@@ -145,30 +147,27 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
   };
 
   const { pnl: tfPnl, pct: tfPct } = getPnlMetrics();
-  const pnlColor = tfPnl >= 0 ? '#10b981' : '#ef4444';
+  const pnlColor = '#6d81a1';
 
   // Per-trade stats
-  const closed = positions?.closed || [];
-  const { wins, losses, decisive, wr, grossW, grossL, pf, avgW, avgL, wrData } = useMemo(() => {
-    const w = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).length;
-    const l = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0).length;
-    const dec = w + l;
-    const winRate = dec > 0 ? (w / dec * 100).toFixed(1) : '—';
-    const gw = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).reduce((s, p) => s + parseFloat(p.realized_pnl ?? 0), 0);
-    const gl = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0).reduce((s, p) => s + Math.abs(parseFloat(p.realized_pnl ?? 0)), 0);
-    const profF = gl > 0 ? (gw / gl).toFixed(2) : '∞';
-    const aw = w > 0 ? (gw / w).toFixed(2) : '—';
-    const al = l > 0 ? (gl / l).toFixed(2) : '—';
+  const closed    = positions?.closed || [];
+  const wins      = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).length;
+  const losses    = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0).length;
+  const decisive  = wins + losses;
+  const wr        = decisive > 0 ? (wins / decisive * 100).toFixed(1) : '—';
+  const grossW    = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0).reduce((s, p) => s + parseFloat(p.realized_pnl ?? 0), 0);
+  const grossL    = closed.filter(p => parseFloat(p.realized_pnl ?? 0) < 0).reduce((s, p) => s + Math.abs(parseFloat(p.realized_pnl ?? 0)), 0);
+  const pf        = grossL > 0 ? (grossW / grossL).toFixed(2) : '∞';
+  const avgW      = wins > 0 ? (grossW / wins).toFixed(2) : '—';
+  const avgL      = losses > 0 ? (grossL / losses).toFixed(2) : '—';
 
-    const ts = closed.map(p => ({
-      asset:     (() => { const a = (p.event_title || '').match(/\[(BTC|ETH|SOL|XRP|DOGE)\]/); return a ? a[1] : assetFromTitle(p.event_title || ''); })(),
-      timeframe: tfFromTitle(p.event_title || ''),
-      result:    parseFloat(p.realized_pnl ?? 0) > 0 ? 'WIN' : 'LOSS',
-    })).filter(t => t.asset);
-    const wd = buildWrSeries(ts);
-
-    return { wins: w, losses: l, decisive: dec, wr: winRate, grossW: gw, grossL: gl, pf: profF, avgW: aw, avgL: al, wrData: wd };
-  }, [positions?.closed?.length]);
+  // WR chart data
+  const trades = closed.map(p => ({
+    asset:     (() => { const a = (p.event_title || '').match(/\[(BTC|ETH|SOL|XRP|DOGE|LINK|BNB)\]/); return a ? a[1] : assetFromTitle(p.event_title || ''); })(),
+    timeframe: tfFromTitle(p.event_title || ''),
+    result:    parseFloat(p.realized_pnl ?? 0) > 0 ? 'WIN' : 'LOSS',
+  })).filter(t => t.asset);
+  const wrData = buildWrSeries(trades);
 
   const TF_LABELS = { '1D': 'Past Day', '1W': 'Past Week', '1M': 'Past Month', '1Y': 'Past Year', 'ALL': 'All-Time' };
 
@@ -176,16 +175,16 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
     if (!active || !payload?.length) return null;
     const d      = payload[0].payload;
     const pnlVal = parseFloat(d.pnl || 0);
-    const c      = pnlVal >= 0 ? '#10b981' : '#ef4444';
+    const c      = '#6d81a1';
     return (
-      <div style={{ background: 'rgba(12,12,14,0.96)', backdropFilter: 'blur(12px)', border: '1px solid rgba(148, 163, 184, 0.3)', borderRadius: 8, padding: '10px 14px' }}>
+      <div style={{ background: 'rgba(12,12,14,0.96)', backdropFilter: 'blur(12px)', border: '1px solid #6d81a155', borderRadius: 8, padding: '10px 14px' }}>
         <div style={{ color: '#52525b', fontSize: 10, marginBottom: 4 }}>{new Date(d.timestamp).toLocaleString()}</div>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 11, margin: '2px 0' }}>
-          <span style={{ color: '#71717a' }}>Balance</span>
+          <span style={{ color: '#6d81a1' }}>Balance</span>
           <span style={{ fontWeight: 700, fontFamily: 'monospace' }}>${parseFloat(d.balance || 0).toFixed(2)}</span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 11, margin: '2px 0' }}>
-          <span style={{ color: '#71717a' }}>Net P&L</span>
+          <span style={{ color: '#6d81a1' }}>Net P&L</span>
           <span style={{ fontWeight: 700, fontFamily: 'monospace', color: c }}>{pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}</span>
         </div>
       </div>
@@ -198,15 +197,15 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: expanded ? 12 : 0, flexWrap: 'wrap', gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: 'var(--color-logo)' }}>P&amp;L Chart</span>
+          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15 }}>P&amp;L Chart</span>
 
           {/* Tab pills */}
           <div style={{ display: 'flex', gap: 3, background: 'rgba(255,255,255,0.03)', padding: 3, borderRadius: 8, border: '1px solid rgba(255,255,255,0.05)' }}>
             {['equity', 'winrate'].map(t => (
               <button key={t} onClick={() => setActiveTab(t)} style={{
                 padding: '4px 10px', borderRadius: 5, border: 'none',
-                background: activeTab === t ? 'rgba(148, 163, 184, 0.12)' : 'transparent',
-                color: activeTab === t ? 'var(--color-logo)' : '#52525b',
+                background: activeTab === t ? 'rgba(255,255,255,0.08)' : 'transparent',
+                color: activeTab === t ? 'var(--color-text-primary)' : '#52525b',
                 fontSize: 10, fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s',
                 letterSpacing: '0.03em',
               }}>{t === 'equity' ? 'Equity' : 'Win Rates'}</button>
@@ -216,9 +215,9 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
           {/* Live P&L pill */}
           <span style={{
             fontFamily: 'monospace', fontSize: 11, fontWeight: 800,
-            color: 'var(--color-logo)',
-            background: 'rgba(148, 163, 184, 0.08)',
-            border: '1px solid rgba(148, 163, 184, 0.2)',
+            color: pnlColor,
+            background: tfPnl >= 0 ? 'rgba(255,255,255,0.06)' : 'rgba(109, 129, 161,0.08)',
+            border: `1px solid ${pnlColor}30`,
             borderRadius: 6, padding: '2px 8px',
           }}>
             {tfPnl >= 0 ? '+' : ''}${tfPnl.toFixed(2)}
@@ -232,8 +231,8 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
               {TF_PILLS.map(tf => (
                 <button key={tf} onClick={() => setTimeframe(tf)} style={{
                   padding: '2px 8px', borderRadius: 4, border: 'none',
-                  background: timeframe === tf ? 'rgba(148, 163, 184, 0.15)' : 'transparent',
-                  color: timeframe === tf ? 'var(--color-logo)' : '#52525b',
+                  background: timeframe === tf ? 'rgba(109, 129, 161,0.15)' : 'transparent',
+                  color: timeframe === tf ? '#6d81a1' : '#52525b',
                   fontSize: 9, fontFamily: 'monospace', fontWeight: 700, cursor: 'pointer', transition: 'all 0.15s',
                 }}>{tf}</button>
               ))}
@@ -257,11 +256,11 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
             <div style={{ display: 'flex', gap: 20, marginBottom: 10, flexWrap: 'wrap' }}>
               <div>
                 <div style={{ fontSize: 8, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>{TF_LABELS[timeframe]}</div>
-                <div style={{ fontFamily: 'var(--font-display)', fontSize: 26, fontWeight: 800, color: 'var(--color-logo)', lineHeight: 1 }}>
+                <div style={{ fontFamily: 'var(--font-display)', fontSize: 26, fontWeight: 800, color: pnlColor, lineHeight: 1 }}>
                   <CountUpStats value={Math.abs(tfPnl)} decimals={2} prefix={tfPnl >= 0 ? '+$' : '-$'} />
                 </div>
-                <div style={{ fontSize: 10, color: '#71717a', marginTop: 2 }}>
-                  <CountUpStats value={Math.abs(tfPct)} decimals={2} prefix={tfPct >= 0 ? '+' : '-'} suffix="%" style={{ color: 'var(--color-logo)' }} />
+                <div style={{ fontSize: 10, color: '#6d81a1', marginTop: 2 }}>
+                  <CountUpStats value={Math.abs(tfPct)} decimals={2} prefix={tfPct >= 0 ? '+' : '-'} suffix="%" style={{ color: pnlColor }} />
                   <span style={{ marginLeft: 4 }}>return</span>
                 </div>
               </div>
@@ -269,10 +268,10 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
               {/* Quick stats */}
               {[
                 { label: 'Trades', val: closed.length },
-                { label: 'WR', val: wr === '—' ? '—' : `${wr}%`, color: parseFloat(wr) >= 65 ? '#10b981' : parseFloat(wr) >= 50 ? '#f97316' : '#ef4444' },
-                { label: 'PF', val: pf, color: 'var(--color-logo)' },
-                { label: 'Avg W', val: avgW !== '—' ? `+$${avgW}` : '—', color: '#10b981' },
-                { label: 'Avg L', val: avgL !== '—' ? `-$${avgL}` : '—', color: '#ef4444' },
+                { label: 'WR', val: wr === '—' ? '—' : `${wr}%`, color: '#6d81a1' },
+                { label: 'PF', val: pf, color: '#6d81a1' },
+                { label: 'Avg W', val: avgW !== '—' ? `+$${avgW}` : '—', color: '#6d81a1' },
+                { label: 'Avg L', val: avgL !== '—' ? `-$${avgL}` : '—', color: '#6d81a1' },
               ].map(({ label, val, color }) => (
                 <div key={label} style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: 8, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 2 }}>{label}</div>
@@ -287,11 +286,11 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
                 <AreaChart data={filteredHistory} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}>
                   <defs>
                     <linearGradient id="eqGlow" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor="var(--color-logo)" stopOpacity={0.22} />
-                      <stop offset="95%" stopColor="var(--color-logo)" stopOpacity={0.0} />
+                      <stop offset="5%"  stopColor="#6d81a1" stopOpacity={0.20} />
+                      <stop offset="95%" stopColor="#6d81a1" stopOpacity={0.0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.08)" vertical={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" vertical={false} />
                   <XAxis dataKey="timeMs" type="number" scale="time" domain={getChartDomain()}
                     tickFormatter={ts => {
                       const d = new Date(ts);
@@ -299,12 +298,12 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
                         ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                         : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
                     }}
-                    tick={{ fill: 'rgba(148, 163, 184, 0.7)', fontSize: 9 }} axisLine={false} tickLine={false} />
+                    tick={{ fill: '#3f3f46', fontSize: 9 }} axisLine={false} tickLine={false} />
                   <YAxis domain={['dataMin - 0.5', 'dataMax + 0.5']}
                     tickFormatter={v => `$${v.toFixed(0)}`}
-                    tick={{ fill: 'rgba(148, 163, 184, 0.7)', fontSize: 9 }} axisLine={false} tickLine={false} />
+                    tick={{ fill: '#3f3f46', fontSize: 9 }} axisLine={false} tickLine={false} />
                   <Tooltip content={<TooltipContent />} />
-                  <Area type="monotone" dataKey="balance" stroke="var(--color-logo)" strokeWidth={2}
+                  <Area type="monotone" dataKey="balance" stroke="#52525b" strokeWidth={2}
                     fillOpacity={1} fill="url(#eqGlow)" isAnimationActive={false} />
                 </AreaChart>
               </ResponsiveContainer>
@@ -312,7 +311,7 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
           </>
         ) : (
           <>
-            <div style={{ fontSize: 11, color: '#71717a', marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: '#6d81a1', marginBottom: 8 }}>
               Rolling 40-trade win rate per asset (min 5 trades to appear)
             </div>
             <div style={{ width: '100%', height: 200 }}>
@@ -330,8 +329,8 @@ export default function PortfolioPerformance({ positions = {}, state = {} }) {
                     <Tooltip formatter={(v, n) => [`${(v*100).toFixed(1)}%`, n]}
                       contentStyle={{ background: 'rgba(12,12,14,0.96)', border: '1px solid #27272a', borderRadius: 8, fontSize: 11 }} />
                     <Legend wrapperStyle={{ fontSize: 9, color: '#52525b', paddingTop: 8 }} iconSize={7} />
-                    <ReferenceLine y={0.62} stroke="rgba(43,127,255,0.35)" strokeDasharray="4 3" label={{ value: 'Edge 62%', fill: '#2b7fff', fontSize: 8 }} />
-                    <ReferenceLine y={0.50} stroke="rgba(249,115,22,0.35)" strokeDasharray="4 3" label={{ value: 'Breakeven', fill: '#f97316', fontSize: 8 }} />
+                    <ReferenceLine y={0.62} stroke="rgba(255,255,255,0.25)" strokeDasharray="4 3" label={{ value: 'Edge 62%', fill: '#a1a1aa', fontSize: 8 }} />
+                    <ReferenceLine y={0.50} stroke="rgba(109, 129, 161,0.25)" strokeDasharray="4 3" label={{ value: 'Breakeven', fill: '#6d81a1', fontSize: 8 }} />
                     {ASSETS.map(key => (
                       <Line key={key} type="monotone" dataKey={key} stroke={ASSET_COLORS[key]}
                         strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />

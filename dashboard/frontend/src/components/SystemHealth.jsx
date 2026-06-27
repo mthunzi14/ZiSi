@@ -2,14 +2,14 @@
 import { useState } from 'react';
 
 function StatusDot({ ok, warn, off, pulse = false }) {
-  const color = 'var(--color-logo)';
+  const color = ok ? 'var(--color-profit)' : warn ? 'var(--color-amber)' : 'var(--color-loss)';
   return (
     <span style={{
       display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
       background: color,
-      boxShadow: `0 0 ${ok && pulse ? '5px' : '2px'} rgba(148, 163, 184, 0.5)`,
+      boxShadow: `0 0 2px ${color}`,
       flexShrink: 0,
-      animation: ok && pulse ? 'slatePulse 2.5s infinite' : 'none',
+      animation: 'none',
     }} />
   );
 }
@@ -19,13 +19,13 @@ function KPI({ label, value, sub, color }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <span style={{ fontSize: 8, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>{label}</span>
       <span style={{ fontFamily: 'monospace', fontSize: 14, fontWeight: 800, color: color || 'var(--color-text-primary)', lineHeight: 1 }}>{value}</span>
-      {sub && <span style={{ fontSize: 9, color: '#71717a' }}>{sub}</span>}
+      {sub && <span style={{ fontSize: 9, color: '#6d81a1' }}>{sub}</span>}
     </div>
   );
 }
 
-function DataRow({ label, value, ok, warn, off, color }) {
-  const valColor = color || 'var(--color-logo)';
+function DataRow({ label, value, ok, warn, off }) {
+  const valColor = ok ? 'var(--color-text-primary)' : warn ? 'var(--color-text-muted)' : 'var(--color-text-muted)';
   return (
     <div style={{
       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -33,19 +33,19 @@ function DataRow({ label, value, ok, warn, off, color }) {
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <StatusDot ok={ok} warn={warn} off={off} pulse={ok} />
-        <span style={{ color: '#71717a', fontWeight: 500 }}>{label}</span>
+        <span style={{ color: '#6d81a1', fontWeight: 500 }}>{label}</span>
       </div>
       <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 11, color: valColor }}>{value}</span>
     </div>
   );
 }
 
-function SecHead({ title }) {
+function SecHead({ title, color }) {
   return (
     <div style={{
       fontSize: 8, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase',
-      color: 'var(--color-logo)', marginTop: 10, marginBottom: 3, paddingBottom: 3,
-      borderBottom: '1px solid rgba(148, 163, 184, 0.2)',
+      color: color || '#6d81a1', marginTop: 10, marginBottom: 3, paddingBottom: 3,
+      borderBottom: `1px solid ${color || '#6d81a1'}33`,
     }}>{title}</div>
   );
 }
@@ -77,7 +77,7 @@ export default function SystemHealth({ state = {}, positions = {}, candles = [],
   const cbActive = state.circuit_breaker_active || false;
   const heartbeat = isOffline ? 'OFFLINE' : isStale ? `${minutesAgo}m (STALE)` : minutesAgo !== null ? `${minutesAgo}m ago` : '—';
 
-  const liveColor = isAlive ? '#10b981' : isStale ? '#f97316' : '#ef4444';
+  const liveColor = isAlive ? 'var(--color-profit)' : isStale ? 'var(--color-amber)' : 'var(--color-loss)';
   const liveLabel = isAlive ? 'LIVE' : isStale ? 'STALE' : 'OFFLINE';
 
   return (
@@ -86,17 +86,17 @@ export default function SystemHealth({ state = {}, positions = {}, candles = [],
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: expanded ? 12 : 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: 'var(--color-logo)' }}>System Health</span>
+          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15 }}>System Health</span>
 
           <span style={{
             display: 'inline-flex', alignItems: 'center', gap: 5,
-            background: 'rgba(148, 163, 184, 0.08)', border: '1px solid rgba(148, 163, 184, 0.2)',
+            background: `${liveColor}15`, border: `1px solid ${liveColor}44`,
             borderRadius: 8, padding: '3px 9px',
-            fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--color-logo)',
+            fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: liveColor,
           }}>
             <span style={{
-              width: 5, height: 5, borderRadius: '50%', background: 'var(--color-logo)',
-              display: 'inline-block', animation: isAlive ? 'slatePulse 2s infinite' : 'none',
+              width: 5, height: 5, borderRadius: '50%', background: liveColor,
+              display: 'inline-block',
             }} />
             {liveLabel}
           </span>
@@ -122,37 +122,37 @@ export default function SystemHealth({ state = {}, positions = {}, candles = [],
           <KPI label="Balance"
             value={`$${balance.toFixed(2)}`}
             sub={`started $${startBalance.toFixed(2)}`}
-            color="var(--color-logo)" />
+            color={balance >= startBalance ? 'var(--color-profit)' : 'var(--color-loss)'} />
           <KPI label="Net P&L"
             value={`${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`}
             sub={`${pnl >= 0 ? '+' : ''}${startBalance > 0 ? ((pnl/startBalance)*100).toFixed(1) : 0}%`}
-            color="var(--color-logo)" />
+            color={pnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)'} />
           <KPI label="Win Rate"
             value={wr === '—' ? '—' : `${wr}%`}
             sub={`${wins}W · ${losses}L`}
-            color={parseFloat(wr) >= 65 ? '#10b981' : parseFloat(wr) >= 50 ? '#f97316' : '#ef4444'} />
+            color={parseFloat(wr) >= 65 ? 'var(--color-profit)' : parseFloat(wr) >= 50 ? 'var(--color-amber)' : 'var(--color-loss)'} />
           <KPI label="Profit Factor"
             value={pf}
             sub={`${grossW.toFixed(2)} gross`}
-            color="var(--color-logo)" />
+            color={parseFloat(pf) >= 1.5 || pf === '∞' ? 'var(--color-profit)' : parseFloat(pf) >= 1 ? 'var(--color-amber)' : 'var(--color-loss)'} />
         </div>
 
-        <SecHead title="Infrastructure" />
+        <SecHead title="Infrastructure" color="#6d81a1" />
         <DataRow label="Engine heartbeat"  value={heartbeat}              ok={isAlive}   warn={isStale}  off={isOffline} />
         <DataRow label="Session uptime"    value={uptime}                 ok={!!state.running} warn={false} off={!state.running} />
         <DataRow label="Open positions"    value={`${active.length} / 6`} ok={active.length <= 3} warn={active.length > 3 && active.length < 6} off={active.length >= 6} />
         <DataRow label="Daily drawdown"    value={`${drawPct.toFixed(1)}%`} ok={drawPct < 5} warn={drawPct >= 5 && drawPct < 12} off={drawPct >= 12} />
 
-        <SecHead title="Circuit Breaker" />
+        <SecHead title="Circuit Breaker" color="#6d81a1" />
         <DataRow label="CB status"      value={cbActive ? `ACTIVE` : 'CLEAR'}             ok={!cbActive} off={cbActive} />
         <DataRow label="Trades session" value={state.trades_executed ?? closed.length}     ok />
 
-        <SecHead title="Session Stats" />
+        <SecHead title="Session Stats" color="#6d81a1" />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: 16 }}>
           <DataRow label="Starting bal" value={`$${startBalance.toFixed(2)}`} ok />
           <DataRow label="Current bal"  value={`$${balance.toFixed(2)}`}      ok={balance >= startBalance} warn={balance < startBalance && balance > startBalance * 0.9} off={balance <= startBalance * 0.9} />
-          <DataRow label="Avg win"  value={wins > 0 ? `+$${(grossW/wins).toFixed(2)}` : '—'}       ok={wins > 0} color="#10b981" />
-          <DataRow label="Avg loss" value={losses > 0 ? `-$${(grossL/losses).toFixed(2)}` : '—'}   ok={losses === 0} warn={losses > 0 && (grossL/losses) < 3} off={losses > 0 && (grossL/losses) >= 5} color="#ef4444" />
+          <DataRow label="Avg win"  value={wins > 0 ? `+$${(grossW/wins).toFixed(2)}` : '—'}       ok={wins > 0} />
+          <DataRow label="Avg loss" value={losses > 0 ? `-$${(grossL/losses).toFixed(2)}` : '—'}   ok={losses === 0} warn={losses > 0 && (grossL/losses) < 3} off={losses > 0 && (grossL/losses) >= 5} />
         </div>
 
       </div>

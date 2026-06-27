@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router    = express.Router();
-const BOT_ROOT  = path.join(__dirname, '../../..');
+const BOT_ROOT  = path.join(__dirname, '../../../../');
 const STATUS_FILE = path.join(BOT_ROOT, 'engine_status.json');
 
 router.get('/', (req, res) => {

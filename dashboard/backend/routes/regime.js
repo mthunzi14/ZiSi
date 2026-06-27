@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router    = express.Router();
-const BOT_ROOT  = path.join(__dirname, '../../../');
+const BOT_ROOT  = path.join(__dirname, '../../../../');
 const REGIME_FILE = path.join(BOT_ROOT, 'regime_status.json');
 
 router.get('/', (req, res) => {

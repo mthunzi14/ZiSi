@@ -67,8 +67,26 @@ function readPositionsFile() {
       throw new Error('Positions file JSON is invalid or incomplete');
     }
 
-    const active = deduplicateById(data.active || []).map(enrichTradeType);
-    const closed = deduplicateById(data.closed || []).map(enrichTradeType);
+    const active = deduplicateById(data.active || []).map(enrichTradeType).map(p => {
+      const entryPrice = parseFloat(p.entry_price || 0);
+      const shares = parseFloat(p.shares || p.shares_acquired || 0);
+      let size = parseFloat(p.size || p.amount_spent || 0);
+      if (size > 0 && shares > 0 && Math.abs(size - shares) < 0.01 && entryPrice > 0 && entryPrice < 1.0) {
+        size = shares * entryPrice;
+      }
+      p.size = size;
+      return p;
+    });
+    const closed = deduplicateById(data.closed || []).map(enrichTradeType).map(p => {
+      const entryPrice = parseFloat(p.entry_price || 0);
+      const shares = parseFloat(p.shares || p.shares_sold || p.shares_acquired || 0);
+      let size = parseFloat(p.size || p.amount_spent || 0);
+      if (size > 0 && shares > 0 && Math.abs(size - shares) < 0.01 && entryPrice > 0 && entryPrice < 1.0) {
+        size = shares * entryPrice;
+      }
+      p.size = size;
+      return p;
+    });
 
     const baseSummary = { ...DEFAULT_SUMMARY, ...(data.summary || {}) };
     const summary = {
@@ -128,7 +146,79 @@ async function _fetchClobPrice(marketId, pos) {
     console.warn(`[POSITIONS CLOB WARN] ${marketId}: ${err.message} — using spot fallback`);
   }
 
-  // Return null if not in cache (rely on python bot updates in positions_state.json)
+  // ── Fallback: derive contract price from spot oracle files ────────────────
+  // Maps the % change in the underlying crypto spot price to an approximate
+  // option contract price change using a 20× scaling heuristic
+  // (1% spot move ≈ 20% option price move at mid-market).  This keeps
+  // unrealized PnL visible in the Vite dashboard even when CLOB is down.
+  if (pos) {
+    try {
+      const title = (pos.event_title || '').toUpperCase();
+      let asset = null;
+      if (title.includes('BTC'))      asset = 'BTC';
+      else if (title.includes('ETH')) asset = 'ETH';
+      else if (title.includes('SOL')) asset = 'SOL';
+      else if (title.includes('XRP')) asset = 'XRP';
+      else if (title.includes('DOGE')) asset = 'DOGE';
+      else if (title.includes('BNB'))  asset = 'BNB';
+      else if (title.includes('HYPE')) asset = 'HYPE';
+
+      if (asset) {
+        let currentSpot = null;
+        // 1. Pyth oracle (highest freshness)
+        const pythFile = path.join(BOT_ROOT, 'pyth_prices.json');
+        if (fs.existsSync(pythFile)) {
+          const pythData = JSON.parse(fs.readFileSync(pythFile, 'utf-8'));
+          if (pythData[asset] && typeof pythData[asset].price === 'number') {
+            currentSpot = pythData[asset].price;
+          }
+        }
+        // 2. Chainlink oracle (fallback)
+        if (currentSpot == null) {
+          const clFile = path.join(BOT_ROOT, 'chainlink_prices.json');
+          if (fs.existsSync(clFile)) {
+            const clData = JSON.parse(fs.readFileSync(clFile, 'utf-8'));
+            if (clData[asset] && typeof clData[asset].price === 'number') {
+              currentSpot = clData[asset].price;
+            }
+          }
+        }
+
+        if (currentSpot != null) {
+          const orderId = pos.order_id || marketId;
+          if (!_entrySpotCache.has(orderId)) {
+            _entrySpotCache.set(orderId, currentSpot);
+          }
+          const entrySpot  = _entrySpotCache.get(orderId);
+          const entryPrice = parseFloat(pos.entry_price || 0.5);
+          let priceDiffPct = entrySpot > 0 ? (currentSpot - entrySpot) / entrySpot : 0;
+
+          // 1% spot move → 20% contract price move (heuristic delta)
+          const SCALING = 20.0;
+          const delta   = priceDiffPct * SCALING;
+
+          let derivedPrice = pos.direction === 'YES'
+            ? entryPrice + delta
+            : entryPrice - delta;
+          derivedPrice = Math.max(0.01, Math.min(0.99, derivedPrice));
+          const roundedDerived = Math.round(derivedPrice * 10000) / 10000;
+
+          console.log(
+            `[POSITIONS CLOB FALLBACK] ${asset} (${pos.direction}): ` +
+            `spot ${entrySpot} → ${currentSpot} ` +
+            `(${(priceDiffPct*100).toFixed(3)}%), ` +
+            `contract ${entryPrice} → ${roundedDerived}`
+          );
+          return roundedDerived;
+        }
+      }
+    } catch (fallbackErr) {
+      console.error('[POSITIONS CLOB FALLBACK ERROR]', fallbackErr.message);
+    }
+  }
+
+  // ── Last resort: echo cached values already in position record ───────────
+  if (pos) return pos.current_price || pos.entry_price || null;
   return null;
 }
 

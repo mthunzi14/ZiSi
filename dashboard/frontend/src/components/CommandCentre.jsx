@@ -113,7 +113,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
       <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '32px' }}>
         
         {/* LEFT CARD: Operations Panel */}
-        <div className="card shadow-md stagger-children" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div className="card shadow-md stagger-children border-beam-card" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
           <div>
             <h3 style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: '18px', color: 'var(--color-obsidian)', marginBottom: '4px' }}>
               Engine Operations Deck
@@ -217,7 +217,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
         </div>
 
         {/* RIGHT CARD: Configurations Control */}
-        <div className="card shadow-md stagger-children" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div className="card shadow-md stagger-children border-beam-card" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
           <div>
             <h3 style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: '18px', color: 'var(--color-obsidian)', marginBottom: '4px' }}>
               Core Parameters Deck
@@ -279,7 +279,7 @@ export default function CommandCentre({ state = {}, positions = {}, uptime = '00
       </div>
 
       {/* FULL WIDTH CARD: Sandbox Manual Signal Injector */}
-      <div className="card shadow-md">
+      <div className="card shadow-md border-beam-card">
         <div style={{ marginBottom: '24px' }}>
           <h3 style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: '18px', color: 'var(--color-obsidian)', marginBottom: '4px' }}>
             Simulated Sandbox Ticker

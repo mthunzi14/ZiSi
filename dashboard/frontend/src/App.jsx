@@ -9,6 +9,8 @@ import RouteDiagnostics from './components/RouteDiagnostics';
 import RegimeRadarHUD from './components/RegimeRadarHUD';
 import AIInjectorHUD from './components/AIInjectorHUD';
 import ArbitrageMatrix from './components/ArbitrageMatrix';
+import Analytics from './components/Analytics';
+import Settings from './components/Settings';
 
 
 export default function App() {
@@ -30,9 +32,67 @@ export default function App() {
   const [assetMacro,   setAssetMacro]   = useState({});
   const [statsExpanded, setStatsExpanded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [signals, setSignals] = useState([]);
   const esRef = useRef(null);
+  const domUpdatesCacheRef = useRef({ prices: {}, unrealPnl: {} });
+  const pendingStateRef = useRef(null);
+  const pendingPositionsRef = useRef(null);
+
+  // Periodically flush throttled updates to React state (100ms interval for real-time MT5 experience)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (pendingStateRef.current) {
+        setState(s => ({ ...s, ...pendingStateRef.current }));
+        pendingStateRef.current = null;
+      }
+      if (pendingPositionsRef.current) {
+        setPositions(pendingPositionsRef.current);
+        pendingPositionsRef.current = null;
+      }
+    }, 100);
+    return () => clearInterval(interval);
+  }, []);
 
   const [isPrivate, setIsPrivate] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const tick = () => {
+      if (!active) return;
+      const cache = domUpdatesCacheRef.current;
+      
+      // Update prices
+      for (const [asset, price] of Object.entries(cache.prices)) {
+        const assetLower = asset.toLowerCase();
+        const formattedPrice = !price ? '—' : price < 1.0 ? `$${price.toFixed(4)}` : `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const elements = document.querySelectorAll(`[id^="spot-ticker-${assetLower}"]`);
+        elements.forEach(el => {
+          if (el.textContent !== formattedPrice) {
+            el.textContent = formattedPrice;
+          }
+        });
+        delete cache.prices[asset];
+      }
+      
+      // Update unrealized P&Ls
+      for (const [asset, pnl] of Object.entries(cache.unrealPnl)) {
+        const assetLower = asset.toLowerCase();
+        const formattedPnl = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+        const elements = document.querySelectorAll(`[id^="unreal_pnl-${assetLower}"]`);
+        elements.forEach(el => {
+          if (el.textContent !== formattedPnl) {
+            el.textContent = formattedPnl;
+            el.style.color = pnl > 0 ? 'var(--color-profit)' : pnl < 0 ? 'var(--color-loss)' : '#6d81a1';
+          }
+        });
+        delete cache.unrealPnl[asset];
+      }
+      
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -74,8 +134,6 @@ export default function App() {
   useEffect(() => {
     let ws;
     let reconnectTimeout;
-    let heartbeatInterval;
-    let lastHeartbeat = Date.now();
     
     const connect = () => {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -87,40 +145,64 @@ export default function App() {
       
       console.log(`[WS] Connecting to ${wsUrl}...`);
       ws = new WebSocket(wsUrl);
-      lastHeartbeat = Date.now();
       
       ws.onopen = () => {
         console.log('[WS] Connected to dashboard telemetry backend.');
-        lastHeartbeat = Date.now();
       };
       
       ws.onmessage = (e) => {
-        lastHeartbeat = Date.now(); // reset heartbeat on any message
         try {
           const event = JSON.parse(e.data);
-          if (event.type === 'ping') {
-            return;
+          
+          // Direct DOM telemetry updates
+          if (event.type === 'position_update' || event.type === 'positions_snapshot') {
+            const payload = event.payload || {};
+            const active = payload.active || [];
+            const pnlByAsset = {};
+            ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'].forEach(a => { pnlByAsset[a] = 0; });
+            active.forEach(p => {
+              const title = (p.event_title || '').toUpperCase();
+              const assetMatch = title.match(/\[(BTC|ETH|SOL|XRP|DOGE)\]/);
+              if (assetMatch) {
+                const asset = assetMatch[1];
+                pnlByAsset[asset] = (pnlByAsset[asset] || 0) + parseFloat(p.unrealized_pnl || 0);
+              }
+            });
+            for (const [asset, pnl] of Object.entries(pnlByAsset)) {
+              domUpdatesCacheRef.current.unrealPnl[asset] = pnl;
+            }
           }
+
           if (event.type === 'position_update') {
             const payload = event.payload || {};
-            setPositions({
+            pendingPositionsRef.current = {
               active: payload.active || [],
               closed: payload.closed || [],
               summary: payload.summary || {}
-            });
+            };
           } else if (event.type === 'positions_snapshot') {
             const payload = event.payload || {};
-            setPositions(p => ({
-              active: payload.active || p.active || [],
-              closed: payload.closed || p.closed || [],
-              summary: { ...(p.summary || {}), ...(payload.summary || {}) }
-            }));
+            pendingPositionsRef.current = {
+              active: payload.active || [],
+              closed: payload.closed || [],
+              summary: payload.summary || {}
+            };
           } else if (event.type === 'balance_update') {
             if (event.payload) {
-              setState(s => ({ ...s, ...event.payload }));
+              pendingStateRef.current = event.payload;
+              const prices = event.payload.chainlinkPrices || {};
+              for (const [asset, data] of Object.entries(prices)) {
+                if (data && data.price) {
+                  domUpdatesCacheRef.current.prices[asset] = data.price;
+                }
+              }
             }
           } else if (event.type === 'candle_boundary') {
             setCandles(event.payload || []);
+          } else if (event.type === 'signal_evaluation') {
+            if (event.payload) {
+              setSignals(prev => [event.payload, ...prev].slice(0, 50));
+            }
           } else if (event.type === 'diagnostics_update') {
             setDiagnostics(event.payload || {});
           }
@@ -142,21 +224,9 @@ export default function App() {
     
     connect();
     
-    // Check connection health every 4 seconds
-    heartbeatInterval = setInterval(() => {
-      const idleTime = Date.now() - lastHeartbeat;
-      if (idleTime > 12000) { // 12 seconds
-        console.warn(`[WS] Connection timed out (idle for ${Math.round(idleTime/1000)}s). Reconnecting...`);
-        if (ws) {
-          ws.close();
-        }
-      }
-    }, 4000);
-    
     return () => {
       if (ws) ws.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (heartbeatInterval) clearInterval(heartbeatInterval);
     };
   }, []);
 
@@ -182,6 +252,14 @@ export default function App() {
     load();
     const id = setInterval(load, 30000);
     return () => clearInterval(id);
+  }, []);
+
+  // Fetch recent signal evaluations on mount
+  useEffect(() => {
+    fetch('/api/signals/recent')
+      .then(r => r.json())
+      .then(d => setSignals(d))
+      .catch(() => {});
   }, []);
 
   // WebSockets handles all live updates (SSE EventSource removed)
@@ -223,7 +301,7 @@ export default function App() {
         className={`sidebar ${!isVisuallyExpanded ? 'sidebar-collapsed' : ''}`}
         onMouseLeave={() => setIsHovered(false)}
       >
-        {/* Transparent Hover Detection Bounding Box */}
+        {/* Transparent Hover Detection Bounding Box + Centered Circular Gold Pull-Handle */}
         {!isVisuallyExpanded && (
           <div 
             onMouseEnter={() => setIsHovered(true)}
@@ -240,7 +318,25 @@ export default function App() {
               justifyContent: 'center'
             }}
             title="Hover to Expand"
-          />
+          >
+            <div 
+              style={{
+                width: '26px',
+                height: '26px',
+                borderRadius: '50%',
+                background: 'rgba(109, 129, 161, 0.18)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: 0.55,
+                boxShadow: '0 0 6px rgba(109, 129, 161, 0.3)',
+                border: '1px solid rgba(109, 129, 161, 0.35)',
+                transition: 'all 200ms ease'
+              }}
+            >
+              <span style={{ fontSize: '8px', color: 'var(--color-accent)', fontWeight: '700', marginLeft: '1px' }}>▶</span>
+            </div>
+          </div>
         )}
 
         <div className="sidebar-brand" style={{ textAlign: isVisuallyExpanded ? 'left' : 'center', paddingLeft: isVisuallyExpanded ? '12px' : '0' }}>
@@ -258,7 +354,7 @@ export default function App() {
           <button 
             onClick={() => setActiveTab('overview')}
             className={`nav-item ${activeTab === 'overview' ? 'nav-item-active nav-active-glow' : ''}`}
-            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'overview' ? 'rgba(148, 163, 184, 0.08)' : undefined, borderRadius: '10px' }}
+            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'overview' ? 'rgba(109, 129, 161,0.08)' : undefined, borderRadius: '10px' }}
             title="Overview"
           >
             <svg style={{ width: '16px', height: '16px', opacity: !isVisuallyExpanded ? 0.7 : 1 }} fill="none" stroke="currentColor" strokeWidth={activeTab === 'overview' ? 2.5 : 1.8} viewBox="0 0 24 24">
@@ -267,7 +363,30 @@ export default function App() {
             {isVisuallyExpanded && <span style={{ marginLeft: '10px' }}>Overview</span>}
           </button>
 
+          <button 
+            onClick={() => setActiveTab('analytics')}
+            className={`nav-item ${activeTab === 'analytics' ? 'nav-item-active nav-active-glow' : ''}`}
+            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'analytics' ? 'rgba(109, 129, 161,0.08)' : undefined, borderRadius: '10px' }}
+            title="Analytics"
+          >
+            <svg style={{ width: '16px', height: '16px', opacity: !isVisuallyExpanded ? 0.7 : 1 }} fill="none" stroke="currentColor" strokeWidth={activeTab === 'analytics' ? 2.5 : 1.8} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v5.25c0 .621-.504 1.125-1.125 1.125h-2.25A1.125 1.125 0 0 1 3 18.375v-5.25ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125v-9.75ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v14.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" />
+            </svg>
+            {isVisuallyExpanded && <span style={{ marginLeft: '10px' }}>Analytics</span>}
+          </button>
 
+          <button 
+            onClick={() => setActiveTab('settings')}
+            className={`nav-item ${activeTab === 'settings' ? 'nav-item-active nav-active-glow' : ''}`}
+            style={{ border: 'none', textAlign: isVisuallyExpanded ? 'left' : 'center', justifyContent: isVisuallyExpanded ? 'flex-start' : 'center', width: '100%', padding: isVisuallyExpanded ? '10px 14px' : '12px 0', background: !isVisuallyExpanded && activeTab !== 'settings' ? 'rgba(109, 129, 161,0.08)' : undefined, borderRadius: '10px' }}
+            title="Settings"
+          >
+            <svg style={{ width: '16px', height: '16px', opacity: !isVisuallyExpanded ? 0.7 : 1 }} fill="none" stroke="currentColor" strokeWidth={activeTab === 'settings' ? 2.5 : 1.8} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.43l-1.003.828c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.43l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-.255c.007-.378-.138-.75-.43-.991l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.645-.869l.214-1.28Z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+            </svg>
+            {isVisuallyExpanded && <span style={{ marginLeft: '10px' }}>Settings</span>}
+          </button>
 
           {/* Manual Privacy Screen Lock */}
           <button
@@ -291,12 +410,12 @@ export default function App() {
           >
             {isPrivate ? (
               // Eye Slash SVG (represents hidden / privacy mode active)
-              <svg style={{ width: '16px', height: '16px', color: isPrivate ? '#0c0c0e' : 'var(--color-logo)' }} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <svg style={{ width: '16px', height: '16px', color: isPrivate ? '#0c0c0e' : 'var(--color-accent)' }} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />
               </svg>
             ) : (
               // Eye SVG (represents visible / privacy mode inactive)
-              <svg style={{ width: '16px', height: '16px', color: isPrivate ? '#0c0c0e' : 'var(--color-logo)' }} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <svg style={{ width: '16px', height: '16px', color: isPrivate ? '#0c0c0e' : 'var(--color-accent)' }} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
@@ -329,11 +448,11 @@ export default function App() {
             title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
           >
             {theme === 'dark' ? (
-              <svg style={{ width: '16px', height: '16px', color: 'var(--color-logo)' }} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <svg style={{ width: '16px', height: '16px', color: 'var(--color-accent)' }} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m0 13.5V21M4.22 4.22l1.58 1.58m12.42 12.42l1.58 1.58M3 12h2.25m13.5 0H21M4.22 19.78l1.58-1.58M17.62 6.38l1.58-1.58M12 7.5a4.5 4.5 0 110 9 4.5 4.5 0 010-9z" />
               </svg>
             ) : (
-              <svg style={{ width: '16px', height: '16px', color: 'var(--color-logo)' }} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <svg style={{ width: '16px', height: '16px', color: 'var(--color-accent)' }} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
               </svg>
             )}
@@ -374,46 +493,56 @@ export default function App() {
 
       {/* RIGHT PANE: Main Content Canvas */}
       <main className="main-canvas page-fade-enter canvas-collapsed" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-        <div style={{ position: 'relative', width: '100%' }}>
+        <div className="t-page-slide" data-page={activeTab === 'overview' ? '1' : activeTab === 'analytics' ? '2' : '3'} style={{ position: 'relative', width: '100%' }}>
           
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', position: 'relative' }}>
-            {/* Smooth Motion Privacy Screen Overlay */}
-            <div className={`privacy-overlay ${isPrivate ? 'privacy-overlay-active' : ''}`}>
-              <div className="privacy-card">
-                <div className="premium-lock-container" onClick={() => setIsPrivate(false)}>
-                  <div className="rotating-cyan-border"></div>
-                  <div className="premium-lock-body">
-                    <svg className="premium-lock-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="5" y="11" width="14" height="11" rx="2" ry="2" />
-                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                      <circle cx="12" cy="16" r="1.5" />
-                    </svg>
+          <section className="t-page" data-page-id="1">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', position: 'relative' }}>
+              {/* Smooth Motion Privacy Screen Overlay */}
+              <div className={`privacy-overlay ${isPrivate ? 'privacy-overlay-active' : ''}`}>
+                <div className="privacy-card">
+                  <div className="premium-lock-container" onClick={() => setIsPrivate(false)}>
+                    <div className="rotating-cyan-border"></div>
+                    <div className="premium-lock-body">
+                      <svg className="premium-lock-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="5" y="11" width="14" height="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                        <circle cx="12" cy="16" r="1.5" />
+                      </svg>
+                    </div>
+                    {/* Opaque moving symbols around the lock */}
+                    <div className="orbiting-symbol symbol-1">ZiSi</div>
+                    <div className="orbiting-symbol symbol-2">%</div>
+                    <div className="orbiting-symbol symbol-3">$</div>
+                    <div className="orbiting-symbol symbol-4">⊕</div>
+                    <div className="orbiting-symbol symbol-5">ML</div>
+                    <div className="orbiting-symbol symbol-6">RSI</div>
                   </div>
-                  {/* Opaque moving symbols around the lock */}
-                  <div className="orbiting-symbol symbol-1">ZiSi</div>
-                  <div className="orbiting-symbol symbol-2">%</div>
-                  <div className="orbiting-symbol symbol-3">$</div>
-                  <div className="orbiting-symbol symbol-4">⊕</div>
-                  <div className="orbiting-symbol symbol-5">ML</div>
-                  <div className="orbiting-symbol symbol-6">RSI</div>
+                  <h2 className="privacy-title">ZiSi QUANTITATIVE WORKSTATION</h2>
+                  <p className="privacy-subtitle">Financial Overview Protected</p>
+                  <p className="privacy-instructions">Click cyan lock or sidebar icon to restore view</p>
                 </div>
-                <h2 className="privacy-title">ZiSi QUANTITATIVE WORKSTATION</h2>
-                <p className="privacy-subtitle">Financial Overview Protected</p>
-                <p className="privacy-instructions">Click lock or sidebar icon to restore view</p>
               </div>
-            </div>
 
-            <AssetCards positions={positions} candles={candles} state={state} />
-            
-            {/* Row 2: Performance + Health */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '20px' }}>
-              <PortfolioPerformance positions={positions} state={state} />
-              <SystemHealth state={state} positions={positions} candles={candles} uptime={uptime} />
-            </div>
+              <AssetCards positions={positions} candles={candles} state={state} />
+              
+              {/* Row 2: Performance + Health */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: '20px' }}>
+                <PortfolioPerformance positions={positions} state={state} />
+                <SystemHealth state={state} positions={positions} candles={candles} uptime={uptime} />
+              </div>
 
-            {/* Row 3: Trade Ledger */}
-            <TradeFeed positions={positions} gateLog={gateLog} assetMacro={assetMacro} />
-          </div>
+              {/* Row 3: Trade Ledger */}
+              <TradeFeed positions={positions} gateLog={gateLog} assetMacro={assetMacro} signals={signals} />
+            </div>
+          </section>
+
+          <section className="t-page" data-page-id="2">
+            <Analytics active={positions.active} closed={positions.closed} />
+          </section>
+
+          <section className="t-page" data-page-id="3">
+            <Settings />
+          </section>
         </div>
       </main>
     </div>

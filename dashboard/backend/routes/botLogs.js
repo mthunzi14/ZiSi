@@ -120,10 +120,25 @@ router.get('/sizes', (req, res) => {
 router.post('/clear', (req, res) => {
   try {
     let clearedPaths = [];
-    for (const logPath of LOG_CANDIDATES) {
-      if (fs.existsSync(logPath)) {
-        fs.writeFileSync(logPath, ''); // Truncate to 0 bytes
-        clearedPaths.push(logPath);
+    const targetDir = '/root/.pm2/logs';
+    if (fs.existsSync(targetDir)) {
+      const files = fs.readdirSync(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.log')) {
+          const logPath = path.join(targetDir, file);
+          fs.writeFileSync(logPath, ''); // Truncate to 0 bytes
+          clearedPaths.push(logPath);
+        }
+      }
+    } else {
+      // Fallback for non-existent directory (local testing)
+      for (const logPath of LOG_CANDIDATES) {
+        if (logPath.startsWith('/root/.pm2/logs/') && logPath.endsWith('.log')) {
+          if (fs.existsSync(logPath)) {
+            fs.writeFileSync(logPath, ''); // Truncate to 0 bytes
+            clearedPaths.push(logPath);
+          }
+        }
       }
     }
     console.log('[LOGS] Truncated log files:', clearedPaths);

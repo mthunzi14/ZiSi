@@ -70,9 +70,23 @@ function parseMeta(p) {
   };
 }
 
+function getTimestampMs(ts) {
+  if (!ts) return 0;
+  if (typeof ts === 'string') {
+    return new Date(ts).getTime();
+  }
+  if (typeof ts === 'number') {
+    if (ts < 20000000000) {
+      return ts * 1000;
+    }
+    return ts;
+  }
+  return 0;
+}
+
 function fmtLocal(ts) {
   if (!ts) return '--:--:--';
-  const d = new Date(ts);
+  const d = new Date(getTimestampMs(ts));
   return d.getHours().toString().padStart(2,'0') + ':' +
          d.getMinutes().toString().padStart(2,'0') + ':' +
          d.getSeconds().toString().padStart(2,'0');
@@ -81,7 +95,7 @@ function fmtLocal(ts) {
 // Entry timestamp with date prepended: "05/29 10:30:05"
 function fmtLocalDT(ts) {
   if (!ts) return '--/-- --:--:--';
-  const d = new Date(ts);
+  const d = new Date(getTimestampMs(ts));
   const mm = (d.getMonth() + 1).toString().padStart(2,'0');
   const dd = d.getDate().toString().padStart(2,'0');
   const hh = d.getHours().toString().padStart(2,'0');
@@ -95,7 +109,7 @@ const ENTRY_TYPE_CONFIG = {
   'FAIR-VAL':          { label: 'FV',        color: '#00d4a3' },
   'REVERSAL-SNIPE':    { label: 'REV SNIPE', color: '#ff007a' },
   'REVERSAL-STREAK':   { label: 'REV STREAK',color: '#e076ff' },
-  'SIGNAL':            { label: 'SIG',       color: '#00e5ff' },
+  'SIGNAL':            { label: 'SIG',       color: 'var(--color-text-muted)' },
   'SWEEP':             { label: 'SWEEP',      color: '#eab308' },
   'CLOSE-SNIPE':       { label: 'NCS',        color: '#e27622' },
   'CLOSE-SNIPE-EARLY': { label: 'NCS',        color: '#e27622' },
@@ -271,11 +285,11 @@ function CandleCountdownBar({ assetMacro = {} }) {
     return () => clearInterval(id);
   }, []);
 
-  const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
+  const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'LINK', 'BNB'];
   const dColor  = d => d === 'UP' ? '#10b981' : d === 'DOWN' ? '#ef4444' : '#52525b';
   const dGlyph  = d => d === 'UP' ? '↑' : d === 'DOWN' ? '↓' : '→';
 
-  const timerColor = p => p < 15 ? '#ef4444' : p < 30 ? '#f97316' : 'var(--color-logo)';
+  const timerColor = p => p < 15 ? '#ef4444' : p < 30 ? '#f97316' : '#6d81a1';
 
   return (
     <div style={{
@@ -346,7 +360,7 @@ function CollapsiblePanel({ title, children, defaultOpen = false, badge = null, 
         }}
       >
         <span style={{
-          color: 'var(--color-text-secondary)',
+          color: open ? accent : 'var(--color-text-muted)',
           fontSize: 9, fontWeight: 700, letterSpacing: '0.07em',
           textTransform: 'uppercase', flex: 1, textAlign: 'left',
           transition: 'color 0.2s',
@@ -411,7 +425,7 @@ function MiniSparkline({ values, color, label, width = 80, height = 24 }) {
 
 // ── Session Analytics (drawdown + per-type equity) ────────────────────────────
 
-const SessionAnalytics = memo(function SessionAnalytics({ closed }) {
+function SessionAnalytics({ closed }) {
   if (closed.length === 0) return null;
 
   // Build running P&L from chronological order
@@ -463,7 +477,7 @@ const SessionAnalytics = memo(function SessionAnalytics({ closed }) {
   const maxDDColor= maxDD > 8 ? '#ef4444' : maxDD > 4 ? '#f97316' : '#10b981';
 
   return (
-    <CollapsiblePanel title="Session Analytics" defaultOpen={true} accentColor="var(--color-logo)">
+    <CollapsiblePanel title="Session Analytics" defaultOpen={true} accentColor="#6d81a1">
       <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         {/* Drawdown stats */}
         <div style={{ display: 'flex', gap: 16 }}>
@@ -486,25 +500,25 @@ const SessionAnalytics = memo(function SessionAnalytics({ closed }) {
           {ncsSeries.length > 1 && <MiniSparkline values={ncsSeries} color="#e27622" label="NCS" />}
           {revSnipeSeries.length > 1 && <MiniSparkline values={revSnipeSeries} color="#ff007a" label="REV SNIPE" />}
           {revStreakSeries.length > 1 && <MiniSparkline values={revStreakSeries} color="#e076ff" label="REV STREAK" />}
-          {sigSeries.length > 1 && <MiniSparkline values={sigSeries} color="#00e5ff" label="SIG" />}
+          {sigSeries.length > 1 && <MiniSparkline values={sigSeries} color="#a1a1aa" label="SIG" />}
           {sweepSeries.length > 1 && <MiniSparkline values={sweepSeries} color="#eab308" label="SWEEP" />}
           {dualSeries.length > 1 && <MiniSparkline values={dualSeries} color="#9945ff" label="DUAL" />}
         </div>
       </div>
     </CollapsiblePanel>
   );
-});
+}
 
 // ── Asset Heatmap ─────────────────────────────────────────────────────────────
 
-const AssetHeatmap = memo(function AssetHeatmap({ closed }) {
+function AssetHeatmap({ closed }) {
   if (closed.length === 0) return null;
 
-  const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
+  const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'LINK', 'BNB'];
 
   const stats = ASSETS.map(asset => {
     const trades = closed.filter(t => {
-      const tag = (t.event_title || '').match(/\[(BTC|ETH|SOL|XRP|DOGE)\]/);
+      const tag = (t.event_title || '').match(/\[(BTC|ETH|SOL|XRP|DOGE|LINK|BNB)\]/);
       return tag && tag[1] === asset;
     });
     if (trades.length === 0) return null;
@@ -547,7 +561,7 @@ const AssetHeatmap = memo(function AssetHeatmap({ closed }) {
                 <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 700, color: netColor(net) }}>
                   {net >= 0 ? '+' : ''}${net.toFixed(2)}
                 </td>
-                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#71717a' }}>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#6d81a1' }}>
                   {avgH < 60 ? `${avgH.toFixed(0)}m` : `${(avgH/60).toFixed(1)}h`}
                 </td>
               </tr>
@@ -557,11 +571,11 @@ const AssetHeatmap = memo(function AssetHeatmap({ closed }) {
       </div>
     </CollapsiblePanel>
   );
-});
+}
 
 // ── Source Heatmap ────────────────────────────────────────────────────────────
 
-const SourceHeatmap = memo(function SourceHeatmap({ closed }) {
+function SourceHeatmap({ closed }) {
   if (closed.length === 0) return null;
 
   const SOURCES = ['LAT ARB', 'FV', 'NCS', 'REV SNIPE', 'REV STREAK', 'SIG', 'SWEEP', 'DUAL'];
@@ -622,7 +636,7 @@ const SourceHeatmap = memo(function SourceHeatmap({ closed }) {
                 <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 700, color: netColor(net) }}>
                   {net >= 0 ? '+' : ''}${net.toFixed(2)}
                 </td>
-                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#71717a' }}>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#6d81a1' }}>
                   {avgH < 60 ? `${avgH.toFixed(0)}m` : `${(avgH/60).toFixed(1)}h`}
                 </td>
               </tr>
@@ -632,11 +646,11 @@ const SourceHeatmap = memo(function SourceHeatmap({ closed }) {
       </div>
     </CollapsiblePanel>
   );
-});
+}
 
 // ── Timeframe Heatmap ─────────────────────────────────────────────────────────
 
-const TimeframeHeatmap = memo(function TimeframeHeatmap({ closed }) {
+function TimeframeHeatmap({ closed }) {
   if (closed.length === 0) return null;
 
   const TIMEFRAMES = ['5m', '15m', '1h'];
@@ -686,7 +700,7 @@ const TimeframeHeatmap = memo(function TimeframeHeatmap({ closed }) {
                 <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 700, color: netColor(net) }}>
                   {net >= 0 ? '+' : ''}${net.toFixed(2)}
                 </td>
-                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#71717a' }}>
+                <td style={{ padding: '4px 8px', fontFamily: 'monospace', color: '#6d81a1' }}>
                   {avgH < 60 ? `${avgH.toFixed(0)}m` : `${(avgH/60).toFixed(1)}h`}
                 </td>
               </tr>
@@ -696,131 +710,7 @@ const TimeframeHeatmap = memo(function TimeframeHeatmap({ closed }) {
       </div>
     </CollapsiblePanel>
   );
-});
-
-// ── Assets vs Timeframe Heatmap ────────────────────────────────────────────────
-const AssetVsTimeframeHeatmap = memo(function AssetVsTimeframeHeatmap({ closed }) {
-  if (closed.length === 0) return null;
-
-  const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
-  const TIMEFRAMES = ['5m', '15m', '1h'];
-
-  const wrColor  = wr  => wr  >= 65 ? '#10b981' : wr  >= 50 ? '#f97316' : '#ef4444';
-  const netColor = net => net >= 0  ? '#10b981' : '#ef4444';
-
-  // Compute stats per (asset, tf) combination
-  const matrix = {};
-  ASSETS.forEach(asset => {
-    matrix[asset] = {};
-    TIMEFRAMES.forEach(tf => {
-      const trades = closed.filter(t => {
-        const meta = parseMeta(t);
-        return meta.asset === asset && meta.timeframe === tf;
-      });
-      if (trades.length === 0) {
-        matrix[asset][tf] = null;
-      } else {
-        const wins = trades.filter(t => parseFloat(t.realized_pnl || 0) > 0).length;
-        const wr = wins / trades.length * 100;
-        const net = trades.reduce((s, t) => s + parseFloat(t.realized_pnl || 0), 0);
-        matrix[asset][tf] = { count: trades.length, wr, net };
-      }
-    });
-    // Add asset row totals
-    const assetTrades = closed.filter(t => {
-      const meta = parseMeta(t);
-      return meta.asset === asset && TIMEFRAMES.includes(meta.timeframe);
-    });
-    if (assetTrades.length === 0) {
-      matrix[asset]['Total'] = null;
-    } else {
-      const wins = assetTrades.filter(t => parseFloat(t.realized_pnl || 0) > 0).length;
-      const wr = wins / assetTrades.length * 100;
-      const net = assetTrades.reduce((s, t) => s + parseFloat(t.realized_pnl || 0), 0);
-      matrix[asset]['Total'] = { count: assetTrades.length, wr, net };
-    }
-  });
-
-  return (
-    <CollapsiblePanel title="Assets vs Timeframe" defaultOpen={false} badge="5 assets × 3 TFs" accentColor="#00e5ff">
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 10 }}>
-          <thead>
-            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-              <th style={{ padding: '4px 8px', textAlign: 'left', color: '#52525b', fontWeight: 600, fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.07em' }}>Asset</th>
-              {TIMEFRAMES.map(tf => (
-                <th key={tf} style={{ padding: '4px 8px', textAlign: 'center', color: '#52525b', fontWeight: 600, fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{tf}</th>
-              ))}
-              <th style={{ padding: '4px 8px', textAlign: 'center', color: '#52525b', fontWeight: 600, fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.07em' }}>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ASSETS.map(asset => (
-              <tr key={asset} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                <td style={{ padding: '6px 8px', fontWeight: 700, fontSize: 11, color: 'var(--color-text-primary)' }}>{asset}</td>
-                {TIMEFRAMES.map(tf => {
-                  const cell = matrix[asset][tf];
-                  if (!cell) {
-                    return (
-                      <td key={tf} style={{ padding: '6px 8px', textAlign: 'center', color: 'var(--color-text-muted)', fontFamily: 'monospace' }}>
-                        —
-                      </td>
-                    );
-                  }
-                  return (
-                    <td key={tf} style={{ padding: '6px 8px', textAlign: 'center' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                        <span style={{
-                          background: `${wrColor(cell.wr)}18`,
-                          color: wrColor(cell.wr),
-                          borderRadius: 4, padding: '1px 4px',
-                          fontWeight: 700, fontFamily: 'monospace', fontSize: 9,
-                        }}>
-                          {cell.wr.toFixed(0)}% ({cell.count})
-                        </span>
-                        <span style={{ color: netColor(cell.net), fontFamily: 'monospace', fontWeight: 600, fontSize: 9 }}>
-                          {cell.net >= 0 ? '+' : ''}${cell.net.toFixed(1)}
-                        </span>
-                      </div>
-                    </td>
-                  );
-                })}
-                {/* Row Total */}
-                {(() => {
-                  const cell = matrix[asset]['Total'];
-                  if (!cell) {
-                    return (
-                      <td style={{ padding: '6px 8px', textAlign: 'center', color: 'var(--color-text-muted)', fontFamily: 'monospace' }}>
-                        —
-                      </td>
-                    );
-                  }
-                  return (
-                    <td style={{ padding: '6px 8px', textAlign: 'center', borderLeft: '1px dashed rgba(255,255,255,0.1)' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                        <span style={{
-                          background: `${wrColor(cell.wr)}24`,
-                          color: wrColor(cell.wr),
-                          borderRadius: 4, padding: '1px 5px',
-                          fontWeight: 800, fontFamily: 'monospace', fontSize: 9,
-                        }}>
-                          {cell.wr.toFixed(0)}% ({cell.count})
-                        </span>
-                        <span style={{ color: netColor(cell.net), fontFamily: 'monospace', fontWeight: 700, fontSize: 9 }}>
-                          {cell.net >= 0 ? '+' : ''}${cell.net.toFixed(1)}
-                        </span>
-                      </div>
-                    </td>
-                  );
-                })()}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </CollapsiblePanel>
-  );
-});
+}
 
 // ── Gate Event Log ─────────────────────────────────────────────────────────────
 
@@ -830,7 +720,7 @@ const GATE_META = {
   'DIR-COOLDOWN': { color: '#2b7fff', label: 'COOLDOWN' },
   'TREND-CONFIRM':{ color: '#a855f7', label: 'TREND-CF' },
   'TREND-GATE':   { color: '#ef4444', label: 'TREND' },
-  'FV-EDGE-GATE': { color: 'var(--color-logo)', label: 'FV-EDGE' },
+  'FV-EDGE-GATE': { color: '#6d81a1', label: 'FV-EDGE' },
   'CORROBORATE':  { color: '#6b7280', label: 'CORR' },
   'VOL-SURGE':    { color: '#ec4899', label: 'VOL-SURGE' },
 };
@@ -896,9 +786,9 @@ function fmtHoldMins(mins) {
 
 function reasonBadge(reason) {
   if (!reason) return { label: '—', color: 'var(--color-text-muted)' };
-  if (reason === 'TARGET_HIT')  return { label: 'TARGET', color: 'var(--color-profit)' };
-  if (reason === 'STOP_HIT')    return { label: 'STOP',   color: 'var(--color-loss)' };
-  if (reason === 'TIME_EXPIRED') return { label: 'EXPIRY', color: 'var(--color-amber)' };
+  if (reason === 'TARGET_HIT')  return { label: 'TARGET', color: 'var(--color-text-secondary)' };
+  if (reason === 'STOP_HIT')    return { label: 'STOP',   color: 'var(--color-text-muted)' };
+  if (reason === 'TIME_EXPIRED') return { label: 'EXPIRY', color: 'var(--color-text-muted)' };
   return { label: reason.replace(/_/g, ' '), color: 'var(--color-text-muted)' };
 }
 
@@ -918,7 +808,7 @@ function CountdownTimer({ expiry_ts }) {
     return () => clearInterval(id);
   }, [expiry_ts]);
 
-  const color = secs < 15 ? 'var(--color-loss)' : secs < 60 ? 'var(--color-amber)' : 'var(--color-text-secondary)';
+  const color = secs < 15 ? 'var(--color-loss)' : secs < 60 ? 'var(--color-amber)' : 'var(--color-text-muted)';
   const pulse = secs < 15 ? { animation: 'pulse 0.8s infinite' } : {};
   return (
     <span style={{ fontFamily: 'var(--font-mono)', color, fontSize: 11, ...pulse }}>
@@ -932,63 +822,28 @@ function CountdownTimer({ expiry_ts }) {
 const CLOSED_COLS  = ['In (Local)', 'Asset', 'TF', 'Src', 'Dir', 'Size ($)', 'Entry¢', 'Exit¢', 'Hold', 'Reason', 'P&L / %', 'Exit (Local)', 'Result'];
 const CLOSED_GRID  = '92px 52px 38px 38px 50px 50px 48px 48px 48px 58px 88px 62px 40px';
 
-function VirtualList({ items, renderRow, itemHeight = 38, containerHeight = 380 }) {
-  const [scrollTop, setScrollTop] = useState(0);
-  const rafRef = useRef(null);
-
-  // Throttle scroll state updates to rAF cadence to avoid thrashing the UI thread
-  const onScroll = (e) => {
-    const top = e.currentTarget.scrollTop;
-    if (rafRef.current) return;
-    rafRef.current = requestAnimationFrame(() => {
-      setScrollTop(top);
-      rafRef.current = null;
-    });
-  };
-
-  const totalHeight = items.length * itemHeight;
-  const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - 2);
-  const endIndex = Math.min(items.length, Math.floor((scrollTop + containerHeight) / itemHeight) + 2);
-
-  const visibleItems = items.slice(startIndex, endIndex);
-  const offsetY = startIndex * itemHeight;
-
-  return (
-    <div
-      onScroll={onScroll}
-      style={{
-        overflowY: 'auto',
-        maxHeight: containerHeight,
-        position: 'relative',
-        flex: 1,
-        borderBottom: '1px solid var(--color-border-subtle)'
-      }}
-    >
-      <div style={{ height: totalHeight, width: '100%', position: 'relative' }}>
-        {/* will-change: transform promotes this layer to the GPU compositor — zero-cost scrolling */}
-        <div style={{ transform: `translateY(${offsetY}px)`, left: 0, right: 0, position: 'absolute', willChange: 'transform' }}>
-          {visibleItems.map((item, index) => renderRow(item, startIndex + index))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 const OPEN_COLS    = ['In (Local)', 'Asset', 'TF', 'Dir', 'Src', 'Entry¢', 'Cur¢', 'Target¢', 'Stop¢', 'Unr P&L', 'Hold', 'Closes In'];
 const OPEN_GRID    = '66px 55px 42px 50px 40px 48px 48px 52px 48px 68px 48px 80px';
 
 // ── Row components ────────────────────────────────────────────────────────────
 
-const ClosedRow = memo(function ClosedRow({ p }) {
+const ClosedRow = memo(function ClosedRow({ p, index }) {
   const meta   = parseMeta(p);
   const dir    = dirStr(p.direction);
   const pnl    = parseFloat(p.realized_pnl ?? 0);
   const pct    = parseFloat(p.realized_pnl_pct ?? 0);
-  const size   = parseFloat(p.size ?? 0);
+  
+  const amountSpent = parseFloat(p.amount_spent ?? p.entry_value ?? 0);
+  const entryPrice  = parseFloat(p.entry_price ?? 0);
+  const shares      = parseFloat(p.shares ?? p.shares_acquired ?? p.shares_sold ?? 0);
+  let size = amountSpent > 0 ? amountSpent : (shares > 0 && entryPrice > 0 ? shares * entryPrice : parseFloat(p.size ?? 0));
+  if (size > 0 && shares > 0 && Math.abs(size - shares) < 0.01 && entryPrice > 0 && entryPrice < 1.0) {
+    size = shares * entryPrice;
+  }
   const result = pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'EVEN';
-  const rColor = result === 'WIN' ? 'var(--color-profit)' : result === 'LOSS' ? 'var(--color-loss)' : 'rgba(9,9,11,0.25)';
+  const rColor = 'var(--color-text-muted)';
   const rb     = reasonBadge(p.exit_reason);
-  const pnlColor = pnl > 0 ? 'var(--color-profit)' : pnl < 0 ? 'var(--color-loss)' : 'var(--color-text-muted)';
+  const pnlColor = 'var(--color-text-secondary)';
 
   return (
     <div style={{
@@ -997,8 +852,7 @@ const ClosedRow = memo(function ClosedRow({ p }) {
       borderLeft: `3px solid ${rColor}`,
       borderBottom: '1px solid var(--color-border-subtle)',
       fontSize: 11,
-      height: 38,
-      boxSizing: 'border-box'
+      background: index % 2 === 0 ? '#18181b' : '#27272a',
     }}>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtLocalDT(p.entry_time)}</span>
       <span style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: 13, color: 'var(--color-text-primary)' }}>{meta.asset}</span>
@@ -1024,9 +878,14 @@ const ClosedRow = memo(function ClosedRow({ p }) {
       <span style={{ fontWeight: 800, fontSize: 10, letterSpacing: '0.06em', color: rColor }}>{result}</span>
     </div>
   );
+}, (prev, next) => {
+  return prev.index === next.index &&
+         prev.p.order_id === next.p.order_id &&
+         prev.p.exit_time === next.p.exit_time &&
+         prev.p.realized_pnl === next.p.realized_pnl;
 });
 
-function OpenRow({ p }) {
+const OpenRow = memo(function OpenRow({ p, index }) {
   const meta    = parseMeta(p);
   const dir     = dirStr(p.direction);
   const entry   = parseFloat(p.entry_price || 0);
@@ -1042,9 +901,10 @@ function OpenRow({ p }) {
     <div style={{
       display: 'grid', gridTemplateColumns: OPEN_GRID, gap: 8, alignItems: 'center',
       padding: '7px 0 7px 8px',
-      borderLeft: `3px solid ${isDual ? 'var(--color-logo)' : 'var(--color-text-muted)'}`,
+      borderLeft: `3px solid ${isDual ? 'var(--color-accent)' : 'var(--color-text-muted)'}`,
       borderBottom: '1px solid var(--color-border-subtle)',
       fontSize: 11, fontStyle: 'italic', opacity: 0.9,
+      background: index % 2 === 0 ? '#18181b' : '#27272a',
     }}>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtLocal(p.entry_time)}</span>
       <span style={{ fontFamily: 'var(--font-display)', fontWeight: 900, fontSize: 13, color: 'var(--color-text-primary)' }}>{meta.asset}</span>
@@ -1056,22 +916,22 @@ function OpenRow({ p }) {
         {entryTypeCfg(meta.type || p.entry_type).label}
       </span>
       <span style={{ fontFamily: 'var(--font-mono)' }}>{(entry * 100).toFixed(0)}¢</span>
-      <span style={{ fontFamily: 'var(--font-mono)', color: cur >= entry ? 'var(--color-profit)' : 'var(--color-loss)' }}>
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-secondary)' }}>
         {(cur * 100).toFixed(0)}¢
       </span>
-      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-profit)', fontSize: 10 }}>
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)', fontSize: 10 }}>
         {target > 0 ? `${(target * 100).toFixed(0)}¢` : '—'}
       </span>
-      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-loss)', fontSize: 10 }}>
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)', fontSize: 10 }}>
         {stop > 0 ? `${(stop * 100).toFixed(0)}¢` : '—'}
       </span>
       <span style={{
         fontFamily: 'var(--font-mono)', fontWeight: 700,
-        color: unrPnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)',
+        color: 'var(--color-text-secondary)',
       }}>{unrPnl >= 0 ? '+' : ''}${unrPnl.toFixed(2)}</span>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtHoldMins(holdMin)}</span>
       {p.status === 'RESOLVING' ? (
-        <span style={{ color: 'var(--color-logo)', fontWeight: 700, animation: 'pulse 1.5s infinite' }}>Resolving...</span>
+        <span style={{ color: 'var(--color-accent)', fontWeight: 700, animation: 'pulse 1.5s infinite' }}>Resolving...</span>
       ) : expiry > 0 ? (
         <CountdownTimer expiry_ts={expiry} />
       ) : (
@@ -1079,11 +939,16 @@ function OpenRow({ p }) {
       )}
     </div>
   );
-}
+}, (prev, next) => {
+  return prev.index === next.index &&
+         prev.p.order_id === next.p.order_id &&
+         prev.p.current_price === next.p.current_price &&
+         prev.p.unrealized_pnl === next.p.unrealized_pnl;
+});
 
 // ── Tab button ─────────────────────────────────────────────────────────────
 
-function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
+function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount, signalsCount }) {
   const containerRef = useRef(null);
   const [pillStyle, setPillStyle] = useState({ transform: 'translateX(0px)', width: '0px' });
 
@@ -1099,7 +964,7 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
         width: `${activeBtn.offsetWidth}px`
       });
     }
-  }, [activeTab, activeCount, historyCount]);
+  }, [activeTab, activeCount, historyCount, signalsCount]);
 
   return (
     <div className="t-tabs" ref={containerRef} role="tablist" style={{ position: 'relative' }}>
@@ -1110,7 +975,7 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
         height: '24px',
         background: 'var(--color-cream-dark)',
         borderRadius: '48px',
-        transition: 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1), width 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+        transition: 'none',
         zIndex: 0,
         pointerEvents: 'none'
       }} />
@@ -1130,7 +995,7 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
           padding: '4px 14px',
           borderRadius: '48px',
           zIndex: 1,
-          transition: 'color 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+          transition: 'none',
           display: 'inline-flex',
           alignItems: 'center',
           gap: '6px'
@@ -1138,7 +1003,7 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
       >
         Open
         <span style={{
-          background: activeTab === 'open' ? 'var(--color-logo)' : 'var(--color-cream-dark)',
+          background: activeTab === 'open' ? 'var(--color-accent)' : 'var(--color-cream-dark)',
           color: activeTab === 'open' ? '#fff' : 'var(--color-text-secondary)',
           borderRadius: '10px',
           padding: '1px 6px',
@@ -1172,7 +1037,7 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
       >
         History
         <span style={{
-          background: activeTab === 'history' ? 'var(--color-logo)' : 'var(--color-cream-dark)',
+          background: activeTab === 'history' ? 'var(--color-accent)' : 'var(--color-cream-dark)',
           color: activeTab === 'history' ? '#fff' : 'var(--color-text-secondary)',
           borderRadius: '10px',
           padding: '1px 6px',
@@ -1182,13 +1047,59 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
           {historyCount}
         </span>
       </button>
+      <button
+        className="t-tab"
+        role="tab"
+        aria-selected={activeTab === 'signals'}
+        onClick={() => setActiveTab('signals')}
+        style={{
+          position: 'relative',
+          background: 'transparent',
+          border: 'none',
+          color: activeTab === 'signals' ? 'var(--color-obsidian)' : 'var(--color-iron)',
+          fontSize: '12px',
+          fontWeight: activeTab === 'signals' ? 700 : 500,
+          cursor: 'pointer',
+          padding: '4px 14px',
+          borderRadius: '48px',
+          zIndex: 1,
+          transition: 'color 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px'
+        }}
+      >
+        Signals
+        <span style={{
+          background: activeTab === 'signals' ? 'var(--color-accent)' : 'var(--color-cream-dark)',
+          color: activeTab === 'signals' ? '#fff' : 'var(--color-text-secondary)',
+          borderRadius: '10px',
+          padding: '1px 6px',
+          fontSize: '9px',
+          fontWeight: 700
+        }}>
+          {signalsCount}
+        </span>
+      </button>
     </div>
   );
 }
 
 function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) {
   const containerRef = useRef(null);
-  const [pillStyle, setPillStyle] = useState({ transform: 'translateX(0px)', width: '0px' });
+  const [pillStyle, setPillStyle] = useState({ transform: 'translateX(0px)', width: '0px', background: 'transparent', border: '1px solid transparent' });
+
+  const activeColor = useMemo(() => {
+    if (activeFilter === 'ALL') return 'rgba(255, 255, 255, 0.08)';
+    const cfg = entryTypeCfg(SRC_TO_ENTRY_TYPE[activeFilter]);
+    return `${cfg.color}1c`; // active transparent color
+  }, [activeFilter]);
+
+  const activeBorder = useMemo(() => {
+    if (activeFilter === 'ALL') return 'rgba(255, 255, 255, 0.2)';
+    const cfg = entryTypeCfg(SRC_TO_ENTRY_TYPE[activeFilter]);
+    return cfg.color;
+  }, [activeFilter]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -1199,20 +1110,21 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
       setPillStyle({
         transform: `translateX(${activeBtn.offsetLeft}px)`,
         width: `${activeBtn.offsetWidth}px`,
+        background: activeColor,
+        border: `1px solid ${activeBorder}`,
       });
     }
-  }, [activeFilter, srcStats, closedCount]);
+  }, [activeFilter, srcStats, closedCount, activeColor, activeBorder]);
 
   return (
-    <div className="t-tabs" ref={containerRef} role="tablist" style={{ position: 'relative', overflow: 'visible' }}>
+    <div className="t-tabs" ref={containerRef} role="tablist" style={{ position: 'relative', display: 'flex', gap: 4, padding: 3, background: 'rgba(255,255,255,0.01)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.04)', overflowX: 'auto', width: 'fit-content' }}>
       <span className="t-tabs-pill" style={{
         ...pillStyle,
         position: 'absolute',
         top: '3px',
-        height: '24px',
-        background: 'var(--color-cream-dark)',
-        borderRadius: '48px',
-        transition: 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1), width 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+        bottom: '3px',
+        borderRadius: '6px',
+        transition: 'none',
         zIndex: 0,
         pointerEvents: 'none'
       }} />
@@ -1220,18 +1132,18 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
         role="tab"
         aria-selected={activeFilter === 'ALL'}
         onClick={() => setActiveFilter('ALL')}
+        className="metal-fx"
         style={{
           position: 'relative',
           background: 'transparent',
-          border: 'none',
-          borderRadius: '48px',
-          padding: '4px 14px',
-          fontSize: '11px',
-          fontWeight: activeFilter === 'ALL' ? 700 : 500,
-          color: activeFilter === 'ALL' ? 'var(--color-obsidian)' : 'var(--color-iron)',
+          border: '1px solid transparent',
+          borderRadius: 6,
+          padding: '2px 8px',
+          fontSize: 10, fontWeight: 700, letterSpacing: '0.05em',
+          color: activeFilter === 'ALL' ? '#fff' : 'var(--color-text-muted)',
           cursor: 'pointer',
-          display: 'flex', alignItems: 'center', gap: 6,
-          transition: 'color 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+          display: 'flex', alignItems: 'center', gap: 4,
+          transition: 'none',
           whiteSpace: 'nowrap',
           zIndex: 1,
         }}
@@ -1239,18 +1151,19 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
         ALL
         {closedCount > 0 && (
           <span style={{
-            background: activeFilter === 'ALL' ? 'var(--color-logo)' : 'var(--color-cream-dark)',
-            color: activeFilter === 'ALL' ? '#fff' : 'var(--color-text-secondary)',
-            borderRadius: '10px',
-            padding: '1px 6px',
-            fontSize: '9px',
-            fontWeight: 700
+            background: activeFilter === 'ALL' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.07)',
+            borderRadius: 4,
+            padding: '0 4px',
+            fontSize: 9,
+            color: activeFilter === 'ALL' ? '#fff' : 'var(--color-text-muted)',
           }}>
             {closedCount}
           </span>
         )}
       </button>
       {srcStats.map(({ src, count, pnl }) => {
+        const cfg = entryTypeCfg(SRC_TO_ENTRY_TYPE[src]);
+        const color = cfg.color;
         const isActive = activeFilter === src;
         return (
           <button
@@ -1258,18 +1171,18 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
             role="tab"
             aria-selected={isActive}
             onClick={() => setActiveFilter(src)}
+            className="metal-fx"
             style={{
               position: 'relative',
               background: 'transparent',
-              border: 'none',
-              borderRadius: '48px',
-              padding: '4px 14px',
-              fontSize: '11px',
-              fontWeight: isActive ? 700 : 500,
-              color: isActive ? 'var(--color-obsidian)' : 'var(--color-iron)',
+              border: '1px solid transparent',
+              borderRadius: 6,
+              padding: '2px 8px',
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.05em',
+              color: isActive ? color : 'var(--color-text-muted)',
               cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: 6,
-              transition: 'color 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+              display: 'flex', alignItems: 'center', gap: 4,
+              transition: 'color 0.15s',
               whiteSpace: 'nowrap',
               zIndex: 1,
             }}
@@ -1277,19 +1190,16 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
             {src}
             {count > 0 && (
               <span style={{
-                background: isActive ? 'var(--color-logo)' : 'var(--color-cream-dark)',
-                color: isActive ? '#fff' : 'var(--color-text-secondary)',
-                borderRadius: '10px',
-                padding: '1px 6px',
-                fontSize: '9px',
-                fontWeight: 700,
-                display: 'inline-flex',
-                alignItems: 'center',
+                background: isActive ? `${color}33` : 'rgba(255,255,255,0.07)',
+                borderRadius: 4,
+                padding: '0 4px',
+                fontSize: 9,
+                color: isActive ? color : 'var(--color-text-muted)',
               }}>
                 {count}
                 {pnl !== null && (
-                  <span style={{ marginLeft: 3, color: isActive ? '#fff' : (pnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)') }}>
-                    {pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}
+                  <span style={{ marginLeft: 3, color: 'var(--color-text-secondary)' }}>
+                    {pnl >= 0 ? '+' : ''}${Math.abs(pnl).toFixed(1)}
                   </span>
                 )}
               </span>
@@ -1316,9 +1226,9 @@ function ColHeaders({ cols, grid }) {
   );
 }
 
-// ── Expected Value sparkline ──────────────────────────────────────────────────
+// ── P&L sparkline ─────────────────────────────────────────────────────────────
 
-function RunningEVSparkline({ values }) {
+function PnLSparkline({ values }) {
   if (values.length < 2) return null;
   const min = Math.min(...values, 0);
   const max = Math.max(...values, 0);
@@ -1328,21 +1238,21 @@ function RunningEVSparkline({ values }) {
   const pts = values.map((v, i) => `${(i / (values.length - 1)) * W},${toY(v)}`).join(' ');
   const zeroY = toY(0);
   const last = values[values.length - 1];
-  const lineColor = 'var(--color-text-secondary)';
+  const lineColor = last >= 0 ? '#00c853' : '#ff1744';
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, marginBottom: 6 }}>
-      <span style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', flexShrink: 0 }}>Running EV</span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+      <span style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', flexShrink: 0 }}>P&amp;L Trail</span>
       <svg width={W} height={H} style={{ overflow: 'visible', flexShrink: 0 }}>
         <defs>
-          <linearGradient id="evGrad" x1="0" y1="0" x2="1" y2="0">
+          <linearGradient id="pnlGrad" x1="0" y1="0" x2="1" y2="0">
             <stop offset="0%" stopColor={lineColor} stopOpacity="0.4" />
             <stop offset="100%" stopColor={lineColor} stopOpacity="1" />
           </linearGradient>
         </defs>
         <line x1={0} y1={zeroY} x2={W} y2={zeroY}
               stroke="rgba(255,255,255,0.12)" strokeWidth={0.5} strokeDasharray="4,3" />
-        <polyline points={pts} fill="none" stroke="url(#evGrad)" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
-        <circle cx={W} cy={toY(last)} r={3}
+        <polyline points={pts} fill="none" stroke="url(#pnlGrad)" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx={(values.length - 1) / (values.length - 1) * W} cy={toY(last)} r={3}
                 fill={lineColor} stroke="var(--color-bg-card, #111)" strokeWidth={1.5} />
       </svg>
       <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', fontWeight: 800, color: lineColor, flexShrink: 0 }}>
@@ -1354,7 +1264,7 @@ function RunningEVSparkline({ values }) {
 
 // ── Summary bar ──────────────────────────────────────────────────────────────
 
-const ClosedSummary = memo(function ClosedSummary({ closed }) {
+function ClosedSummary({ closed }) {
   if (closed.length === 0) return null;
 
   const winTrades  = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0);
@@ -1388,35 +1298,12 @@ const ClosedSummary = memo(function ClosedSummary({ closed }) {
     else break;
   }
 
-  // Running Expected Value (EV) calculation chronologically
+  // Cumulative P&L sparkline (chronological = reversed from newest-first)
   const chronoClosed = [...closed].reverse();
-  const evValues = [];
-  let cumWinPnl = 0;
-  let cumLossPnl = 0;
-  let winsCount = 0;
-  let lossesCount = 0;
-
-  chronoClosed.forEach(p => {
-    const pnl = parseFloat(p.realized_pnl ?? 0);
-    if (pnl > 0.001) {
-      cumWinPnl += pnl;
-      winsCount++;
-    } else if (pnl < -0.001) {
-      cumLossPnl += Math.abs(pnl);
-      lossesCount++;
-    }
-    const totalWL = winsCount + lossesCount;
-    if (totalWL === 0) {
-      evValues.push(0);
-    } else {
-      const wr = winsCount / totalWL;
-      const lr = lossesCount / totalWL;
-      const avgW = winsCount > 0 ? cumWinPnl / winsCount : 0;
-      const avgL = lossesCount > 0 ? cumLossPnl / lossesCount : 0;
-      const ev = (wr * avgW) - (lr * avgL);
-      evValues.push(ev);
-    }
-  });
+  const cumValues = chronoClosed.reduce((acc, p) => {
+    acc.push((acc.length > 0 ? acc[acc.length - 1] : 0) + parseFloat(p.realized_pnl ?? 0));
+    return acc;
+  }, []);
 
   // P&L velocity ($/hr) — parse ISO string or unix int from entry_time
   const _rawOldest = closed.length > 0
@@ -1434,11 +1321,42 @@ const ClosedSummary = memo(function ClosedSummary({ closed }) {
   // Loss cluster alert: 3+ trades settled ≤10¢ in last 20 min
   const now20min = Date.now() - 20 * 60 * 1000;
   const recentFullLosses = closed.filter(t => {
-    const exitTs = (t.exit_time || t.closed_at || 0) * 1000;
+    const exitTs = getTimestampMs(t.exit_time || t.closed_at || 0);
     const exitPrice = parseFloat(t.exit_price ?? 1.0);
     return exitTs >= now20min && exitPrice <= 0.10;
   }).length;
 
+  // Session × Regime table data
+  const SESSION_ORDER = ['Asian', 'EU', 'US', 'Off-Peak', 'Weekend'];
+  const REGIME_ORDER  = ['TRENDING', 'MEAN_REVERTING', 'COMPRESSION', 'VOLATILE_CHAOS'];
+  const REGIME_SHORT  = { TRENDING: 'Trend', MEAN_REVERTING: 'Mean-Rev', COMPRESSION: 'Compr', VOLATILE_CHAOS: 'Chaos' };
+
+  function getSessionLabel(entryTs) {
+    if (!entryTs) return null;
+    const d   = new Date(getTimestampMs(entryTs));
+    const day = d.getUTCDay();
+    if (day === 0 || day === 6) return 'Weekend';
+    const h = d.getUTCHours() + d.getUTCMinutes() / 60;
+    if (h >= 13.5 && h < 22) return 'US';
+    if (h >= 7   && h < 16)  return 'EU';
+    if (h >= 0   && h < 8)   return 'Asian';
+    return 'Off-Peak';
+  }
+
+  const srCells = {};
+  for (const t of closed) {
+    const sess   = getSessionLabel(t.entry_time || t.timestamp);
+    const regime = t.regime || 'UNKNOWN';
+    if (!sess || regime === 'UNKNOWN') continue;
+    const key = `${sess}|${regime}`;
+    if (!srCells[key]) srCells[key] = { wins: 0, total: 0, pnl: 0 };
+    srCells[key].total++;
+    srCells[key].pnl += parseFloat(t.realized_pnl ?? 0);
+    if (parseFloat(t.realized_pnl ?? 0) > 0) srCells[key].wins++;
+  }
+  const activeSessions = SESSION_ORDER.filter(s => REGIME_ORDER.some(r => srCells[`${s}|${r}`]));
+  const activeRegimes  = REGIME_ORDER.filter(r => SESSION_ORDER.some(s => srCells[`${s}|${r}`]));
+  const showSRTable = activeSessions.length > 0 && activeRegimes.length > 0;
 
   const statCols = [
     { label: 'Trades',   val: closed.length, color: 'var(--color-text-primary)' },
@@ -1446,19 +1364,19 @@ const ClosedSummary = memo(function ClosedSummary({ closed }) {
         <>{wr}%<span style={{ fontSize: 9, fontWeight: 500, color: 'var(--color-text-muted)', marginLeft: 4 }}>
           {wrN > 4 ? `${ciLo.toFixed(0)}–${ciHi.toFixed(0)}%` : 'n<5'}
         </span></>
-      ), color: parseFloat(wr) >= 62 ? 'var(--color-profit)' : parseFloat(wr) >= 45 ? 'var(--color-amber)' : 'var(--color-loss)' },
+      ), color: 'var(--color-text-secondary)' },
     { label: 'W / L / E', val: `${wins} / ${losses} / ${evens}`, color: 'var(--color-text-secondary)' },
-    { label: 'Total P&L', val: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)' },
-    { label: 'P&L Rate',  val: velStr, color: pnlVelocity !== null ? (pnlVelocity >= 0 ? 'var(--color-profit)' : 'var(--color-loss)') : 'var(--color-text-muted)' },
-    { label: 'Profit Factor', val: pf, color: parseFloat(pf) >= 1.5 ? 'var(--color-profit)' : parseFloat(pf) >= 1 ? 'var(--color-amber)' : 'var(--color-loss)' },
-    { label: 'Avg Win',   val: avgWin > 0 ? `+$${avgWin.toFixed(2)}` : '—', color: 'var(--color-profit)' },
-    { label: 'Avg Loss',  val: avgLoss > 0 ? `-$${avgLoss.toFixed(2)}` : '—', color: 'var(--color-loss)' },
-    { label: 'Best',  val: bestPnl > 0 ? `+$${bestPnl.toFixed(2)}` : '—', color: 'var(--color-profit)' },
-    { label: 'Worst', val: worstPnl < 0 ? `-$${Math.abs(worstPnl).toFixed(2)}` : '—', color: 'var(--color-loss)' },
+    { label: 'Total P&L', val: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: 'var(--color-text-secondary)' },
+    { label: 'P&L Rate',  val: velStr, color: 'var(--color-text-secondary)' },
+    { label: 'Profit Factor', val: pf, color: 'var(--color-text-secondary)' },
+    { label: 'Avg Win',   val: avgWin > 0 ? `+$${avgWin.toFixed(2)}` : '—', color: 'var(--color-text-secondary)' },
+    { label: 'Avg Loss',  val: avgLoss > 0 ? `-$${avgLoss.toFixed(2)}` : '—', color: 'var(--color-text-secondary)' },
+    { label: 'Best',  val: bestPnl > 0 ? `+$${bestPnl.toFixed(2)}` : '—', color: 'var(--color-text-secondary)' },
+    { label: 'Worst', val: worstPnl < 0 ? `-$${Math.abs(worstPnl).toFixed(2)}` : '—', color: 'var(--color-text-secondary)' },
     { label: 'Streak', val: streak > 1
         ? <span style={{ letterSpacing: 0 }}>{streakWin ? '🔥' : '❄️'} {streak}{streakWin ? 'W' : 'L'}</span>
         : `${streakWin ? 'W' : 'L'}`,
-      color: streakWin ? 'var(--color-profit)' : 'var(--color-loss)' },
+      color: 'var(--color-text-secondary)' },
   ];
 
   return (
@@ -1492,12 +1410,51 @@ const ClosedSummary = memo(function ClosedSummary({ closed }) {
           </div>
         ))}
       </div>
+      <PnLSparkline values={cumValues} />
 
-      <RunningEVSparkline values={evValues} />
-
+      {/* Session × Regime analytics table */}
+      {showSRTable && (
+        <div style={{ marginTop: 10, overflowX: 'auto' }}>
+          <div style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4 }}>
+            Session × Regime
+          </div>
+          <table style={{ borderCollapse: 'collapse', fontSize: 10, width: '100%' }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left', color: 'var(--color-text-muted)', fontWeight: 500, paddingRight: 10, paddingBottom: 3 }}>Session</th>
+                {activeRegimes.map(r => (
+                  <th key={r} style={{ textAlign: 'center', color: REGIME_COLORS[r] || '#6b7280', fontWeight: 600, paddingBottom: 3, paddingRight: 8 }}>
+                    {REGIME_SHORT[r] || r}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {activeSessions.map(sess => (
+                <tr key={sess}>
+                  <td style={{ color: 'var(--color-text-secondary)', paddingRight: 10, paddingBottom: 2 }}>{sess}</td>
+                  {activeRegimes.map(r => {
+                    const cell = srCells[`${sess}|${r}`];
+                    if (!cell) return <td key={r} style={{ textAlign: 'center', color: 'var(--color-text-muted)', paddingRight: 8 }}>—</td>;
+                    const wr = Math.round((cell.wins / cell.total) * 100);
+                    const pnlStr = `${cell.pnl >= 0 ? '+' : ''}$${cell.pnl.toFixed(1)}`;
+                    const wrColor = wr >= 65 ? 'var(--color-profit)' : wr >= 50 ? 'var(--color-amber)' : 'var(--color-loss)';
+                    return (
+                      <td key={r} style={{ textAlign: 'center', paddingRight: 8, paddingBottom: 2 }}>
+                        <span style={{ color: cell.total < 3 ? 'var(--color-text-muted)' : wrColor, fontWeight: 700 }}>{wr}%</span>
+                        <span style={{ display: 'block', fontSize: 9, color: cell.pnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)', opacity: 0.8 }}>{pnlStr}</span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
-});
+}
 
 // ── Engine Status Pill ────────────────────────────────────────────────────────
 
@@ -1543,7 +1500,7 @@ function EngineStatusPill({ status, detail, lastTradeAgo }) {
 
 // ── Source filter pills ───────────────────────────────────────────────────────
 
-const SRC_FILTERS = ['ALL', 'NCS', 'REV SNIPE', 'SIG', 'SWEEP'];
+const SRC_FILTERS = ['ALL', 'NCS', 'REV SNIPE', 'FV', 'SIG'];
 const SRC_TO_ENTRY_TYPE = {
   'LAT ARB':    'LAT-ARB',
   'FV':         'FAIR-VAL',
@@ -1605,20 +1562,83 @@ function SrcPill({ src, active, count, pnl, onClick }) {
     </button>
   );
 }
+const SIGNALS_GRID = '0.9fr 0.6fr 0.6fr 0.9fr 0.6fr 0.6fr 0.6fr 0.6fr 0.7fr 0.7fr 1.3fr';
+const SIGNALS_COLS = ['Time', 'Asset', 'TF', 'Regime', 'RSI', 'MOM', 'OFI', 'OBI', 'CVD', 'Dir', 'Status'];
+
+const SignalRow = memo(function SignalRow({ sig, index }) {
+  const timeStr = sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString() : '—';
+  const asset = sig.asset || '—';
+  const tf = sig.timeframe || '—';
+  const regime = sig.regime || '—';
+  const rsi = sig.rsi !== undefined ? sig.rsi.toFixed(1) : '—';
+  const mom = sig.mom !== undefined ? sig.mom.toFixed(4) : '—';
+  const ofi = sig.ofi !== undefined ? sig.ofi.toFixed(2) : '—';
+  const obi = sig.binance_obi !== undefined ? sig.binance_obi.toFixed(2) : '—';
+  const cvd = sig.fast_cvd !== undefined ? sig.fast_cvd.toFixed(0) : '—';
+  const direction = sig.direction || 'NEUTRAL';
+  const score = sig.score !== undefined ? sig.score.toFixed(2) : '—';
+
+  let dirColor = 'var(--color-text-muted)';
+  if (direction === 'UP' || direction === 'YES') dirColor = 'var(--color-profit)';
+  if (direction === 'DOWN' || direction === 'NO') dirColor = 'var(--color-loss)';
+
+  let statusText = 'Neutral';
+  let statusColor = 'var(--color-text-muted)';
+  if (sig.blocked) {
+    statusText = 'Blocked (Divergence)';
+    statusColor = 'var(--color-loss)';
+  } else if (direction !== 'NEUTRAL') {
+    statusText = `Triggered (Score ${score})`;
+    statusColor = 'var(--color-accent)';
+  }
+
+  const rowBg = index % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)';
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: SIGNALS_GRID,
+        padding: '8px 10px',
+        alignItems: 'center',
+        fontSize: '11px',
+        borderBottom: '1px solid rgba(255,255,255,0.03)',
+        background: rowBg,
+      }}
+    >
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{timeStr}</span>
+      <span style={{ fontWeight: 700, color: 'var(--color-cream)' }}>{asset}</span>
+      <span style={{ color: 'var(--color-text-secondary)' }}>{tf}</span>
+      <span style={{ fontSize: '9px', textTransform: 'uppercase', color: 'var(--color-accent)' }}>{regime}</span>
+      <span style={{ fontFamily: 'var(--font-mono)' }}>{rsi}</span>
+      <span style={{ fontFamily: 'var(--font-mono)' }}>{mom}</span>
+      <span style={{ fontFamily: 'var(--font-mono)' }}>{ofi}</span>
+      <span style={{ fontFamily: 'var(--font-mono)' }}>{obi}</span>
+      <span style={{ fontFamily: 'var(--font-mono)' }}>{cvd}</span>
+      <span style={{ fontWeight: 800, color: dirColor }}>{direction}</span>
+      <span style={{ fontWeight: 600, color: statusColor }}>{statusText}</span>
+    </div>
+  );
+}, (prev, next) => {
+  return prev.index === next.index &&
+         prev.sig.timestamp === next.sig.timestamp &&
+         prev.sig.blocked === next.sig.blocked &&
+         prev.sig.direction === next.sig.direction;
+});
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
-export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {} }) {
+export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {}, signals = [] }) {
   const [tab, setTab] = useState('open');
   const [srcFilter, setSrcFilter] = useState('ALL');
-  const [limit, setLimit] = useState(10);
+  const [limit, setLimit] = useState(100);
   const [engineStatus, setEngineStatus] = useState({ status: 'SCANNING', detail: '' });
-  const [isLedgerCollapsed, setIsLedgerCollapsed] = useState(false);
   const [btnHovered, setBtnHovered] = useState(false);
+  const lastScrollTimeRef = useRef(0);
 
-  // Reset limit to 10 when the filter source or tab changes
+  // Reset limit to 100 when the filter source or tab changes
   useEffect(() => {
-    setLimit(10);
+    setLimit(100);
   }, [srcFilter, tab]);
 
   useEffect(() => {
@@ -1635,7 +1655,7 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
     return [...(positions?.closed || [])].sort(
       (a, b) => new Date(b.exit_time || 0) - new Date(a.exit_time || 0)
     );
-  }, [positions?.closed?.length]);
+  }, [positions?.closed]);
 
   // Total unrealized P&L across all open positions
   const totalUnrPnl = active.reduce((s, p) => s + parseFloat(p.unrealized_pnl || 0), 0);
@@ -1654,24 +1674,29 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
     return filterBySrc(closed, srcFilter);
   }, [closed, srcFilter]);
 
+  // Scroll-triggered lazy load — fires when within 120px of bottom (throttled to 10Hz)
+  const handleLedgerScroll = useCallback((e) => {
+    const el = e.currentTarget;
+    const now = Date.now();
+    if (now - lastScrollTimeRef.current < 100) return;
+    lastScrollTimeRef.current = now;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) {
+      setLimit(prev => Math.min(prev + 100, filteredClosed.length));
+    }
+  }, [filteredClosed.length]);
+
   const visibleClosed = useMemo(() => {
     return filteredClosed.slice(0, limit);
   }, [filteredClosed, limit]);
 
-  // Stable row renderer — prevents VirtualList from discarding and re-creating
-  // DOM nodes on every parent render (critical for 120Hz smooth scrolling).
-  const renderClosedRow = useCallback((p, idx) => (
-    <ClosedRow key={p.order_id || idx} p={p} />
-  ), []);
-
   return (
     <SpotlightMask>
       <div
-        className="glass-panel"
+        className="glass-panel border-beam-card"
         style={{ padding: 'var(--spacing-20)', display: 'flex', flexDirection: 'column' }}
       >
         {/* Header: title + pills + tabs */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isLedgerCollapsed ? 0 : 10, flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, letterSpacing: '-0.01em' }}>
               Trade Ledger
@@ -1679,35 +1704,12 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
             <MarketSessionPill />
             <RegimePill />
             <MacroTrendArrow />
-            <button
-              onClick={() => setIsLedgerCollapsed(c => !c)}
-              onMouseEnter={() => setBtnHovered(true)}
-              onMouseLeave={() => setBtnHovered(false)}
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: 4,
-                background: btnHovered ? 'rgba(192,192,215,0.08)' : 'rgba(255,255,255,0.04)',
-                border: `1px solid ${btnHovered ? 'rgba(192,192,215,0.35)' : 'rgba(255,255,255,0.08)'}`,
-                boxShadow: btnHovered ? '0 0 10px rgba(192,192,215,0.15), inset 0 1px 0 rgba(255,255,255,0.08)' : 'none',
-                borderRadius: 6, padding: '2px 8px', cursor: 'pointer',
-                fontSize: 9, fontWeight: 700,
-                color: btnHovered ? '#d4d4e8' : '#a1a1aa',
-                transition: 'all 0.2s',
-                marginLeft: 4
-              }}
-            >
-              <span style={{ display: 'inline-block', transform: isLedgerCollapsed ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.25s' }}>▾</span>
-              {isLedgerCollapsed ? 'Expand' : 'Collapse'}
-            </button>
           </div>
-          {!isLedgerCollapsed && (
-            <SlidingTabs activeTab={tab} setActiveTab={setTab} activeCount={active.length} historyCount={closed.length} />
-          )}
+          <SlidingTabs activeTab={tab} setActiveTab={setTab} activeCount={active.length} historyCount={closed.length} />
         </div>
 
-        {!isLedgerCollapsed && (
-          <>
-            {/* Candle countdown + per-asset macro bar */}
-            <CandleCountdownBar assetMacro={assetMacro} />
+        {/* Candle countdown + per-asset macro bar */}
+        <CandleCountdownBar assetMacro={assetMacro} />
 
         {/* Gate Event Log lives in Analytics tab (not here) */}
 
@@ -1738,7 +1740,7 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
             <div style={{ overflowY: 'auto', maxHeight: 300 }}>
               {active.length === 0
                 ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>No open positions</div>
-                : active.map((p, i) => <OpenRow key={p.order_id || i} p={p} />)
+                : active.map((p, i) => <OpenRow key={p.order_id || i} p={p} index={i} />)
               }
             </div>
           </>
@@ -1771,9 +1773,6 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
 
                 {/* Timeframe Heatmap */}
                 <TimeframeHeatmap closed={closed} />
-
-                {/* Assets vs Timeframe Heatmap */}
-                <AssetVsTimeframeHeatmap closed={closed} />
               </>
             )}
 
@@ -1781,27 +1780,46 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
             <EngineStatusPill
               status={engineStatus.status}
               detail={engineStatus.detail}
-              lastTradeAgo={closed.length > 0 ? Math.floor((Date.now() / 1000 - (typeof closed[0].exit_time === 'string' ? new Date(closed[0].exit_time).getTime() / 1000 : Number(closed[0].exit_time || 0))) / 60) : 999}
+              lastTradeAgo={closed.length > 0 ? Math.floor((Date.now() - getTimestampMs(closed[0].exit_time)) / 60000) : 999}
             />
 
-            {/* Trade rows */}
+            {/* Trade rows — GPU-accelerated virtualized scroll window */}
             <ColHeaders cols={CLOSED_COLS} grid={CLOSED_GRID} />
-            {filteredClosed.length === 0 ? (
-              <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>
-                {srcFilter === 'ALL' ? 'No closed trades yet' : `No ${srcFilter} trades yet`}
-              </div>
-            ) : (
-              <VirtualList
-                items={filteredClosed}
-                itemHeight={38}
-                containerHeight={380}
-                renderRow={renderClosedRow}
-              />
-            )}
+            <div
+              onScroll={handleLedgerScroll}
+              style={{
+                overflowY: 'auto',
+                maxHeight: 380,
+                flex: 1,
+                /* GPU compositing layer — prevents layout thrashing at 120Hz */
+                transform: 'translate3d(0,0,0)',
+                willChange: 'transform',
+                WebkitOverflowScrolling: 'touch',
+                contain: 'content',
+              }}
+            >
+              {visibleClosed.length === 0
+                ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>
+                    {srcFilter === 'ALL' ? 'No closed trades yet' : `No ${srcFilter} trades yet`}
+                  </div>
+                : visibleClosed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} index={i} />)
+              }
+            </div>
           </>
         )}
-      </>
-    )}
+
+        {/* Signals tab */}
+        {tab === 'signals' && (
+          <>
+            <ColHeaders cols={SIGNALS_COLS} grid={SIGNALS_GRID} />
+            <div style={{ overflowY: 'auto', maxHeight: 400 }}>
+              {signals.length === 0
+                ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>No signal evaluations received yet</div>
+                : signals.map((sig, i) => <SignalRow key={i} sig={sig} index={i} />)
+              }
+            </div>
+          </>
+        )}
       </div>
     </SpotlightMask>
   );

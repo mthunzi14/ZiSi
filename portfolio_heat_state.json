@@ -1,0 +1,29 @@
+{
+  "heat_score": 0.0,
+  "heat_multiplier": 1.0,
+  "correlation_matrix": {
+    "BTC:ETH": 0.0,
+    "BTC:SOL": 0.0,
+    "BTC:XRP": 0.0,
+    "ETH:SOL": 0.0,
+    "ETH:XRP": 0.0,
+    "SOL:XRP": 0.0
+  },
+  "price_history": {
+    "BTC": [
+      [
+        1782546338.584057,
+        60491.37
+      ],
+      [
+        1782546916.9627278,
+        60539.07
+      ]
+    ],
+    "ETH": [],
+    "SOL": [],
+    "XRP": []
+  },
+  "update_count": 2,
+  "last_updated": 1782546916.9672928
+}
