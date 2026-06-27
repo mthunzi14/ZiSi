@@ -868,24 +868,53 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             # Primary: 0.85→0.70 (less certainty needed to trigger) + 0.002→0.001 (smaller move).
             # Secondary (half-size): kept at 0.60 with slightly relaxed move threshold 0.003→0.002.
             # More opportunities surface while size discipline prevents overexposure.
+            # Sniping cheap losing side of near-certain markets (asymmetry/reversals)
+            # Primary target: cheap side <= 0.25 (winning side >= 0.75), minimum 0.05% spot move
+            # Secondary target: cheap side <= 0.35 (winning side >= 0.65), half size, minimum 0.1% spot move
+            # This directly prevents high-risk, negative-EV coin-flip entries at 40-48c.
             _snipe_size_mult = 1.0
-            if up_price >= 0.70 and dn_price <= 0.30 and pct_move <= -0.001:
+            if up_price >= 0.75 and dn_price <= 0.25 and pct_move <= -0.0005:
                 snipe_direction = "DOWN"
                 snipe_price = dn_price
-            elif dn_price >= 0.70 and up_price <= 0.30 and pct_move >= 0.001:
+            elif dn_price >= 0.75 and up_price <= 0.25 and pct_move >= 0.0005:
                 snipe_direction = "UP"
                 snipe_price = up_price
-            elif up_price >= 0.60 and dn_price <= 0.40 and pct_move <= -0.002:
+            elif up_price >= 0.65 and dn_price <= 0.35 and pct_move <= -0.001:
                 snipe_direction = "DOWN"
                 snipe_price = dn_price
                 _snipe_size_mult = 0.5
-            elif dn_price >= 0.60 and up_price <= 0.40 and pct_move >= 0.002:
+            elif dn_price >= 0.65 and up_price <= 0.35 and pct_move >= 0.001:
                 snipe_direction = "UP"
                 snipe_price = up_price
                 _snipe_size_mult = 0.5
 
             if not snipe_direction:
                 return
+
+            # CVD + OBI Confirmation Gate for Reversal Snipe
+            # Enforce that order flow (aggressive buying/selling delta and book imbalance)
+            # confirms the reversal direction to avoid entering against the trend.
+            from core.engine.spot_websocket_ingest import get_cvd_metrics, get_binance_obi, _has_cvd_data
+            fast_cvd, slow_cvd = await get_cvd_metrics(asset)
+            binance_obi = await get_binance_obi(asset)
+            has_cvd = _has_cvd_data(asset)
+
+            if has_cvd:
+                if snipe_direction == "UP":
+                    cvd_ok = fast_cvd > 0 and fast_cvd > 0.25 * abs(slow_cvd)
+                    obi_ok = binance_obi > 0.10
+                else:
+                    cvd_ok = fast_cvd < 0 and abs(fast_cvd) > 0.25 * abs(slow_cvd)
+                    obi_ok = binance_obi < -0.10
+
+                if not cvd_ok or not obi_ok:
+                    log.info(
+                        "[REVERSAL-SNIPE-CVD-OBI] %s/%s %s: cvd_ok=%s (fast=%.1f slow=%.1f) obi_ok=%s (obi=%.3f) — filtered",
+                        asset, timeframe, snipe_direction, cvd_ok, fast_cvd, slow_cvd, obi_ok, binance_obi
+                    )
+                    return
+            else:
+                log.info("[REVERSAL-SNIPE-CVD-OBI] %s/%s: No CVD data available, allowing execution on spot price momentum", asset, timeframe)
 
             # Skip if already in this market for REVERSAL-SNIPE
             import core.engine.state_manager as state_mgr
@@ -901,7 +930,7 @@ async def start_reversal_sniper(session: aiohttp.ClientSession, engines: dict) -
             from core.engine.state_manager import get_current_balance
             balance = get_current_balance()
             # Dynamic fractional size with a $1.50 floor to prevent silents rejections
-            usd_size = max(1.50, min(balance * 0.005, 5.0)) * _snipe_size_mult  # $1.50 floor clears Polymarket $1 CLOB minimum
+            usd_size = max(5.00, min(balance * 0.08, 40.0)) * _snipe_size_mult  # Calibrated to match SIG volume
 
             market_id = market["dn_market"]["id"] if snipe_direction == "DOWN" else market["up_market"]["id"]
 

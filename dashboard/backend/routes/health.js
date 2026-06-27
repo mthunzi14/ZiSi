@@ -408,7 +408,7 @@ router.get('/', (req, res) => {
     let pythPrices = {};
     let chainlinkPrices = {};
     try {
-      const clFile = path.join(__dirname, '../../../../chainlink_prices.json');
+      const clFile = path.join(__dirname, '../../../data/chainlink_prices.json');
       if (fs.existsSync(clFile)) {
         chainlinkPrices = JSON.parse(fs.readFileSync(clFile, 'utf-8'));
       }
@@ -416,7 +416,7 @@ router.get('/', (req, res) => {
       console.warn('[HEALTH] Failed to parse chainlink_prices.json:', err.message);
     }
     try {
-      const pythFile = path.join(__dirname, '../../../../pyth_prices.json');
+      const pythFile = path.join(__dirname, '../../../data/pyth_prices.json');
       if (fs.existsSync(pythFile)) {
         pythPrices = JSON.parse(fs.readFileSync(pythFile, 'utf-8'));
       }
@@ -594,80 +594,7 @@ async function _fetchClobPrice(marketId, pos) {
     console.warn(`[CLOB FETCH WARNING] for market ${marketId}: ${err.message}. Invoking fallback.`);
   }
 
-  // Fallback Integration: Derive current option contract price from spot price files
-  if (pos) {
-    try {
-      const title = (pos.event_title || '').toUpperCase();
-      let asset = null;
-      if (title.includes('BTC')) asset = 'BTC';
-      else if (title.includes('ETH')) asset = 'ETH';
-      else if (title.includes('SOL')) asset = 'SOL';
-      else if (title.includes('XRP')) asset = 'XRP';
-      else if (title.includes('DOGE')) asset = 'DOGE';
-      else if (title.includes('BNB')) asset = 'BNB';
-      else if (title.includes('HYPE')) asset = 'HYPE';
-
-      if (asset) {
-        let currentSpot = null;
-        // Try Pyth cache first
-        const pythFile = path.join(__dirname, '../../../../pyth_prices.json');
-        if (fs.existsSync(pythFile)) {
-          const pythData = JSON.parse(fs.readFileSync(pythFile, 'utf-8'));
-          if (pythData[asset] && typeof pythData[asset].price === 'number') {
-            currentSpot = pythData[asset].price;
-          }
-        }
-        // Try Chainlink second
-        if (currentSpot == null) {
-          const clFile = path.join(__dirname, '../../../../chainlink_prices.json');
-          if (fs.existsSync(clFile)) {
-            const clData = JSON.parse(fs.readFileSync(clFile, 'utf-8'));
-            if (clData[asset] && typeof clData[asset].price === 'number') {
-              currentSpot = clData[asset].price;
-            }
-          }
-        }
-
-        if (currentSpot != null) {
-          const orderId = pos.order_id || marketId;
-          if (!_entrySpotCache.has(orderId)) {
-            _entrySpotCache.set(orderId, currentSpot);
-          }
-          const entrySpot = _entrySpotCache.get(orderId);
-          const entryPrice = parseFloat(pos.entry_price || 0.5);
-          
-          let priceDiffPct = 0;
-          if (entrySpot > 0) {
-            priceDiffPct = (currentSpot - entrySpot) / entrySpot;
-          }
-          
-          // Heuristic scaling: 1% spot change shifts option price by 20%
-          const scalingFactor = 20.0;
-          const delta = priceDiffPct * scalingFactor;
-          
-          let derivedPrice = entryPrice;
-          if (pos.direction === 'YES') {
-            derivedPrice += delta;
-          } else {
-            derivedPrice -= delta;
-          }
-          
-          derivedPrice = Math.max(0.01, Math.min(0.99, derivedPrice));
-          const roundedDerived = Math.round(derivedPrice * 10000) / 10000;
-          
-          console.log(`[CLOB FALLBACK] Derived price for ${asset} (${pos.direction}): spot ${entrySpot} -> ${currentSpot} (${(priceDiffPct*100).toFixed(3)}%), contract ${entryPrice} -> ${roundedDerived}`);
-          return roundedDerived;
-        }
-      }
-    } catch (fallbackErr) {
-      console.error('[CLOB FALLBACK ERROR] Failed to derive fallback price:', fallbackErr.message);
-    }
-  }
-
-  // Final fallback: return last known current_price or entry_price
-  if (pos) {
-    return pos.current_price || pos.entry_price || null;
-  }
+  // Return null if not in cache (rely on python bot updates in positions_state.json)
   return null;
 }
 

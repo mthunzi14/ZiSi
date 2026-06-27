@@ -280,7 +280,7 @@ function startHeartbeatWatchdog() {
       if (botStopped) return;
       if (process.platform === 'win32' && !botProcess) return;
 
-      const stateFile = path.join(BOT_ROOT, 'account_state.json');
+      const stateFile = path.join(BOT_ROOT, 'data', 'account_state.json');
       if (fs.existsSync(stateFile)) {
         const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
         const lastUpdated = new Date(state.last_updated);
@@ -328,7 +328,7 @@ process.on('SIGTERM', () => { stopBot(); process.exit(0); });
 
 // ── Integrated health monitor ─────────────────────────────────────────────────
 function startHealthMonitor() {
-  const stateFile = path.join(BOT_ROOT, 'account_state.json');
+  const stateFile = path.join(BOT_ROOT, 'data', 'account_state.json');
 
   const check = () => {
     try {
@@ -381,110 +381,38 @@ const _priceCache = new Map();
 const PRICE_CACHE_TTL_MS = 1000;
 const _entrySpotCache = new Map();
 
+let _spotPriceCache = {
+  pyth: { data: null, ts: 0 },
+  cl: { data: null, ts: 0 }
+};
+
+function getParsedSpotPrices(type) {
+  const now = Date.now();
+  const cache = _spotPriceCache[type];
+  if (cache.data && now - cache.ts < 200) {
+    return cache.data;
+  }
+  const filePath = type === 'pyth' ? pythPricesPath : chainlinkPricesPath;
+  try {
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      const data = JSON.parse(raw);
+      _spotPriceCache[type] = { data, ts: now };
+      return data;
+    }
+  } catch (err) {
+    // Fail silently
+  }
+  return cache.data || {};
+}
+
 async function _fetchClobPrice(marketId, pos) {
   if (!marketId || marketId === 'test_market_abc') return null;
   const cached = _priceCache.get(marketId);
-  if (cached && Date.now() - cached.ts < PRICE_CACHE_TTL_MS) return cached.price;
-  
-  try {
-    const r = await fetch(`https://clob.polymarket.com/book?token_id=${marketId}`, {
-      signal: AbortSignal.timeout(1500),
-    });
-    if (r.ok) {
-      const d = await r.json();
-      
-      const bidPrices = (d.bids || []).map(b => parseFloat(b.price)).filter(p => !isNaN(p));
-      const askPrices = (d.asks || []).map(a => parseFloat(a.price)).filter(p => !isNaN(p));
-      const bid = bidPrices.length ? Math.max(...bidPrices) : 0;
-      const ask = askPrices.length ? Math.min(...askPrices) : 0;
-      
-      const price = (bid > 0 && ask > 0) ? (bid + ask) / 2 : 0;
-      if (price > 0.01 && price < 0.99) {
-        const roundedPrice = Math.round(price * 10000) / 10000;
-        _priceCache.set(marketId, { price: roundedPrice, ts: Date.now() });
-        return roundedPrice;
-      }
-    } else {
-      console.warn(`[CLOB FETCH] Not OK status ${r.status} for market ${marketId}`);
-    }
-  } catch (err) {
-    console.warn(`[CLOB FETCH WARNING] for market ${marketId}: ${err.message}. Invoking fallback.`);
-  }
+  // Cache hits within 8 seconds are returned instantly
+  if (cached && Date.now() - cached.ts < 8000) return cached.price;
 
-  // Fallback Integration: Derive current option contract price from spot price files
-  if (pos) {
-    try {
-      const title = (pos.event_title || '').toUpperCase();
-      let asset = null;
-      if (title.includes('BTC')) asset = 'BTC';
-      else if (title.includes('ETH')) asset = 'ETH';
-      else if (title.includes('SOL')) asset = 'SOL';
-      else if (title.includes('XRP')) asset = 'XRP';
-      else if (title.includes('DOGE')) asset = 'DOGE';
-      else if (title.includes('BNB')) asset = 'BNB';
-      else if (title.includes('HYPE')) asset = 'HYPE';
-
-      if (asset) {
-        let currentSpot = null;
-        // Try Pyth cache first
-        const pythFile = path.join(BOT_ROOT, 'pyth_prices.json');
-        if (fs.existsSync(pythFile)) {
-          const pythData = JSON.parse(fs.readFileSync(pythFile, 'utf-8'));
-          if (pythData[asset] && typeof pythData[asset].price === 'number') {
-            currentSpot = pythData[asset].price;
-          }
-        }
-        // Try Chainlink second
-        if (currentSpot == null) {
-          const clFile = path.join(BOT_ROOT, 'chainlink_prices.json');
-          if (fs.existsSync(clFile)) {
-            const clData = JSON.parse(fs.readFileSync(clFile, 'utf-8'));
-            if (clData[asset] && typeof clData[asset].price === 'number') {
-              currentSpot = clData[asset].price;
-            }
-          }
-        }
-
-        if (currentSpot != null) {
-          const orderId = pos.order_id || marketId;
-          if (!_entrySpotCache.has(orderId)) {
-            _entrySpotCache.set(orderId, currentSpot);
-          }
-          const entrySpot = _entrySpotCache.get(orderId);
-          const entryPrice = parseFloat(pos.entry_price || 0.5);
-          
-          let priceDiffPct = 0;
-          if (entrySpot > 0) {
-            priceDiffPct = (currentSpot - entrySpot) / entrySpot;
-          }
-          
-          // Heuristic scaling: 1% spot change shifts option price by 20%
-          const scalingFactor = 20.0;
-          const delta = priceDiffPct * scalingFactor;
-          
-          let derivedPrice = entryPrice;
-          if (pos.direction === 'YES') {
-            derivedPrice += delta;
-          } else {
-            derivedPrice -= delta;
-          }
-          
-          derivedPrice = Math.max(0.01, Math.min(0.99, derivedPrice));
-          const roundedDerived = Math.round(derivedPrice * 10000) / 10000;
-          
-          console.log(`[CLOB FALLBACK] Derived price for ${asset} (${pos.direction}): spot ${entrySpot} -> ${currentSpot} (${(priceDiffPct*100).toFixed(3)}%), contract ${entryPrice} -> ${roundedDerived}`);
-          return roundedDerived;
-        }
-      }
-    } catch (fallbackErr) {
-      console.error('[CLOB FALLBACK ERROR] Failed to derive fallback price:', fallbackErr.message);
-    }
-  }
-
-  // Final fallback: return last known current_price or entry_price
-  if (pos) {
-    return pos.current_price || pos.entry_price || null;
-  }
+  // Return null if not in cache (rely on python bot updates in positions_state.json)
   return null;
 }
 
@@ -630,17 +558,28 @@ function getBalancePayload() {
 
 function getCandleBoundaryPayload() {
   const now = Math.floor(Date.now() / 1000);
+  
+  let potentialTrades = {};
+  try {
+    const ptPath = path.join(BOT_ROOT, 'data', 'potential_trades.json');
+    if (fs.existsSync(ptPath)) {
+      potentialTrades = JSON.parse(fs.readFileSync(ptPath, 'utf-8'));
+    }
+  } catch (err) {
+    // Ignore read error
+  }
+
   return [
-    { asset: 'BTC', tf: '5m',  secs: 300 - (now % 300) },
-    { asset: 'BTC', tf: '15m', secs: 900 - (now % 900) },
-    { asset: 'ETH', tf: '5m',  secs: 300 - (now % 300) },
-    { asset: 'ETH', tf: '15m', secs: 900 - (now % 900) },
-    { asset: 'SOL', tf: '5m',  secs: 300 - (now % 300) },
-    { asset: 'SOL', tf: '15m', secs: 900 - (now % 900) },
-    { asset: 'XRP', tf: '5m',  secs: 300 - (now % 300) },
-    { asset: 'XRP', tf: '15m', secs: 900 - (now % 900) },
-    { asset: 'DOGE', tf: '5m',  secs: 300 - (now % 300) },
-    { asset: 'DOGE', tf: '15m', secs: 900 - (now % 900) },
+    { asset: 'BTC', tf: '5m',  secs: 300 - (now % 300), potential: !!potentialTrades['BTC/5m'] },
+    { asset: 'BTC', tf: '15m', secs: 900 - (now % 900), potential: !!potentialTrades['BTC/15m'] },
+    { asset: 'ETH', tf: '5m',  secs: 300 - (now % 300), potential: !!potentialTrades['ETH/5m'] },
+    { asset: 'ETH', tf: '15m', secs: 900 - (now % 900), potential: !!potentialTrades['ETH/15m'] },
+    { asset: 'SOL', tf: '5m',  secs: 300 - (now % 300), potential: !!potentialTrades['SOL/5m'] },
+    { asset: 'SOL', tf: '15m', secs: 900 - (now % 900), potential: !!potentialTrades['SOL/15m'] },
+    { asset: 'XRP', tf: '5m',  secs: 300 - (now % 300), potential: !!potentialTrades['XRP/5m'] },
+    { asset: 'XRP', tf: '15m', secs: 900 - (now % 900), potential: !!potentialTrades['XRP/15m'] },
+    { asset: 'DOGE', tf: '5m',  secs: 300 - (now % 300), potential: !!potentialTrades['DOGE/5m'] },
+    { asset: 'DOGE', tf: '15m', secs: 900 - (now % 900), potential: !!potentialTrades['DOGE/15m'] },
   ];
 }
 
@@ -681,63 +620,123 @@ async function sendInitialState(ws) {
   } catch (err) {}
 }
 
-let lastPositionsWrite = 0;
-let lastBalanceWrite = 0;
+const dataDir = path.join(BOT_ROOT, 'data');
+let lastDataDirEvent = 0;
 
-if (fs.existsSync(positionsStatePath)) {
-  fs.watch(positionsStatePath, (eventType) => {
-    if (eventType === 'change') {
+if (fs.existsSync(dataDir)) {
+  try {
+    fs.watch(dataDir, (eventType, filename) => {
+      if (!filename) return;
       const now = Date.now();
-      if (now - lastPositionsWrite > 250) {
-        lastPositionsWrite = now;
+      if (now - lastDataDirEvent < 100) return;
+      lastDataDirEvent = now;
+
+      if (filename.includes('positions_state.json')) {
         setTimeout(pushPositionsUpdate, 50);
-      }
-    }
-  });
-}
-
-if (fs.existsSync(accountStatePath)) {
-  fs.watch(accountStatePath, (eventType) => {
-    if (eventType === 'change') {
-      const now = Date.now();
-      if (now - lastBalanceWrite > 250) {
-        lastBalanceWrite = now;
+      } else if (filename.includes('account_state.json')) {
         setTimeout(pushBalanceUpdate, 50);
+      } else if (filename.includes('pyth_prices.json') || filename.includes('chainlink_prices.json')) {
+        setTimeout(() => {
+          Promise.all([pushBalanceUpdate(), pushPositionsUpdate()]).catch(() => {});
+        }, 50);
       }
-    }
-  });
+    });
+    console.log(`👁️  Watching data directory: ${dataDir}`);
+  } catch (e) {
+    console.error(`⚠️  Failed to watch data directory ${dataDir}:`, e.message);
+  }
 }
 
-let lastPricesPush = 0;
-function setupPriceWatches() {
-  const watchFile = (filePath) => {
-    if (fs.existsSync(filePath)) {
-      try {
-        fs.watch(filePath, (eventType) => {
-          if (eventType === 'change') {
-            const now = Date.now();
-            if (now - lastPricesPush > 250) {
-              lastPricesPush = now;
-              setTimeout(() => {
-                Promise.all([pushBalanceUpdate(), pushPositionsUpdate()]).catch((err) => {
-                  console.error('[SERVER] Price watch broadcast failed:', err.message);
-                });
-              }, 50);
-            }
-          }
-        });
-        console.log(`👁️  Watching price file: ${filePath}`);
-      } catch (e) {
-        console.error(`⚠️  Failed to watch ${filePath}:`, e.message);
+let lastPositionsMtime = 0;
+let lastAccountMtime = 0;
+
+// Guaranteed real-time fallback polling (optimized to stats-only non-blocking checks)
+setInterval(async () => {
+  if (wsClients.size === 0) return;
+  
+  try {
+    if (fs.existsSync(positionsStatePath)) {
+      const stat = fs.statSync(positionsStatePath);
+      if (stat.mtimeMs !== lastPositionsMtime) {
+        lastPositionsMtime = stat.mtimeMs;
+        await pushPositionsUpdate();
       }
-    } else {
-      setTimeout(() => watchFile(filePath), 5000);
     }
-  };
-  watchFile(chainlinkPricesPath);
-  watchFile(pythPricesPath);
+  } catch (err) {
+    // Fail silently
+  }
+
+  try {
+    if (fs.existsSync(accountStatePath)) {
+      const stat = fs.statSync(accountStatePath);
+      if (stat.mtimeMs !== lastAccountMtime) {
+        lastAccountMtime = stat.mtimeMs;
+        await pushBalanceUpdate();
+      }
+    }
+  } catch (err) {
+    // Fail silently
+  }
+}, 500);
+
+// Send ping every 5 seconds to keep WebSocket connections alive and prevent SSH tunnel timeouts
+setInterval(() => {
+  if (wsClients.size > 0) {
+    const pingMessage = JSON.stringify({ type: 'ping', ts: Date.now() });
+    for (const client of wsClients) {
+      if (client.readyState === 1) { // OPEN
+        client.send(pingMessage);
+      }
+    }
+  }
+}, 5000);
+
+// Background fetcher to keep polymarket prices fresh without blocking the main event loop
+async function updateClobPricesBackground() {
+  if (!fs.existsSync(positionsStatePath)) return;
+  try {
+    const raw = fs.readFileSync(positionsStatePath, 'utf-8').trim();
+    if (!raw) return;
+    const positions = JSON.parse(raw.replace(/^﻿/, ''));
+    const active = positions.active || [];
+    let updated = false;
+    for (const pos of active) {
+      if (pos.market === 'POLYMARKET') {
+        const marketId = pos.market_id || pos.order_id;
+        if (marketId && marketId !== 'test_market_abc') {
+          try {
+            const r = await fetch(`https://clob.polymarket.com/book?token_id=${marketId}`, {
+              headers: { 'User-Agent': 'Mozilla/5.0' },
+              signal: AbortSignal.timeout(1500),
+            });
+            if (r.ok) {
+              const d = await r.json();
+              const bidPrices = (d.bids || []).map(b => parseFloat(b.price)).filter(p => !isNaN(p));
+              const askPrices = (d.asks || []).map(a => parseFloat(a.price)).filter(p => !isNaN(p));
+              const bid = bidPrices.length ? Math.max(...bidPrices) : 0;
+              const ask = askPrices.length ? Math.min(...askPrices) : 0;
+              const price = (bid > 0 && ask > 0) ? (bid + ask) / 2 : 0;
+              if (price > 0.01 && price < 0.99) {
+                const roundedPrice = Math.round(price * 10000) / 10000;
+                _priceCache.set(marketId, { price: roundedPrice, ts: Date.now() });
+                updated = true;
+              }
+            }
+          } catch (err) {
+            // Ignore background fetch error
+          }
+        }
+      }
+    }
+    if (updated) {
+      pushPositionsUpdate();
+    }
+  } catch (err) {}
 }
-setupPriceWatches();
+
+// Run background clob price update every 5 seconds
+setInterval(updateClobPricesBackground, 5000);
+updateClobPricesBackground();
 
 setInterval(() => {
   if (wsClients.size > 0) {

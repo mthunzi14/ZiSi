@@ -152,11 +152,14 @@ async def request_trade_slot(
         
         total_open = len(open_positions)
         asset_open = 0
+        tf_tag = f"[{timeframe.upper()}]"
         for p in open_positions:
             t = p.get("event_title") or ""
             p_asset = (p.get("asset") or _parse_asset_from_title(t) or "").upper()
             if p_asset == asset_upper:
-                asset_open += 1
+                p_tf = (p.get("timeframe") or "").lower()
+                if (p_tf == timeframe.lower()) or (tf_tag in t):
+                    asset_open += 1
                 
         if total_open >= max_total_open:
             log.info("[GOVERNOR] Total exposure ceiling reached: %d/%d open positions", total_open, max_total_open)

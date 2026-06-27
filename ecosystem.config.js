@@ -18,6 +18,15 @@ module.exports = {
       autorestart: true,
       watch: false,
       env: { PORT: '5000', NODE_ENV: 'production' }
+    },
+    {
+      name: 'zisi-telemetry',
+      script: '/root/ZiSi/venv/bin/python3',
+      args: 'telemetry_exporter.py',
+      cwd: '/root/ZiSi',
+      interpreter: 'none',
+      autorestart: true,
+      watch: false,
     }
   ]
 };

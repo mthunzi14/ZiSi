@@ -126,6 +126,11 @@ def decide_signal(
     if params is None:
         if regime:
             regime_upper = regime.upper()
+            if regime_upper == "TREND":
+                regime_upper = "TRENDING"
+            elif regime_upper == "MEAN_REVERSION":
+                regime_upper = "MEAN_REVERTING"
+            
             if regime_upper in REGIME_RSI_PARAMS:
                 p = REGIME_RSI_PARAMS[regime_upper]
             else:
@@ -166,6 +171,14 @@ def decide_signal(
     elif rsi > p["reversal_hi"]:
         res.update(direction="DOWN", score=p["reversal_score"], is_reversal=True)
         return res
+
+    # Low-Volatility Veto (Sprint 12 - Optimal ATR-only): block 5m and 15m entries under extremely low volatility.
+    # When atr_percentile <= 20.0, the price is in a flat squeeze where indicators trigger
+    # on minor noise, leading to fake breakouts/fake signals. Omit BBW to preserve optimal trade volume.
+    if timeframe in ("5m", "15m") and atr_percentile is not None:
+        if atr_percentile <= 20.0:
+            res["blocked"] = True
+            return res
 
     # Volatility Veto (Sprint 5): block 5m mean-reversion entries under extreme volatility.
     # PURE: percentiles are passed in by the caller (the live engine reads regime_status.json

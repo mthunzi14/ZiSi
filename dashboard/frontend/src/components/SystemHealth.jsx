@@ -2,14 +2,14 @@
 import { useState } from 'react';
 
 function StatusDot({ ok, warn, off, pulse = false }) {
-  const color = off ? '#ef4444' : warn ? '#f97316' : '#10b981';
+  const color = 'var(--color-logo)';
   return (
     <span style={{
       display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
       background: color,
-      boxShadow: `0 0 ${ok && pulse ? '5px' : '2px'} ${color}88`,
+      boxShadow: `0 0 ${ok && pulse ? '5px' : '2px'} rgba(148, 163, 184, 0.5)`,
       flexShrink: 0,
-      animation: ok && pulse ? 'alertPulse 2.5s infinite' : 'none',
+      animation: ok && pulse ? 'slatePulse 2.5s infinite' : 'none',
     }} />
   );
 }
@@ -24,8 +24,8 @@ function KPI({ label, value, sub, color }) {
   );
 }
 
-function DataRow({ label, value, ok, warn, off }) {
-  const valColor = off ? '#ef4444' : warn ? '#f97316' : ok ? '#10b981' : '#a1a1aa';
+function DataRow({ label, value, ok, warn, off, color }) {
+  const valColor = color || 'var(--color-logo)';
   return (
     <div style={{
       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -40,12 +40,12 @@ function DataRow({ label, value, ok, warn, off }) {
   );
 }
 
-function SecHead({ title, color }) {
+function SecHead({ title }) {
   return (
     <div style={{
       fontSize: 8, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase',
-      color: color || '#00cbd6', marginTop: 10, marginBottom: 3, paddingBottom: 3,
-      borderBottom: `1px solid ${color || '#00cbd6'}33`,
+      color: 'var(--color-logo)', marginTop: 10, marginBottom: 3, paddingBottom: 3,
+      borderBottom: '1px solid rgba(148, 163, 184, 0.2)',
     }}>{title}</div>
   );
 }
@@ -86,17 +86,17 @@ export default function SystemHealth({ state = {}, positions = {}, candles = [],
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: expanded ? 12 : 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15 }}>System Health</span>
+          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: 'var(--color-logo)' }}>System Health</span>
 
           <span style={{
             display: 'inline-flex', alignItems: 'center', gap: 5,
-            background: `${liveColor}15`, border: `1px solid ${liveColor}44`,
+            background: 'rgba(148, 163, 184, 0.08)', border: '1px solid rgba(148, 163, 184, 0.2)',
             borderRadius: 8, padding: '3px 9px',
-            fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: liveColor,
+            fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--color-logo)',
           }}>
             <span style={{
-              width: 5, height: 5, borderRadius: '50%', background: liveColor,
-              display: 'inline-block', animation: isAlive ? 'alertPulse 2s infinite' : 'none',
+              width: 5, height: 5, borderRadius: '50%', background: 'var(--color-logo)',
+              display: 'inline-block', animation: isAlive ? 'slatePulse 2s infinite' : 'none',
             }} />
             {liveLabel}
           </span>
@@ -122,11 +122,11 @@ export default function SystemHealth({ state = {}, positions = {}, candles = [],
           <KPI label="Balance"
             value={`$${balance.toFixed(2)}`}
             sub={`started $${startBalance.toFixed(2)}`}
-            color={balance >= startBalance ? '#10b981' : '#ef4444'} />
+            color="var(--color-logo)" />
           <KPI label="Net P&L"
             value={`${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`}
             sub={`${pnl >= 0 ? '+' : ''}${startBalance > 0 ? ((pnl/startBalance)*100).toFixed(1) : 0}%`}
-            color={pnl >= 0 ? '#10b981' : '#ef4444'} />
+            color="var(--color-logo)" />
           <KPI label="Win Rate"
             value={wr === '—' ? '—' : `${wr}%`}
             sub={`${wins}W · ${losses}L`}
@@ -134,25 +134,25 @@ export default function SystemHealth({ state = {}, positions = {}, candles = [],
           <KPI label="Profit Factor"
             value={pf}
             sub={`${grossW.toFixed(2)} gross`}
-            color={parseFloat(pf) >= 1.5 || pf === '∞' ? '#10b981' : parseFloat(pf) >= 1 ? '#f97316' : '#ef4444'} />
+            color="var(--color-logo)" />
         </div>
 
-        <SecHead title="Infrastructure" color="#00cbd6" />
+        <SecHead title="Infrastructure" />
         <DataRow label="Engine heartbeat"  value={heartbeat}              ok={isAlive}   warn={isStale}  off={isOffline} />
         <DataRow label="Session uptime"    value={uptime}                 ok={!!state.running} warn={false} off={!state.running} />
         <DataRow label="Open positions"    value={`${active.length} / 6`} ok={active.length <= 3} warn={active.length > 3 && active.length < 6} off={active.length >= 6} />
         <DataRow label="Daily drawdown"    value={`${drawPct.toFixed(1)}%`} ok={drawPct < 5} warn={drawPct >= 5 && drawPct < 12} off={drawPct >= 12} />
 
-        <SecHead title="Circuit Breaker" color="#f97316" />
+        <SecHead title="Circuit Breaker" />
         <DataRow label="CB status"      value={cbActive ? `ACTIVE` : 'CLEAR'}             ok={!cbActive} off={cbActive} />
         <DataRow label="Trades session" value={state.trades_executed ?? closed.length}     ok />
 
-        <SecHead title="Session Stats" color="#2b7fff" />
+        <SecHead title="Session Stats" />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: 16 }}>
           <DataRow label="Starting bal" value={`$${startBalance.toFixed(2)}`} ok />
           <DataRow label="Current bal"  value={`$${balance.toFixed(2)}`}      ok={balance >= startBalance} warn={balance < startBalance && balance > startBalance * 0.9} off={balance <= startBalance * 0.9} />
-          <DataRow label="Avg win"  value={wins > 0 ? `+$${(grossW/wins).toFixed(2)}` : '—'}       ok={wins > 0} />
-          <DataRow label="Avg loss" value={losses > 0 ? `-$${(grossL/losses).toFixed(2)}` : '—'}   ok={losses === 0} warn={losses > 0 && (grossL/losses) < 3} off={losses > 0 && (grossL/losses) >= 5} />
+          <DataRow label="Avg win"  value={wins > 0 ? `+$${(grossW/wins).toFixed(2)}` : '—'}       ok={wins > 0} color="#10b981" />
+          <DataRow label="Avg loss" value={losses > 0 ? `-$${(grossL/losses).toFixed(2)}` : '—'}   ok={losses === 0} warn={losses > 0 && (grossL/losses) < 3} off={losses > 0 && (grossL/losses) >= 5} color="#ef4444" />
         </div>
 
       </div>

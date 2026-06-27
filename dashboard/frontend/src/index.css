@@ -25,12 +25,12 @@
   --color-text-primary:   #fafaf9;
   --color-text-secondary: #94a3b8;
   --color-text-muted:     #64748b;
-  --color-accent:         #00cbd6;   /* premium bright ocean cyan accent */
+  --color-accent:         #94a3b8;   /* premium slate-gray accent */
   --color-logo:           #94a3b8;   /* slate-gray brand logo */
   --color-profit:         #10b981;   /* premium bright emerald green */
   --color-loss:           #ef4444;   /* premium vibrant ruby red */
   --color-amber:          #f97316;   /* premium warm amber */
-  --color-accent-muted:   #0891b2;
+  --color-accent-muted:   #64748b;
 
   /* Typography variables */
   --font-primary: 'Outfit', 'DM Sans', system-ui, sans-serif;
@@ -93,12 +93,12 @@
   --color-text-primary:   #0f172a;
   --color-text-secondary: #334155;
   --color-text-muted:     #475569;
-  --color-accent:         #0891b2;   /* Premium high-contrast ocean cyan accent */
+  --color-accent:         #475569;   /* Premium high-contrast slate accent */
   --color-logo:           #475569;   /* darker gray brand logo */
   --color-profit:         #059669;   /* darker green for contrast */
   --color-loss:           #dc2626;   /* darker red for contrast */
   --color-amber:          #d97706;
-  --color-accent-muted:   #0369a1;
+  --color-accent-muted:   #64748b;
 
   /* Adjust shadow for light theme for high-end feel */
   --shadow-xs:      0 1px 2px rgba(15,23,42,0.05);
@@ -146,7 +146,7 @@ html, body {
   border-left: 1px solid var(--color-border);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 203, 214, 0.45);
+  background: rgba(148, 163, 184, 0.45);
   border-radius: 9999px;
   border: 2.5px solid #08080a;
 }
@@ -159,31 +159,7 @@ html, body {
    CUSTOM ADVANCED EFFECTS (Border Beam & Liquid Metal)
    ========================================================================== */
 
-/* Conic Border Beam Animation */
-.border-beam-card {
-  position: relative;
-  overflow: hidden;
-}
-.border-beam-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1px; /* border thickness */
-  background: conic-gradient(
-    from var(--gradient-angle),
-    transparent 0deg,
-    transparent 180deg,
-    var(--color-accent) 270deg,
-    transparent 360deg
-  );
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
-  animation: fd-border-spin 4s linear infinite;
-  z-index: 5;
-}
+
 
 /* Premium Liquid Metal Effect with Ocean Cyan & Chrome Shine */
 .metal-fx {
@@ -207,9 +183,9 @@ html, body {
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(0, 203, 214, 0.15),
+    rgba(148, 163, 184, 0.15),
     rgba(255, 255, 255, 0.35),
-    rgba(0, 203, 214, 0.15),
+    rgba(148, 163, 184, 0.15),
     transparent
   );
   transform: skewX(-25deg);
@@ -223,7 +199,7 @@ html, body {
 .metal-fx:hover {
   transform: translateY(-2px);
   border-color: var(--color-accent) !important;
-  box-shadow: 0 6px 20px rgba(0, 203, 214, 0.25), inset 0 1px 1px rgba(255, 255, 255, 0.2) !important;
+  box-shadow: 0 6px 20px rgba(148, 163, 184, 0.12), inset 0 1px 1px rgba(255, 255, 255, 0.2) !important;
 }
 .metal-fx:active {
   transform: translateY(0);
@@ -592,7 +568,7 @@ html, body {
 /* ── 120fps GPU compositing hints ───────────────────────────────────────── */
 .t-page { contain: layout style; }
 .glass-panel, .card { will-change: auto; }
-.border-beam-card { will-change: transform; }
+
 .sidebar { transform: translateZ(0); }
 .nav-item { will-change: background-color, color; }
 

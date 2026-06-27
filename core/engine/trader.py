@@ -125,6 +125,26 @@ def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, ti
         _title_upper = (title or "").upper()
         pillar, t_type = _derive_pillar_and_type(_title_upper)
 
+        if "REVERSAL_SNIPE" in _title_upper or "REVERSAL-SNIPE" in _title_upper:
+            log.info("[SL-CALIB] Reversal Snipe '%s' entry=%.4f -> target 0.99, hold to expiry", title, entry_price)
+            return 0.99, -1.0
+
+        _is_short_tf = "5M" in _title_upper or "15M" in _title_upper or "UPDOWN" in _title_upper
+        if _is_short_tf:
+            # 5m gets a tighter target (72¢) — achievable in 5 minutes
+            # 15m keeps 88¢ — has the full window to run
+            _is_5m = "][5M]" in _title_upper
+            target = 0.72 if _is_5m else 0.88
+            if entry_price >= target:
+                target = min(0.99, round(entry_price + 0.04, 4))
+            log.info("[SL-CALIB] Short-TF trade '%s' (entry=%.4f) -> target %.4f, stop -1.0", title, entry_price, target)
+            return target, -1.0
+
+        # Sweeper entries at 90-99¢: target is resolution (0.99), no stop — hold to expiry
+        if entry_price >= 0.90 or "T2_SWEEPER" in _title_upper or "SWEEP" in _title_upper:
+            log.info("[SL-CALIB] Sweeper/near-certain trade '%s' entry=%.2f -> target 0.99, hold to expiry", title, entry_price)
+            return 0.99, -1.0
+
         # 1. If ASYMMETRIC_BARBELL and entry_price <= 0.20: hold to expiration (stop_loss = -1.0)
         if pillar == "ASYMMETRIC_BARBELL" and entry_price <= 0.20:
             _is_5m = "][5M]" in _title_upper
@@ -138,21 +158,6 @@ def _calculate_exit_targets_fallback(entry_price: float, amount_spent: float, ti
             target = 0.72 if _is_5m else 0.88
             log.info("[SL-CALIB] Midpoint trade '%s' entry=%.2f -> target %.2f, stop 0.20 (salvage)", title, entry_price, target)
             return target, 0.20
-
-        # Sweeper entries at 90-99¢: target is resolution (0.99), no stop — hold to expiry
-        if entry_price >= 0.90 or "T2_SWEEPER" in _title_upper or "SWEEP" in _title_upper:
-            log.info("[SL-CALIB] Sweeper/near-certain trade '%s' entry=%.2f -> target 0.99, hold to expiry", title, entry_price)
-            return 0.99, -1.0
-        _is_short_tf = "5M" in _title_upper or "15M" in _title_upper or "UPDOWN" in _title_upper
-        if _is_short_tf:
-            # 5m gets a tighter target (72¢) — achievable in 5 minutes
-            # 15m keeps 88¢ — has the full window to run
-            _is_5m = "][5M]" in _title_upper
-            target = 0.72 if _is_5m else 0.88
-            if entry_price >= target:
-                target = min(0.99, round(entry_price + 0.04, 4))
-            log.info("[SL-CALIB] Short-TF trade '%s' (entry=%.4f) -> target %.4f, stop -1.0", title, entry_price, target)
-            return target, -1.0
 
         from core.risk.risk_manager import calculate_exit_targets
         res = calculate_exit_targets(entry_price, amount_spent, direction)
@@ -477,6 +482,12 @@ def place_order(
     """
     cfg = _get_config()
     mode = cfg["BOT_MODE"]
+
+    # Block entries on historical or expired events
+    import time as _time
+    if expiry_ts > 0 and expiry_ts <= int(_time.time()):
+        log.warning("[TRADE] Blocking entry attempt on expired market: %s", event_title)
+        return None
 
     # Shares-first sizing (ZiSi sovereign pattern): avoids USD→shares rounding drift at low prices.
     # Polymarket uses whole shares — round to nearest integer, minimum 1.
@@ -994,8 +1005,8 @@ def _resolve_updown_by_binance_candle(pos: dict) -> Optional[float]:
         if not interval_s:
             return None
 
-        # The candle that resolved this market opened at expiry_ts
-        candle_open_ms = int(expiry_ts * 1000)
+        # The candle that resolved this market closed at expiry_ts (meaning it opened interval_s seconds earlier)
+        candle_open_ms = int((expiry_ts - interval_s) * 1000)
 
         resp = requests.get(
             "https://api.binance.com/api/v3/klines",
@@ -1069,7 +1080,7 @@ def check_and_close_paper_trades(max_hold_minutes: int = 240) -> list[dict]:
         _is_short_tf = "5M" in _ev_title or "15M" in _ev_title or "UPDOWN" in _ev_title
 
         _trade_type = pos.get("trade_type", "SIGNAL")
-        _is_ncs_or_sweep = _trade_type in ("NCS", "SWEEP")
+        _is_ncs_or_sweep = _trade_type in ("NCS", "SWEEP", "REVERSAL-SNIPE")
 
         target_price = pos.get("target_price")
         if _is_short_tf:
@@ -1359,7 +1370,7 @@ def check_exit_condition(
     _ev_title = (pos.get("event_title") or "").upper()
     _is_short_tf = "5M" in _ev_title or "15M" in _ev_title or "UPDOWN" in _ev_title
     _trade_type = pos.get("trade_type", "SIGNAL")
-    _is_ncs_or_sweep = _trade_type in ("NCS", "SWEEP")
+    _is_ncs_or_sweep = _trade_type in ("NCS", "SWEEP", "REVERSAL-SNIPE")
     effective_stop_loss = stop_loss if (stop_loss is not None and stop_loss > 0) else (-1.0 if _is_short_tf else stop_loss)
     effective_target_price = 0.99 if _is_ncs_or_sweep else target_price
     
@@ -1668,6 +1679,7 @@ def persist_positions() -> None:
                     "expiry_ts":        pos.get("expiry_ts", 0),
                     "entry_type":       pos.get("entry_type", "SIGNAL"),
                     "trade_type":       _derive_trade_type(pos.get("entry_type","SIGNAL")),
+                    "regime":           pos.get("regime", "UNKNOWN"),
                 })
             else:
                 current_price = pos.get("current_price", entry_price)
@@ -1692,6 +1704,7 @@ def persist_positions() -> None:
                     "expiry_ts":      pos.get("expiry_ts", 0),
                     "entry_type":     pos.get("entry_type", "SIGNAL"),
                     "trade_type":     _derive_trade_type(pos.get("entry_type","SIGNAL")),
+                    "regime":         pos.get("regime", "UNKNOWN"),
                 })
 
         # Newest closed trades first

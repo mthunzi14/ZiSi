@@ -213,7 +213,7 @@ export default function Settings() {
     <div className="page-fade-enter" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       {/* Bento Widget 1: System Control */}
       <div 
-        className="card glass-surface border-beam-card"
+        className="card glass-surface"
         style={{
           padding: '32px',
           borderRadius: '24px',
@@ -346,7 +346,7 @@ export default function Settings() {
 
       {/* Info Widget */}
       <div 
-        className="card glass-surface border-beam-card"
+        className="card glass-surface"
         style={{
           padding: '24px',
           borderRadius: '24px',

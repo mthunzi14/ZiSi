@@ -1,5 +1,5 @@
 // TradeFeed.jsx — tabbed trade ledger: Open Positions + Trade History
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import SpotlightMask from './common/SpotlightMask';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -95,7 +95,7 @@ const ENTRY_TYPE_CONFIG = {
   'FAIR-VAL':          { label: 'FV',        color: '#00d4a3' },
   'REVERSAL-SNIPE':    { label: 'REV SNIPE', color: '#ff007a' },
   'REVERSAL-STREAK':   { label: 'REV STREAK',color: '#e076ff' },
-  'SIGNAL':            { label: 'SIG',       color: 'var(--color-text-muted)' },
+  'SIGNAL':            { label: 'SIG',       color: '#00e5ff' },
   'SWEEP':             { label: 'SWEEP',      color: '#eab308' },
   'CLOSE-SNIPE':       { label: 'NCS',        color: '#e27622' },
   'CLOSE-SNIPE-EARLY': { label: 'NCS',        color: '#e27622' },
@@ -271,11 +271,11 @@ function CandleCountdownBar({ assetMacro = {} }) {
     return () => clearInterval(id);
   }, []);
 
-  const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'LINK', 'BNB'];
+  const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
   const dColor  = d => d === 'UP' ? '#10b981' : d === 'DOWN' ? '#ef4444' : '#52525b';
   const dGlyph  = d => d === 'UP' ? '↑' : d === 'DOWN' ? '↓' : '→';
 
-  const timerColor = p => p < 15 ? '#ef4444' : p < 30 ? '#f97316' : '#00cbd6';
+  const timerColor = p => p < 15 ? '#ef4444' : p < 30 ? '#f97316' : 'var(--color-logo)';
 
   return (
     <div style={{
@@ -346,7 +346,7 @@ function CollapsiblePanel({ title, children, defaultOpen = false, badge = null, 
         }}
       >
         <span style={{
-          color: open ? accent : 'var(--color-text-muted)',
+          color: 'var(--color-text-secondary)',
           fontSize: 9, fontWeight: 700, letterSpacing: '0.07em',
           textTransform: 'uppercase', flex: 1, textAlign: 'left',
           transition: 'color 0.2s',
@@ -411,7 +411,7 @@ function MiniSparkline({ values, color, label, width = 80, height = 24 }) {
 
 // ── Session Analytics (drawdown + per-type equity) ────────────────────────────
 
-function SessionAnalytics({ closed }) {
+const SessionAnalytics = memo(function SessionAnalytics({ closed }) {
   if (closed.length === 0) return null;
 
   // Build running P&L from chronological order
@@ -463,7 +463,7 @@ function SessionAnalytics({ closed }) {
   const maxDDColor= maxDD > 8 ? '#ef4444' : maxDD > 4 ? '#f97316' : '#10b981';
 
   return (
-    <CollapsiblePanel title="Session Analytics" defaultOpen={true} accentColor="#00cbd6">
+    <CollapsiblePanel title="Session Analytics" defaultOpen={true} accentColor="var(--color-logo)">
       <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         {/* Drawdown stats */}
         <div style={{ display: 'flex', gap: 16 }}>
@@ -486,25 +486,25 @@ function SessionAnalytics({ closed }) {
           {ncsSeries.length > 1 && <MiniSparkline values={ncsSeries} color="#e27622" label="NCS" />}
           {revSnipeSeries.length > 1 && <MiniSparkline values={revSnipeSeries} color="#ff007a" label="REV SNIPE" />}
           {revStreakSeries.length > 1 && <MiniSparkline values={revStreakSeries} color="#e076ff" label="REV STREAK" />}
-          {sigSeries.length > 1 && <MiniSparkline values={sigSeries} color="#a1a1aa" label="SIG" />}
+          {sigSeries.length > 1 && <MiniSparkline values={sigSeries} color="#00e5ff" label="SIG" />}
           {sweepSeries.length > 1 && <MiniSparkline values={sweepSeries} color="#eab308" label="SWEEP" />}
           {dualSeries.length > 1 && <MiniSparkline values={dualSeries} color="#9945ff" label="DUAL" />}
         </div>
       </div>
     </CollapsiblePanel>
   );
-}
+});
 
 // ── Asset Heatmap ─────────────────────────────────────────────────────────────
 
-function AssetHeatmap({ closed }) {
+const AssetHeatmap = memo(function AssetHeatmap({ closed }) {
   if (closed.length === 0) return null;
 
-  const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'LINK', 'BNB'];
+  const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
 
   const stats = ASSETS.map(asset => {
     const trades = closed.filter(t => {
-      const tag = (t.event_title || '').match(/\[(BTC|ETH|SOL|XRP|DOGE|LINK|BNB)\]/);
+      const tag = (t.event_title || '').match(/\[(BTC|ETH|SOL|XRP|DOGE)\]/);
       return tag && tag[1] === asset;
     });
     if (trades.length === 0) return null;
@@ -557,11 +557,11 @@ function AssetHeatmap({ closed }) {
       </div>
     </CollapsiblePanel>
   );
-}
+});
 
 // ── Source Heatmap ────────────────────────────────────────────────────────────
 
-function SourceHeatmap({ closed }) {
+const SourceHeatmap = memo(function SourceHeatmap({ closed }) {
   if (closed.length === 0) return null;
 
   const SOURCES = ['LAT ARB', 'FV', 'NCS', 'REV SNIPE', 'REV STREAK', 'SIG', 'SWEEP', 'DUAL'];
@@ -632,11 +632,11 @@ function SourceHeatmap({ closed }) {
       </div>
     </CollapsiblePanel>
   );
-}
+});
 
 // ── Timeframe Heatmap ─────────────────────────────────────────────────────────
 
-function TimeframeHeatmap({ closed }) {
+const TimeframeHeatmap = memo(function TimeframeHeatmap({ closed }) {
   if (closed.length === 0) return null;
 
   const TIMEFRAMES = ['5m', '15m', '1h'];
@@ -696,7 +696,131 @@ function TimeframeHeatmap({ closed }) {
       </div>
     </CollapsiblePanel>
   );
-}
+});
+
+// ── Assets vs Timeframe Heatmap ────────────────────────────────────────────────
+const AssetVsTimeframeHeatmap = memo(function AssetVsTimeframeHeatmap({ closed }) {
+  if (closed.length === 0) return null;
+
+  const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
+  const TIMEFRAMES = ['5m', '15m', '1h'];
+
+  const wrColor  = wr  => wr  >= 65 ? '#10b981' : wr  >= 50 ? '#f97316' : '#ef4444';
+  const netColor = net => net >= 0  ? '#10b981' : '#ef4444';
+
+  // Compute stats per (asset, tf) combination
+  const matrix = {};
+  ASSETS.forEach(asset => {
+    matrix[asset] = {};
+    TIMEFRAMES.forEach(tf => {
+      const trades = closed.filter(t => {
+        const meta = parseMeta(t);
+        return meta.asset === asset && meta.timeframe === tf;
+      });
+      if (trades.length === 0) {
+        matrix[asset][tf] = null;
+      } else {
+        const wins = trades.filter(t => parseFloat(t.realized_pnl || 0) > 0).length;
+        const wr = wins / trades.length * 100;
+        const net = trades.reduce((s, t) => s + parseFloat(t.realized_pnl || 0), 0);
+        matrix[asset][tf] = { count: trades.length, wr, net };
+      }
+    });
+    // Add asset row totals
+    const assetTrades = closed.filter(t => {
+      const meta = parseMeta(t);
+      return meta.asset === asset && TIMEFRAMES.includes(meta.timeframe);
+    });
+    if (assetTrades.length === 0) {
+      matrix[asset]['Total'] = null;
+    } else {
+      const wins = assetTrades.filter(t => parseFloat(t.realized_pnl || 0) > 0).length;
+      const wr = wins / assetTrades.length * 100;
+      const net = assetTrades.reduce((s, t) => s + parseFloat(t.realized_pnl || 0), 0);
+      matrix[asset]['Total'] = { count: assetTrades.length, wr, net };
+    }
+  });
+
+  return (
+    <CollapsiblePanel title="Assets vs Timeframe" defaultOpen={false} badge="5 assets × 3 TFs" accentColor="#00e5ff">
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 10 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+              <th style={{ padding: '4px 8px', textAlign: 'left', color: '#52525b', fontWeight: 600, fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.07em' }}>Asset</th>
+              {TIMEFRAMES.map(tf => (
+                <th key={tf} style={{ padding: '4px 8px', textAlign: 'center', color: '#52525b', fontWeight: 600, fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{tf}</th>
+              ))}
+              <th style={{ padding: '4px 8px', textAlign: 'center', color: '#52525b', fontWeight: 600, fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.07em' }}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ASSETS.map(asset => (
+              <tr key={asset} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                <td style={{ padding: '6px 8px', fontWeight: 700, fontSize: 11, color: 'var(--color-text-primary)' }}>{asset}</td>
+                {TIMEFRAMES.map(tf => {
+                  const cell = matrix[asset][tf];
+                  if (!cell) {
+                    return (
+                      <td key={tf} style={{ padding: '6px 8px', textAlign: 'center', color: 'var(--color-text-muted)', fontFamily: 'monospace' }}>
+                        —
+                      </td>
+                    );
+                  }
+                  return (
+                    <td key={tf} style={{ padding: '6px 8px', textAlign: 'center' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                        <span style={{
+                          background: `${wrColor(cell.wr)}18`,
+                          color: wrColor(cell.wr),
+                          borderRadius: 4, padding: '1px 4px',
+                          fontWeight: 700, fontFamily: 'monospace', fontSize: 9,
+                        }}>
+                          {cell.wr.toFixed(0)}% ({cell.count})
+                        </span>
+                        <span style={{ color: netColor(cell.net), fontFamily: 'monospace', fontWeight: 600, fontSize: 9 }}>
+                          {cell.net >= 0 ? '+' : ''}${cell.net.toFixed(1)}
+                        </span>
+                      </div>
+                    </td>
+                  );
+                })}
+                {/* Row Total */}
+                {(() => {
+                  const cell = matrix[asset]['Total'];
+                  if (!cell) {
+                    return (
+                      <td style={{ padding: '6px 8px', textAlign: 'center', color: 'var(--color-text-muted)', fontFamily: 'monospace' }}>
+                        —
+                      </td>
+                    );
+                  }
+                  return (
+                    <td style={{ padding: '6px 8px', textAlign: 'center', borderLeft: '1px dashed rgba(255,255,255,0.1)' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                        <span style={{
+                          background: `${wrColor(cell.wr)}24`,
+                          color: wrColor(cell.wr),
+                          borderRadius: 4, padding: '1px 5px',
+                          fontWeight: 800, fontFamily: 'monospace', fontSize: 9,
+                        }}>
+                          {cell.wr.toFixed(0)}% ({cell.count})
+                        </span>
+                        <span style={{ color: netColor(cell.net), fontFamily: 'monospace', fontWeight: 700, fontSize: 9 }}>
+                          {cell.net >= 0 ? '+' : ''}${cell.net.toFixed(1)}
+                        </span>
+                      </div>
+                    </td>
+                  );
+                })()}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </CollapsiblePanel>
+  );
+});
 
 // ── Gate Event Log ─────────────────────────────────────────────────────────────
 
@@ -706,7 +830,7 @@ const GATE_META = {
   'DIR-COOLDOWN': { color: '#2b7fff', label: 'COOLDOWN' },
   'TREND-CONFIRM':{ color: '#a855f7', label: 'TREND-CF' },
   'TREND-GATE':   { color: '#ef4444', label: 'TREND' },
-  'FV-EDGE-GATE': { color: '#00cbd6', label: 'FV-EDGE' },
+  'FV-EDGE-GATE': { color: 'var(--color-logo)', label: 'FV-EDGE' },
   'CORROBORATE':  { color: '#6b7280', label: 'CORR' },
   'VOL-SURGE':    { color: '#ec4899', label: 'VOL-SURGE' },
 };
@@ -794,7 +918,7 @@ function CountdownTimer({ expiry_ts }) {
     return () => clearInterval(id);
   }, [expiry_ts]);
 
-  const color = secs < 15 ? 'var(--color-loss)' : secs < 60 ? 'var(--color-amber)' : 'var(--color-profit)';
+  const color = secs < 15 ? 'var(--color-loss)' : secs < 60 ? 'var(--color-amber)' : 'var(--color-text-secondary)';
   const pulse = secs < 15 ? { animation: 'pulse 0.8s infinite' } : {};
   return (
     <span style={{ fontFamily: 'var(--font-mono)', color, fontSize: 11, ...pulse }}>
@@ -808,12 +932,54 @@ function CountdownTimer({ expiry_ts }) {
 const CLOSED_COLS  = ['In (Local)', 'Asset', 'TF', 'Src', 'Dir', 'Size ($)', 'Entry¢', 'Exit¢', 'Hold', 'Reason', 'P&L / %', 'Exit (Local)', 'Result'];
 const CLOSED_GRID  = '92px 52px 38px 38px 50px 50px 48px 48px 48px 58px 88px 62px 40px';
 
+function VirtualList({ items, renderRow, itemHeight = 38, containerHeight = 380 }) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const rafRef = useRef(null);
+
+  // Throttle scroll state updates to rAF cadence to avoid thrashing the UI thread
+  const onScroll = (e) => {
+    const top = e.currentTarget.scrollTop;
+    if (rafRef.current) return;
+    rafRef.current = requestAnimationFrame(() => {
+      setScrollTop(top);
+      rafRef.current = null;
+    });
+  };
+
+  const totalHeight = items.length * itemHeight;
+  const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - 2);
+  const endIndex = Math.min(items.length, Math.floor((scrollTop + containerHeight) / itemHeight) + 2);
+
+  const visibleItems = items.slice(startIndex, endIndex);
+  const offsetY = startIndex * itemHeight;
+
+  return (
+    <div
+      onScroll={onScroll}
+      style={{
+        overflowY: 'auto',
+        maxHeight: containerHeight,
+        position: 'relative',
+        flex: 1,
+        borderBottom: '1px solid var(--color-border-subtle)'
+      }}
+    >
+      <div style={{ height: totalHeight, width: '100%', position: 'relative' }}>
+        {/* will-change: transform promotes this layer to the GPU compositor — zero-cost scrolling */}
+        <div style={{ transform: `translateY(${offsetY}px)`, left: 0, right: 0, position: 'absolute', willChange: 'transform' }}>
+          {visibleItems.map((item, index) => renderRow(item, startIndex + index))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const OPEN_COLS    = ['In (Local)', 'Asset', 'TF', 'Dir', 'Src', 'Entry¢', 'Cur¢', 'Target¢', 'Stop¢', 'Unr P&L', 'Hold', 'Closes In'];
 const OPEN_GRID    = '66px 55px 42px 50px 40px 48px 48px 52px 48px 68px 48px 80px';
 
 // ── Row components ────────────────────────────────────────────────────────────
 
-function ClosedRow({ p }) {
+const ClosedRow = memo(function ClosedRow({ p }) {
   const meta   = parseMeta(p);
   const dir    = dirStr(p.direction);
   const pnl    = parseFloat(p.realized_pnl ?? 0);
@@ -831,6 +997,8 @@ function ClosedRow({ p }) {
       borderLeft: `3px solid ${rColor}`,
       borderBottom: '1px solid var(--color-border-subtle)',
       fontSize: 11,
+      height: 38,
+      boxSizing: 'border-box'
     }}>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtLocalDT(p.entry_time)}</span>
       <span style={{ fontFamily: 'var(--font-primary)', fontWeight: 700, fontSize: 13, color: 'var(--color-text-primary)' }}>{meta.asset}</span>
@@ -856,7 +1024,7 @@ function ClosedRow({ p }) {
       <span style={{ fontWeight: 800, fontSize: 10, letterSpacing: '0.06em', color: rColor }}>{result}</span>
     </div>
   );
-}
+});
 
 function OpenRow({ p }) {
   const meta    = parseMeta(p);
@@ -874,7 +1042,7 @@ function OpenRow({ p }) {
     <div style={{
       display: 'grid', gridTemplateColumns: OPEN_GRID, gap: 8, alignItems: 'center',
       padding: '7px 0 7px 8px',
-      borderLeft: `3px solid ${isDual ? 'var(--color-accent)' : 'var(--color-text-muted)'}`,
+      borderLeft: `3px solid ${isDual ? 'var(--color-logo)' : 'var(--color-text-muted)'}`,
       borderBottom: '1px solid var(--color-border-subtle)',
       fontSize: 11, fontStyle: 'italic', opacity: 0.9,
     }}>
@@ -903,7 +1071,7 @@ function OpenRow({ p }) {
       }}>{unrPnl >= 0 ? '+' : ''}${unrPnl.toFixed(2)}</span>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-text-muted)' }}>{fmtHoldMins(holdMin)}</span>
       {p.status === 'RESOLVING' ? (
-        <span style={{ color: 'var(--color-accent)', fontWeight: 700, animation: 'pulse 1.5s infinite' }}>Resolving...</span>
+        <span style={{ color: 'var(--color-logo)', fontWeight: 700, animation: 'pulse 1.5s infinite' }}>Resolving...</span>
       ) : expiry > 0 ? (
         <CountdownTimer expiry_ts={expiry} />
       ) : (
@@ -970,7 +1138,7 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
       >
         Open
         <span style={{
-          background: activeTab === 'open' ? 'var(--color-accent)' : 'var(--color-cream-dark)',
+          background: activeTab === 'open' ? 'var(--color-logo)' : 'var(--color-cream-dark)',
           color: activeTab === 'open' ? '#fff' : 'var(--color-text-secondary)',
           borderRadius: '10px',
           padding: '1px 6px',
@@ -1004,7 +1172,7 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
       >
         History
         <span style={{
-          background: activeTab === 'history' ? 'var(--color-accent)' : 'var(--color-cream-dark)',
+          background: activeTab === 'history' ? 'var(--color-logo)' : 'var(--color-cream-dark)',
           color: activeTab === 'history' ? '#fff' : 'var(--color-text-secondary)',
           borderRadius: '10px',
           padding: '1px 6px',
@@ -1020,19 +1188,7 @@ function SlidingTabs({ activeTab, setActiveTab, activeCount, historyCount }) {
 
 function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) {
   const containerRef = useRef(null);
-  const [pillStyle, setPillStyle] = useState({ transform: 'translateX(0px)', width: '0px', background: 'transparent', border: '1px solid transparent' });
-
-  const activeColor = useMemo(() => {
-    if (activeFilter === 'ALL') return 'rgba(255, 255, 255, 0.08)';
-    const cfg = entryTypeCfg(SRC_TO_ENTRY_TYPE[activeFilter]);
-    return `${cfg.color}1c`; // active transparent color
-  }, [activeFilter]);
-
-  const activeBorder = useMemo(() => {
-    if (activeFilter === 'ALL') return 'rgba(255, 255, 255, 0.2)';
-    const cfg = entryTypeCfg(SRC_TO_ENTRY_TYPE[activeFilter]);
-    return cfg.color;
-  }, [activeFilter]);
+  const [pillStyle, setPillStyle] = useState({ transform: 'translateX(0px)', width: '0px' });
 
   useEffect(() => {
     const container = containerRef.current;
@@ -1043,21 +1199,20 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
       setPillStyle({
         transform: `translateX(${activeBtn.offsetLeft}px)`,
         width: `${activeBtn.offsetWidth}px`,
-        background: activeColor,
-        border: `1px solid ${activeBorder}`,
       });
     }
-  }, [activeFilter, srcStats, closedCount, activeColor, activeBorder]);
+  }, [activeFilter, srcStats, closedCount]);
 
   return (
-    <div className="t-tabs" ref={containerRef} role="tablist" style={{ position: 'relative', display: 'flex', gap: 4, padding: 3, background: 'rgba(255,255,255,0.01)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.04)', overflowX: 'auto', width: 'fit-content' }}>
+    <div className="t-tabs" ref={containerRef} role="tablist" style={{ position: 'relative', overflow: 'visible' }}>
       <span className="t-tabs-pill" style={{
         ...pillStyle,
         position: 'absolute',
         top: '3px',
-        bottom: '3px',
-        borderRadius: '6px',
-        transition: 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1), width 200ms cubic-bezier(0.22, 1, 0.36, 1), background 200ms, border 200ms',
+        height: '24px',
+        background: 'var(--color-cream-dark)',
+        borderRadius: '48px',
+        transition: 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1), width 200ms cubic-bezier(0.22, 1, 0.36, 1)',
         zIndex: 0,
         pointerEvents: 'none'
       }} />
@@ -1065,18 +1220,18 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
         role="tab"
         aria-selected={activeFilter === 'ALL'}
         onClick={() => setActiveFilter('ALL')}
-        className="metal-fx"
         style={{
           position: 'relative',
           background: 'transparent',
-          border: '1px solid transparent',
-          borderRadius: 6,
-          padding: '2px 8px',
-          fontSize: 10, fontWeight: 700, letterSpacing: '0.05em',
-          color: activeFilter === 'ALL' ? '#fff' : 'var(--color-text-muted)',
+          border: 'none',
+          borderRadius: '48px',
+          padding: '4px 14px',
+          fontSize: '11px',
+          fontWeight: activeFilter === 'ALL' ? 700 : 500,
+          color: activeFilter === 'ALL' ? 'var(--color-obsidian)' : 'var(--color-iron)',
           cursor: 'pointer',
-          display: 'flex', alignItems: 'center', gap: 4,
-          transition: 'color 0.15s',
+          display: 'flex', alignItems: 'center', gap: 6,
+          transition: 'color 200ms cubic-bezier(0.22, 1, 0.36, 1)',
           whiteSpace: 'nowrap',
           zIndex: 1,
         }}
@@ -1084,19 +1239,18 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
         ALL
         {closedCount > 0 && (
           <span style={{
-            background: activeFilter === 'ALL' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.07)',
-            borderRadius: 4,
-            padding: '0 4px',
-            fontSize: 9,
-            color: activeFilter === 'ALL' ? '#fff' : 'var(--color-text-muted)',
+            background: activeFilter === 'ALL' ? 'var(--color-logo)' : 'var(--color-cream-dark)',
+            color: activeFilter === 'ALL' ? '#fff' : 'var(--color-text-secondary)',
+            borderRadius: '10px',
+            padding: '1px 6px',
+            fontSize: '9px',
+            fontWeight: 700
           }}>
             {closedCount}
           </span>
         )}
       </button>
       {srcStats.map(({ src, count, pnl }) => {
-        const cfg = entryTypeCfg(SRC_TO_ENTRY_TYPE[src]);
-        const color = cfg.color;
         const isActive = activeFilter === src;
         return (
           <button
@@ -1104,18 +1258,18 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
             role="tab"
             aria-selected={isActive}
             onClick={() => setActiveFilter(src)}
-            className="metal-fx"
             style={{
               position: 'relative',
               background: 'transparent',
-              border: '1px solid transparent',
-              borderRadius: 6,
-              padding: '2px 8px',
-              fontSize: 10, fontWeight: 700, letterSpacing: '0.05em',
-              color: isActive ? color : 'var(--color-text-muted)',
+              border: 'none',
+              borderRadius: '48px',
+              padding: '4px 14px',
+              fontSize: '11px',
+              fontWeight: isActive ? 700 : 500,
+              color: isActive ? 'var(--color-obsidian)' : 'var(--color-iron)',
               cursor: 'pointer',
-              display: 'flex', alignItems: 'center', gap: 4,
-              transition: 'color 0.15s',
+              display: 'flex', alignItems: 'center', gap: 6,
+              transition: 'color 200ms cubic-bezier(0.22, 1, 0.36, 1)',
               whiteSpace: 'nowrap',
               zIndex: 1,
             }}
@@ -1123,16 +1277,19 @@ function SlidingPills({ activeFilter, setActiveFilter, srcStats, closedCount }) 
             {src}
             {count > 0 && (
               <span style={{
-                background: isActive ? `${color}33` : 'rgba(255,255,255,0.07)',
-                borderRadius: 4,
-                padding: '0 4px',
-                fontSize: 9,
-                color: isActive ? color : 'var(--color-text-muted)',
+                background: isActive ? 'var(--color-logo)' : 'var(--color-cream-dark)',
+                color: isActive ? '#fff' : 'var(--color-text-secondary)',
+                borderRadius: '10px',
+                padding: '1px 6px',
+                fontSize: '9px',
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
               }}>
                 {count}
                 {pnl !== null && (
-                  <span style={{ marginLeft: 3, color: pnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)' }}>
-                    {pnl >= 0 ? '+' : ''}${Math.abs(pnl).toFixed(1)}
+                  <span style={{ marginLeft: 3, color: isActive ? '#fff' : (pnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)') }}>
+                    {pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}
                   </span>
                 )}
               </span>
@@ -1159,9 +1316,9 @@ function ColHeaders({ cols, grid }) {
   );
 }
 
-// ── P&L sparkline ─────────────────────────────────────────────────────────────
+// ── Expected Value sparkline ──────────────────────────────────────────────────
 
-function PnLSparkline({ values }) {
+function RunningEVSparkline({ values }) {
   if (values.length < 2) return null;
   const min = Math.min(...values, 0);
   const max = Math.max(...values, 0);
@@ -1171,21 +1328,21 @@ function PnLSparkline({ values }) {
   const pts = values.map((v, i) => `${(i / (values.length - 1)) * W},${toY(v)}`).join(' ');
   const zeroY = toY(0);
   const last = values[values.length - 1];
-  const lineColor = last >= 0 ? '#00c853' : '#ff1744';
+  const lineColor = 'var(--color-text-secondary)';
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
-      <span style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', flexShrink: 0 }}>P&amp;L Trail</span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, marginBottom: 6 }}>
+      <span style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', flexShrink: 0 }}>Running EV</span>
       <svg width={W} height={H} style={{ overflow: 'visible', flexShrink: 0 }}>
         <defs>
-          <linearGradient id="pnlGrad" x1="0" y1="0" x2="1" y2="0">
+          <linearGradient id="evGrad" x1="0" y1="0" x2="1" y2="0">
             <stop offset="0%" stopColor={lineColor} stopOpacity="0.4" />
             <stop offset="100%" stopColor={lineColor} stopOpacity="1" />
           </linearGradient>
         </defs>
         <line x1={0} y1={zeroY} x2={W} y2={zeroY}
               stroke="rgba(255,255,255,0.12)" strokeWidth={0.5} strokeDasharray="4,3" />
-        <polyline points={pts} fill="none" stroke="url(#pnlGrad)" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
-        <circle cx={(values.length - 1) / (values.length - 1) * W} cy={toY(last)} r={3}
+        <polyline points={pts} fill="none" stroke="url(#evGrad)" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx={W} cy={toY(last)} r={3}
                 fill={lineColor} stroke="var(--color-bg-card, #111)" strokeWidth={1.5} />
       </svg>
       <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', fontWeight: 800, color: lineColor, flexShrink: 0 }}>
@@ -1197,7 +1354,7 @@ function PnLSparkline({ values }) {
 
 // ── Summary bar ──────────────────────────────────────────────────────────────
 
-function ClosedSummary({ closed }) {
+const ClosedSummary = memo(function ClosedSummary({ closed }) {
   if (closed.length === 0) return null;
 
   const winTrades  = closed.filter(p => parseFloat(p.realized_pnl ?? 0) > 0);
@@ -1231,12 +1388,35 @@ function ClosedSummary({ closed }) {
     else break;
   }
 
-  // Cumulative P&L sparkline (chronological = reversed from newest-first)
+  // Running Expected Value (EV) calculation chronologically
   const chronoClosed = [...closed].reverse();
-  const cumValues = chronoClosed.reduce((acc, p) => {
-    acc.push((acc.length > 0 ? acc[acc.length - 1] : 0) + parseFloat(p.realized_pnl ?? 0));
-    return acc;
-  }, []);
+  const evValues = [];
+  let cumWinPnl = 0;
+  let cumLossPnl = 0;
+  let winsCount = 0;
+  let lossesCount = 0;
+
+  chronoClosed.forEach(p => {
+    const pnl = parseFloat(p.realized_pnl ?? 0);
+    if (pnl > 0.001) {
+      cumWinPnl += pnl;
+      winsCount++;
+    } else if (pnl < -0.001) {
+      cumLossPnl += Math.abs(pnl);
+      lossesCount++;
+    }
+    const totalWL = winsCount + lossesCount;
+    if (totalWL === 0) {
+      evValues.push(0);
+    } else {
+      const wr = winsCount / totalWL;
+      const lr = lossesCount / totalWL;
+      const avgW = winsCount > 0 ? cumWinPnl / winsCount : 0;
+      const avgL = lossesCount > 0 ? cumLossPnl / lossesCount : 0;
+      const ev = (wr * avgW) - (lr * avgL);
+      evValues.push(ev);
+    }
+  });
 
   // P&L velocity ($/hr) — parse ISO string or unix int from entry_time
   const _rawOldest = closed.length > 0
@@ -1259,37 +1439,6 @@ function ClosedSummary({ closed }) {
     return exitTs >= now20min && exitPrice <= 0.10;
   }).length;
 
-  // Session × Regime table data
-  const SESSION_ORDER = ['Asian', 'EU', 'US', 'Off-Peak', 'Weekend'];
-  const REGIME_ORDER  = ['TRENDING', 'MEAN_REVERTING', 'COMPRESSION', 'VOLATILE_CHAOS'];
-  const REGIME_SHORT  = { TRENDING: 'Trend', MEAN_REVERTING: 'Mean-Rev', COMPRESSION: 'Compr', VOLATILE_CHAOS: 'Chaos' };
-
-  function getSessionLabel(entryTs) {
-    if (!entryTs) return null;
-    const d   = new Date(entryTs * 1000);
-    const day = d.getUTCDay();
-    if (day === 0 || day === 6) return 'Weekend';
-    const h = d.getUTCHours() + d.getUTCMinutes() / 60;
-    if (h >= 13.5 && h < 22) return 'US';
-    if (h >= 7   && h < 16)  return 'EU';
-    if (h >= 0   && h < 8)   return 'Asian';
-    return 'Off-Peak';
-  }
-
-  const srCells = {};
-  for (const t of closed) {
-    const sess   = getSessionLabel(t.entry_time || t.timestamp);
-    const regime = t.regime || 'UNKNOWN';
-    if (!sess || regime === 'UNKNOWN') continue;
-    const key = `${sess}|${regime}`;
-    if (!srCells[key]) srCells[key] = { wins: 0, total: 0, pnl: 0 };
-    srCells[key].total++;
-    srCells[key].pnl += parseFloat(t.realized_pnl ?? 0);
-    if (parseFloat(t.realized_pnl ?? 0) > 0) srCells[key].wins++;
-  }
-  const activeSessions = SESSION_ORDER.filter(s => REGIME_ORDER.some(r => srCells[`${s}|${r}`]));
-  const activeRegimes  = REGIME_ORDER.filter(r => SESSION_ORDER.some(s => srCells[`${s}|${r}`]));
-  const showSRTable = activeSessions.length > 0 && activeRegimes.length > 0;
 
   const statCols = [
     { label: 'Trades',   val: closed.length, color: 'var(--color-text-primary)' },
@@ -1343,51 +1492,12 @@ function ClosedSummary({ closed }) {
           </div>
         ))}
       </div>
-      <PnLSparkline values={cumValues} />
 
-      {/* Session × Regime analytics table */}
-      {showSRTable && (
-        <div style={{ marginTop: 10, overflowX: 'auto' }}>
-          <div style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4 }}>
-            Session × Regime
-          </div>
-          <table style={{ borderCollapse: 'collapse', fontSize: 10, width: '100%' }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: 'left', color: 'var(--color-text-muted)', fontWeight: 500, paddingRight: 10, paddingBottom: 3 }}>Session</th>
-                {activeRegimes.map(r => (
-                  <th key={r} style={{ textAlign: 'center', color: REGIME_COLORS[r] || '#6b7280', fontWeight: 600, paddingBottom: 3, paddingRight: 8 }}>
-                    {REGIME_SHORT[r] || r}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {activeSessions.map(sess => (
-                <tr key={sess}>
-                  <td style={{ color: 'var(--color-text-secondary)', paddingRight: 10, paddingBottom: 2 }}>{sess}</td>
-                  {activeRegimes.map(r => {
-                    const cell = srCells[`${sess}|${r}`];
-                    if (!cell) return <td key={r} style={{ textAlign: 'center', color: 'var(--color-text-muted)', paddingRight: 8 }}>—</td>;
-                    const wr = Math.round((cell.wins / cell.total) * 100);
-                    const pnlStr = `${cell.pnl >= 0 ? '+' : ''}$${cell.pnl.toFixed(1)}`;
-                    const wrColor = wr >= 65 ? 'var(--color-profit)' : wr >= 50 ? 'var(--color-amber)' : 'var(--color-loss)';
-                    return (
-                      <td key={r} style={{ textAlign: 'center', paddingRight: 8, paddingBottom: 2 }}>
-                        <span style={{ color: cell.total < 3 ? 'var(--color-text-muted)' : wrColor, fontWeight: 700 }}>{wr}%</span>
-                        <span style={{ display: 'block', fontSize: 9, color: cell.pnl >= 0 ? 'var(--color-profit)' : 'var(--color-loss)', opacity: 0.8 }}>{pnlStr}</span>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <RunningEVSparkline values={evValues} />
+
     </div>
   );
-}
+});
 
 // ── Engine Status Pill ────────────────────────────────────────────────────────
 
@@ -1433,7 +1543,7 @@ function EngineStatusPill({ status, detail, lastTradeAgo }) {
 
 // ── Source filter pills ───────────────────────────────────────────────────────
 
-const SRC_FILTERS = ['ALL', 'LAT ARB', 'FV', 'NCS', 'REV SNIPE', 'REV STREAK', 'SIG', 'SWEEP'];
+const SRC_FILTERS = ['ALL', 'NCS', 'REV SNIPE', 'SIG', 'SWEEP'];
 const SRC_TO_ENTRY_TYPE = {
   'LAT ARB':    'LAT-ARB',
   'FV':         'FAIR-VAL',
@@ -1525,7 +1635,7 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
     return [...(positions?.closed || [])].sort(
       (a, b) => new Date(b.exit_time || 0) - new Date(a.exit_time || 0)
     );
-  }, [positions?.closed]);
+  }, [positions?.closed?.length]);
 
   // Total unrealized P&L across all open positions
   const totalUnrPnl = active.reduce((s, p) => s + parseFloat(p.unrealized_pnl || 0), 0);
@@ -1548,10 +1658,16 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
     return filteredClosed.slice(0, limit);
   }, [filteredClosed, limit]);
 
+  // Stable row renderer — prevents VirtualList from discarding and re-creating
+  // DOM nodes on every parent render (critical for 120Hz smooth scrolling).
+  const renderClosedRow = useCallback((p, idx) => (
+    <ClosedRow key={p.order_id || idx} p={p} />
+  ), []);
+
   return (
     <SpotlightMask>
       <div
-        className="glass-panel border-beam-card"
+        className="glass-panel"
         style={{ padding: 'var(--spacing-20)', display: 'flex', flexDirection: 'column' }}
       >
         {/* Header: title + pills + tabs */}
@@ -1655,6 +1771,9 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
 
                 {/* Timeframe Heatmap */}
                 <TimeframeHeatmap closed={closed} />
+
+                {/* Assets vs Timeframe Heatmap */}
+                <AssetVsTimeframeHeatmap closed={closed} />
               </>
             )}
 
@@ -1667,81 +1786,18 @@ export default function TradeFeed({ positions = {}, gateLog = [], assetMacro = {
 
             {/* Trade rows */}
             <ColHeaders cols={CLOSED_COLS} grid={CLOSED_GRID} />
-            <div style={{ overflowY: 'auto', maxHeight: 380, flex: 1 }}>
-              {visibleClosed.length === 0
-                ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>
-                    {srcFilter === 'ALL' ? 'No closed trades yet' : `No ${srcFilter} trades yet`}
-                  </div>
-                : (
-                  <>
-                    {visibleClosed.map((p, i) => <ClosedRow key={p.order_id || i} p={p} />)}
-                    {filteredClosed.length > limit ? (
-                      <div style={{ display: 'flex', gap: 8, margin: '12px 8px' }}>
-                        <button
-                          onClick={() => setLimit(prev => prev + 10)}
-                          style={{
-                            flex: 1,
-                            padding: '8px 12px',
-                            borderRadius: '4px',
-                            fontWeight: '700',
-                            fontSize: '10px',
-                            fontFamily: 'var(--font-mono)',
-                            textAlign: 'center',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.08em',
-                            color: 'var(--color-accent)',
-                          }}
-                          className="load-more-btn metal-fx"
-                        >
-                          Load More (+10)
-                        </button>
-                        <button
-                          onClick={() => setLimit(filteredClosed.length)}
-                          style={{
-                            flex: 1,
-                            padding: '8px 12px',
-                            borderRadius: '4px',
-                            fontWeight: '700',
-                            fontSize: '10px',
-                            fontFamily: 'var(--font-mono)',
-                            textAlign: 'center',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.08em',
-                            color: 'var(--color-accent)',
-                          }}
-                          className="load-more-btn metal-fx"
-                        >
-                          Expand All ({filteredClosed.length})
-                        </button>
-                      </div>
-                    ) : (
-                      limit > 10 && (
-                        <button
-                          onClick={() => setLimit(10)}
-                          style={{
-                            width: 'calc(100% - 16px)',
-                            margin: '12px 8px',
-                            padding: '8px 12px',
-                            borderRadius: '4px',
-                            fontWeight: '700',
-                            fontSize: '10px',
-                            fontFamily: 'var(--font-mono)',
-                            textAlign: 'center',
-                            display: 'block',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.08em',
-                            color: 'var(--color-accent)',
-                          }}
-                          className="load-more-btn metal-fx"
-                        >
-                          Collapse List (Show 10)
-                        </button>
-                      )
-                    )}
-                  </>
-                )
-              }
-            </div>
+            {filteredClosed.length === 0 ? (
+              <div style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: 32 }}>
+                {srcFilter === 'ALL' ? 'No closed trades yet' : `No ${srcFilter} trades yet`}
+              </div>
+            ) : (
+              <VirtualList
+                items={filteredClosed}
+                itemHeight={38}
+                containerHeight={380}
+                renderRow={renderClosedRow}
+              />
+            )}
           </>
         )}
       </>

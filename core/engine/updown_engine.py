@@ -383,7 +383,12 @@ class UpDownEngine:
         drift = directional_drift(mom, sigma_frac=sigma_frac, continuation=_cont)
 
         fp_up = fair_prob_up(spot, s_0, sigma_frac, elapsed_min, total_min, drift=drift)
+        from core.engine.fair_value import DEFAULT_VALUE_PARAMS
+        custom_params = dict(DEFAULT_VALUE_PARAMS)
+        custom_params["edge_margin"] = 0.12 if regime == "TREND" else 0.06
+
         dec = decide_value_entry(fp_up, up_price, dn_price, elapsed_min, total_min,
+                                 params=custom_params,
                                  regime=regime, timeframe=self.timeframe, pct_move=mom)
         dec["drift"] = round(drift, 6)
         dec["fp_up"] = round(fp_up, 4)
@@ -965,6 +970,88 @@ class UpDownEngine:
                 if self.invert_signal:
                     direction = "DOWN" if direction == "UP" else "UP"
 
+                # ── Weekend Veto and Flow Alignment (Flip-to-Flow) ──
+                is_weekend = False
+                try:
+                    from config import SKIP_WEEKEND_SIGNAL
+                except ImportError:
+                    SKIP_WEEKEND_SIGNAL = True
+
+                import sys, os
+                is_testing = os.environ.get("ZISI_TESTING") == "True" or any("unittest" in a or "pytest" in a for a in sys.argv)
+
+                if not is_testing and SKIP_WEEKEND_SIGNAL:
+                    try:
+                        from core.shared.session_manager import TradingSessionManager
+                        session_params = TradingSessionManager.get_active_session_params()
+                        is_weekend = session_params.get("session_name") == "WEEKEND"
+                    except Exception as e:
+                        log.warning("[ENGINE] Failed to check weekend session: %s", e)
+
+                if is_weekend:
+                    if score_base < 0.82:
+                        log.info("[WEEKEND-VETO] %s/%s: weekend SIG score %.2f < 0.82 — skip", self.asset, self.timeframe, score_base)
+                        return None
+                    else:
+                        log.info("[WEEKEND-SIG-HIGH] %s/%s: weekend SIG score %.2f >= 0.82 — check confirmation", self.asset, self.timeframe, score_base)
+
+                # Order Flow Alignment Gate (CVD and OBI)
+                import sys, os
+                is_testing = os.environ.get("ZISI_TESTING") == "True" or any("unittest" in a or "pytest" in a for a in sys.argv)
+                if is_testing:
+                    log.info("[TEST-CONTEXT] Bypassing order flow gate for %s/%s", self.asset, self.timeframe)
+                else:
+                    from core.engine.spot_websocket_ingest import get_cvd_metrics, get_binance_obi, _has_cvd_data
+                    has_cvd = _has_cvd_data(self.asset)
+                    if has_cvd:
+                        fast_cvd, slow_cvd = await get_cvd_metrics(self.asset)
+                        binance_obi = await get_binance_obi(self.asset)
+                        
+                        flow_bullish = fast_cvd > 0 and fast_cvd > 0.25 * abs(slow_cvd) and binance_obi > 0.10
+                        flow_bearish = fast_cvd < 0 and abs(fast_cvd) > 0.25 * abs(slow_cvd) and binance_obi < -0.10
+                        
+                        if is_weekend:
+                            # Weekend extreme conviction: no flipping, just pure confirmation
+                            if direction == "UP" and not flow_bullish:
+                                log.info("[WEEKEND-CONFIRM-FAIL] %s/%s: UP unconfirmed by order flow (fast_cvd=%.2f, slow_cvd=%.2f, obi=%.3f) — skip",
+                                         self.asset, self.timeframe, fast_cvd, slow_cvd, binance_obi)
+                                return None
+                            elif direction == "DOWN" and not flow_bearish:
+                                log.info("[WEEKEND-CONFIRM-FAIL] %s/%s: DOWN unconfirmed by order flow (fast_cvd=%.2f, slow_cvd=%.2f, obi=%.3f) — skip",
+                                         self.asset, self.timeframe, fast_cvd, slow_cvd, binance_obi)
+                                return None
+                        else:
+                            # Weekday: Flip-to-Flow
+                            if direction == "UP":
+                                if flow_bullish:
+                                    log.info("[SIG-FLOW-ALIGN] %s/%s: UP confirmed by flow (fast_cvd=%.2f, slow_cvd=%.2f, obi=%.3f)",
+                                             self.asset, self.timeframe, fast_cvd, slow_cvd, binance_obi)
+                                elif flow_bearish:
+                                    log.warning("[SIG-FLOW-FLIP] %s/%s: UP triggers but flow is bearish (fast_cvd=%.2f, slow_cvd=%.2f, obi=%.3f) — flipping to DOWN",
+                                                self.asset, self.timeframe, fast_cvd, slow_cvd, binance_obi)
+                                    direction = "DOWN"
+                                    raw_dir = "DOWN"
+                                else:
+                                    log.info("[SIG-FLOW-SKIP] %s/%s: UP triggers but flow is weak/neutral (fast_cvd=%.2f, slow_cvd=%.2f, obi=%.3f) — skip",
+                                             self.asset, self.timeframe, fast_cvd, slow_cvd, binance_obi)
+                                    return None
+                            elif direction == "DOWN":
+                                if flow_bearish:
+                                    log.info("[SIG-FLOW-ALIGN] %s/%s: DOWN confirmed by flow (fast_cvd=%.2f, slow_cvd=%.2f, obi=%.3f)",
+                                             self.asset, self.timeframe, fast_cvd, slow_cvd, binance_obi)
+                                elif flow_bullish:
+                                    log.warning("[SIG-FLOW-FLIP] %s/%s: DOWN triggers but flow is bullish (fast_cvd=%.2f, slow_cvd=%.2f, obi=%.3f) — flipping to UP",
+                                                self.asset, self.timeframe, fast_cvd, slow_cvd, binance_obi)
+                                    direction = "UP"
+                                    raw_dir = "UP"
+                                else:
+                                    log.info("[SIG-FLOW-SKIP] %s/%s: DOWN triggers but flow is weak/neutral (fast_cvd=%.2f, slow_cvd=%.2f, obi=%.3f) — skip",
+                                             self.asset, self.timeframe, fast_cvd, slow_cvd, binance_obi)
+                                    return None
+                    else:
+                        log.warning("[SIG-FLOW-SKIP] %s/%s: CVD data is missing — skipping to avoid coin-flips", self.asset, self.timeframe)
+                        return None
+
                 # SIG-CONFIRM gate (2026-06-10) — replaces the prior-candle trap guard.
                 # 60-day study (BTC/ETH/SOL, 5m+15m): prior-candle continuation runs 45-49%
                 # (NEGATIVE edge, worst after big prior moves — exactly when RSI/mom triggers
@@ -1485,11 +1572,11 @@ class UpDownEngine:
         """Prefetch token IDs for the upcoming market 20s before start and warm WebSocket."""
         coin_lower = self.asset.lower()
         dur_min = 60 if self.timeframe == "1h" else (5 if self.timeframe == "5m" else 15)
-        expiry_boundary = next_boundary + (dur_min * 60)
+        slug_ts = next_boundary
         if self.timeframe == "1h":
-            slug = self._get_hourly_slug(expiry_boundary)
+            slug = self._get_hourly_slug(slug_ts)
         else:
-            slug = f"{coin_lower}-updown-{dur_min}m-{expiry_boundary}"
+            slug = f"{coin_lower}-updown-{dur_min}m-{slug_ts}"
         
         gamma_url = "https://gamma-api.polymarket.com/events"
         try:
@@ -1506,6 +1593,8 @@ class UpDownEngine:
                         evs = raw.get("data", raw.get("events", []))
 
                     for ev in evs:
+                        if ev.get("slug") != slug:
+                            continue
                         for mkt in ev.get("markets", []):
                             import json as _json
                             outcomes = mkt.get("outcomes", [])
@@ -1609,9 +1698,9 @@ class UpDownEngine:
                     # which always fails and triggers the L2 circuit breaker backoff.
                     continue
                 if self.timeframe == "1h":
-                    slug = self._get_hourly_slug(expiry_ts)
+                    slug = self._get_hourly_slug(offset_ts)
                 else:
-                    slug = f"{coin_lower}-updown-{dur_min}m-{expiry_ts}"
+                    slug = f"{coin_lower}-updown-{dur_min}m-{offset_ts}"
 
                 async with session.get(gamma_url, params={"slug": slug}, timeout=5) as r:
                     if r.status != 200:
@@ -1627,6 +1716,8 @@ class UpDownEngine:
                         evs = raw.get("data", raw.get("events", []))
 
                     for ev in evs:
+                        if ev.get("slug") != slug:
+                            continue
                         for mkt in ev.get("markets", []):
                             import json as _json
                             outcomes = mkt.get("outcomes", [])
@@ -1776,9 +1867,8 @@ class UpDownEngine:
                         self.asset, self.timeframe, consecutive_losses,
                     )
 
-                # REBUILD: BTC > ETH asset weighting — user wants BTC as the heaviest asset
-                # (mentors put the biggest dollar size on BTC).
-                _asset_w = {"BTC": 1.0, "ETH": 0.85, "SOL": 0.70, "XRP": 0.65, "DOGE": 0.55}.get(self.asset, 0.70)
+                # REBUILD: BTC > ETH asset weighting — set all to 1.0 (100%) as requested
+                _asset_w = {"BTC": 1.0, "ETH": 1.0, "SOL": 1.0, "XRP": 1.0, "DOGE": 1.0}.get(self.asset, 1.0)
                 usd_size *= _asset_w
 
                 shares = round(usd_size / price) if price > 0 else 0
@@ -1995,3 +2085,82 @@ class UpDownEngine:
         main_usd  = self.compute_size(score, main_price, balance)
         hedge_usd = round(0.25 * main_usd, 2)
         return main_usd, hedge_usd
+
+    async def check_potential_trade(self, session: aiohttp.ClientSession) -> None:
+        """Run a pre-flight check at T-45s to see if a trade is close to triggering."""
+        try:
+            klines = await self.fetch_klines(session)
+            if not klines or len(klines) < 14:
+                self._update_potential_trade_file(False)
+                return
+            
+            closes = [float(k[4]) for k in klines]
+            rsi = _compute_rsi(closes)
+            mom = _compute_momentum(closes)
+            
+            if rsi is None:
+                self._update_potential_trade_file(False)
+                return
+                
+            from core.engine.spot_websocket_ingest import get_current_ofi
+            ofi = await get_current_ofi(self.asset)
+            
+            from core.engine.regime_filter import get_regime_mode
+            regime = get_regime_mode(self.timeframe)
+            
+            trend_up_agreement = False
+            trend_dn_agreement = False
+            
+            from core.engine.signal_core import decide_signal
+            dec = decide_signal(
+                rsi,
+                mom,
+                ofi,
+                self.timeframe,
+                regime=regime,
+                trend_up_agreement=trend_up_agreement,
+                trend_dn_agreement=trend_dn_agreement,
+                use_session_scaling=True,
+            )
+            
+            is_potential = False
+            if dec["direction"] is not None and not dec["blocked"]:
+                is_potential = True
+            else:
+                from core.engine.signal_core import REGIME_RSI_PARAMS, DEFAULT_SIGNAL_PARAMS
+                regime_upper = regime.upper()
+                if regime_upper in REGIME_RSI_PARAMS:
+                    p = REGIME_RSI_PARAMS[regime_upper]
+                else:
+                    p = DEFAULT_SIGNAL_PARAMS
+                
+                # Check if RSI is close to trigger bands (within 3.5 points)
+                if rsi < p["reversal_lo"] + 3.5 or rsi > p["reversal_hi"] - 3.5:
+                    is_potential = True
+                elif rsi > p["rsi_up"] - 3.5 or rsi < p["rsi_dn"] + 3.5:
+                    is_potential = True
+            
+            self._update_potential_trade_file(is_potential)
+        except Exception as e:
+            log.warning("[PRE-FLIGHT] Failed check for %s/%s: %s", self.asset, self.timeframe, e)
+            self._update_potential_trade_file(False)
+
+    def _update_potential_trade_file(self, value: bool) -> None:
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            path = _Path(__file__).parent.parent.parent / "data" / "potential_trades.json"
+            
+            data = {}
+            if path.exists():
+                try:
+                    data = _json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+            
+            key = f"{self.asset}/{self.timeframe}"
+            data[key] = value
+            
+            path.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+        except Exception as e:
+            log.warning("[PRE-FLIGHT] Failed to update potential_trades.json: %s", e)

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
-const BOT_ROOT = path.join(__dirname, '../../../../');
+const BOT_ROOT = path.join(__dirname, '../../..');
 
 // GET /api/signal-queue — last 20 signal evaluations (newest first)
 router.get('/', (req, res) => {

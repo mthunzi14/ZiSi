@@ -17,6 +17,10 @@ _last_entry_ts: float = 0.0
 ENTRY_COOLDOWN_S: float = 3.0  # REBUILD: 15s dropped candle-boundary bursts; 3s gives throughput for hundreds/day
 _entry_lock: asyncio.Lock | None = None  # lazy-initialized inside the event loop
 
+import threading
+_in_flight_placements = set()
+_placement_lock = threading.Lock()
+
 # FV global rate limiter — max 3 FV entries per 60s.
 # Prevents correlated macro wipeouts where 5 assets fire simultaneously on the same bad candle.
 _fv_entry_times: list = []
@@ -117,18 +121,19 @@ async def _sleep_to_next_candle(
     now = datetime.now(timezone.utc).timestamp()
     next_boundary = (int(now) // interval_secs + 1) * interval_secs
     
-    # Pre-fetch 20 seconds before the boundary if we have engine/session details
-    lead_time = 20.0
+    # Pre-fetch and pre-flight signal check 45 seconds before the boundary
+    lead_time = 45.0
     sleep_first_stage = (next_boundary - lead_time) - now
     
     if sleep_first_stage > 5.0 and asset and timeframe and session and context:
-        # Sleep until the prefetch trigger point
+        # Sleep until the prefetch/preflight trigger point (T-45s)
         await asyncio.sleep(sleep_first_stage)
         
-        # Trigger pre-fetch in the background
+        # Trigger pre-fetch and pre-flight check in the background
         engine = context.get_engine(asset, timeframe)
         if engine:
             asyncio.create_task(engine.prefetch_upcoming_market(session, next_boundary))
+            asyncio.create_task(engine.check_potential_trade(session))
             
         # Recalculate remaining sleep until 0.5s past boundary to allow prices to populate
         now = datetime.now(timezone.utc).timestamp()
@@ -188,6 +193,8 @@ async def _evaluate_market_signals(
         engine.skip_windows -= 1
         log.info("[MAIN] %s/%s Circuit Breaker Active: skipping this window (%d left)", asset, timeframe, engine.skip_windows)
         return None
+    # Clear the potential trade flag since we are now entering the main evaluation stage
+    engine._update_potential_trade_file(False)
 
     start_time = time.time()
     signal = None
@@ -283,6 +290,13 @@ async def _validate_trade_slot(
                      asset, timeframe, entry_price, _sig_ceil)
             context.log_skip("sig_ceiling", asset, timeframe)
             return False, {}
+
+    # ── 15m Conviction Guard: Prefer 5m trades unless 15m has high conviction (score >= 0.70) ──
+    if _entry_source in ("SIG", "SIGNAL") and timeframe == "15m" and score < 0.70:
+        log.info("[SIG-15M-GUARD] %s/15m: SIG score %.2f < 0.70 — skip 15m to prefer 5m",
+                 asset, score)
+        context.log_skip("sig_15m_conviction_guard", asset, timeframe)
+        return False, {}
 
     # SIG mid-range quality guard (REBUILD Phase 4): the deleted dead zone let weak
     # cheap/contrarian SIG back in (26.5c NO -$4.08, 57.5c NO -$0.52). Re-protect the
@@ -582,22 +596,11 @@ async def _validate_trade_slot(
     if _entry_source == "SIG" and timeframe == "5m":
         bet_usd *= 1.35
         log.info("[RISK] SIG/5m premium +35%%: $%.2f", bet_usd)
+    # ── 15m Size Reduction: Reduce 15m trade size by 30% to prefer 5m allocation ──
+    if timeframe == "15m":
+        bet_usd *= 0.70
+        log.info("[RISK] 15m size discount -30%%: $%.2f", bet_usd)
 
-    # ── REVERSAL sizing: quarter-Kelly proportional to actual edge at entry price ──
-    # is_reversal entries (RSI <reversal_lo or >reversal_hi) have the highest edge in the engine.
-    # Bonereaper sizes these at $56-655. Quarter-Kelly at current balance gives $6-10 vs old $0.89.
-    if signal.get("is_reversal") and _entry_source in ("SIG", "SIGNAL"):
-        _ep = entry_price
-        if 0.01 < _ep < 0.99:
-            _gain = (0.99 - _ep) / _ep
-            _loss = (_ep - 0.01) / _ep
-            _rev_wr = float(os.getenv("REVERSAL_WIN_RATE", "0.72"))
-            _kelly = (_rev_wr * _gain - (1.0 - _rev_wr) * _loss) / _gain if _gain > 0 else 0.0
-            _qk_size = max(3.0, min(current_balance * max(0.0, _kelly) * 0.25, 15.0))
-            if _qk_size > bet_usd:
-                log.info("[REVERSAL-SIZE] %s/%s ep=%.4f kelly=%.1f%% → $%.2f (was $%.2f)",
-                         asset, timeframe, _ep, _kelly * 100, _qk_size, bet_usd)
-                bet_usd = _qk_size
 
     # ── P2: Global Bet Cap — differentiated by timeframe / entry conviction ──
     # Bonereaper bets 13-50% of account per trade. ZiSi raised to match proportionally.
@@ -979,6 +982,22 @@ async def _place_corr_trades(
 
 
 def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, score, trade_type="SINGLE") -> Optional[dict]:
+    key = (asset, timeframe)
+    with _placement_lock:
+        if key in _in_flight_placements:
+            log.warning("[CONCURRENT-GUARD] Aborting trade: %s/%s already has an in-flight placement", asset, timeframe)
+            return None
+        try:
+            from core.engine.state_manager import get_open_positions
+            from core.engine.session_governor import has_open_asset_tf_exposure
+            open_positions = get_open_positions()
+            if has_open_asset_tf_exposure(open_positions, asset, timeframe):
+                log.warning("[CONCURRENT-GUARD] Aborting trade: %s/%s already has open exposure", asset, timeframe)
+                return None
+        except Exception as e:
+            log.warning("[CONCURRENT-GUARD] Failed checking open exposure: %s", e)
+        _in_flight_placements.add(key)
+
     try:
         market_id = (market["up_market"] if direction == "UP" else market["dn_market"]).get("id", "")
 
@@ -1029,6 +1048,9 @@ def _place_trade(asset, timeframe, direction, market, usd_amount, entry_price, s
             return order
     except Exception as exc:
         log.error("[MAIN] Trade placement failed: %s", exc)
+    finally:
+        with _placement_lock:
+            _in_flight_placements.discard(key)
     return None
 
 
@@ -1122,12 +1144,13 @@ async def main() -> None:
             asyncio.create_task(_zombie_cleanup_loop())
 
             # Start latency edge arbitrage scanner (Sprint 3)
-            try:
-                from core.engine.cycle_manager import start_latency_edge_scanner
-                tasks.append(start_latency_edge_scanner(session, context.engines))
-                log.info("[MAIN] Latency edge scanner background task registered.")
-            except Exception as e:
-                log.error("[MAIN] Failed to import start_latency_edge_scanner: %s", e)
+            if cfg.get("ENABLE_LATENCY_ARB", False):
+                try:
+                    from core.engine.cycle_manager import start_latency_edge_scanner
+                    tasks.append(start_latency_edge_scanner(session, context.engines))
+                    log.info("[MAIN] Latency edge scanner background task registered.")
+                except Exception as e:
+                    log.error("[MAIN] Failed to import start_latency_edge_scanner: %s", e)
 
             try:
                 from core.engine.cycle_manager import start_reversal_sniper
@@ -1136,12 +1159,13 @@ async def main() -> None:
             except Exception as e:
                 log.error("[MAIN] Failed to import start_reversal_sniper: %s", e)
 
-            try:
-                from core.engine.cycle_manager import start_resolution_sweeper
-                tasks.append(start_resolution_sweeper(session, context.engines))
-                log.info("[MAIN] Resolution sweeper background task registered.")
-            except Exception as e:
-                log.error("[MAIN] Failed to import start_resolution_sweeper: %s", e)
+            if cfg.get("ENABLE_SWEEPER", False):
+                try:
+                    from core.engine.cycle_manager import start_resolution_sweeper
+                    tasks.append(start_resolution_sweeper(session, context.engines))
+                    log.info("[MAIN] Resolution sweeper background task registered.")
+                except Exception as e:
+                    log.error("[MAIN] Failed to import start_resolution_sweeper: %s", e)
 
             # Tier 3G: Fear & Greed sentiment daemon (macro size filter)
             try:
@@ -1151,12 +1175,13 @@ async def main() -> None:
             except Exception as e:
                 log.error("[MAIN] Failed to start sentiment daemon: %s", e)
 
-            try:
-                from core.engine.cycle_manager import start_close_sniper
-                tasks.append(start_close_sniper(session, context.engines))
-                log.info("[MAIN] Close sniper background task registered.")
-            except Exception as e:
-                log.error("[MAIN] Failed to import start_close_sniper: %s", e)
+            if cfg.get("ENABLE_NCS", False):
+                try:
+                    from core.engine.cycle_manager import start_close_sniper
+                    tasks.append(start_close_sniper(session, context.engines))
+                    log.info("[MAIN] Close sniper background task registered.")
+                except Exception as e:
+                    log.error("[MAIN] Failed to import start_close_sniper: %s", e)
 
             log.info("[MAIN] Launching %d asyncio tasks (Dynamic asset loops + reconciliation + arbitrage scanner)", len(tasks))
             await asyncio.gather(*tasks)

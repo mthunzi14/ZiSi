@@ -15,8 +15,8 @@ ASSETS: list = ["BTC", "ETH", "SOL", "XRP", "DOGE"]
 FUTURE_ASSETS: list = []
 
 TIMEFRAMES: dict = {
-    "BTC": ["5m", "15m", "1h"],   # 1h = BoneReaper hourly markets
-    "ETH": ["5m", "15m", "1h"],   # 1h = BoneReaper hourly markets
+    "BTC": ["5m", "15m"],
+    "ETH": ["5m", "15m"],
     "SOL": ["5m", "15m"],
     "XRP": ["5m", "15m"],
     "DOGE": ["5m", "15m"],
@@ -56,6 +56,12 @@ MAX_TOTAL_OPEN: int = 8
 # Fair-value (Type-1) primary entry. When True, a spot-distance mispricing that
 # clears EDGE_MARGIN fires an entry at the real L2 quote BEFORE the momentum cascade.
 FAIR_VALUE_MODE: bool = True
+
+# Strategy scope configurations
+SKIP_WEEKEND_SIGNAL: bool = os.getenv("SKIP_WEEKEND_SIGNAL", "True").lower() == "true"
+ENABLE_NCS: bool = os.getenv("ENABLE_NCS", "False").lower() == "true"
+ENABLE_SWEEPER: bool = os.getenv("ENABLE_SWEEPER", "False").lower() == "true"
+ENABLE_LATENCY_ARB: bool = os.getenv("ENABLE_LATENCY_ARB", "False").lower() == "true"
 
 # ── Strategy-Specific Overlays (Sprint 12 / Mentor Emulation) ──────────────────
 OVERLAY_C_ENABLED: bool = True
@@ -207,6 +213,12 @@ def load_config() -> dict:
         "OVERLAY_B_FREEZE_MIDPOINTS": os.getenv("OVERLAY_B_FREEZE_MIDPOINTS", "true").lower() == "true",
         "OVERLAY_B_TREND_ALIGNMENT_THRESHOLD": int(os.getenv("OVERLAY_B_TREND_ALIGNMENT_THRESHOLD", "4")),
         "OVERLAY_B_ADX_THRESHOLD": float(os.getenv("OVERLAY_B_ADX_THRESHOLD", "25.0")),
+
+        # Strategy scope configurations
+        "SKIP_WEEKEND_SIGNAL": os.getenv("SKIP_WEEKEND_SIGNAL", str(SKIP_WEEKEND_SIGNAL)).lower() == "true",
+        "ENABLE_NCS": os.getenv("ENABLE_NCS", str(ENABLE_NCS)).lower() == "true",
+        "ENABLE_SWEEPER": os.getenv("ENABLE_SWEEPER", str(ENABLE_SWEEPER)).lower() == "true",
+        "ENABLE_LATENCY_ARB": os.getenv("ENABLE_LATENCY_ARB", str(ENABLE_LATENCY_ARB)).lower() == "true",
     }
 
     # Check required keys
